@@ -49,10 +49,6 @@ export default {
             <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
             ${content}
           </div>
-          <script>
-            // If you see this message, JS loaded successfully.
-            window.jsLoaded = true;
-          <\\/script>
         </body>
         </html>`,
         { headers: { "content-type": "text/html" } }
@@ -63,7 +59,7 @@ export default {
     if (path === "/admin" && method === "GET") {
       return html(`
         <h1>Generate Onboarding Link</h1>
-        <form id="adminForm" autocomplete="off" onsubmit="return false">
+        <form id="adminForm" autocomplete="off">
           <div class="field">
             <label>Splynx Lead/Customer ID</label>
             <input name="splynx_id" required autocomplete="off" />
@@ -72,45 +68,33 @@ export default {
         </form>
         <div id="link"></div>
         <script>
-          function showMsg(html) {
-            document.getElementById("link").innerHTML = html;
-          }
           document.getElementById("genLinkBtn").onclick = async function() {
-            showMsg('<div style="color:#888">Generating link...</div>');
             const id = document.querySelector("[name=splynx_id]").value;
             if (!id) {
-              showMsg('<div class="err">Please enter an ID.</div>');
+              document.getElementById("link").innerHTML = '<div class="err">Please enter an ID.</div>';
               return;
             }
             try {
-              console.log("Sending fetch to /admin with id:", id);
               const resp = await fetch("/admin", { 
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ id }) 
               });
               if (!resp.ok) {
-                let text = await resp.text();
-                showMsg('<div class="err">Error: ' + text + '</div>');
+                document.getElementById("link").innerHTML = '<div class="err">Error: ' + (await resp.text()) + '</div>';
                 return;
               }
               const data = await resp.json();
-              console.log("Got response", data);
               if (data.url) {
-                showMsg('<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>');
-              } else if (data.error) {
-                showMsg('<div class="err">Error: ' + data.error + '</div>');
+                document.getElementById("link").innerHTML = '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>';
               } else {
-                showMsg('<div class="err">Unknown error, please check logs.</div>');
+                document.getElementById("link").innerHTML = '<div class="err">Error: Unexpected server response.</div>';
               }
             } catch (err) {
-              showMsg('<div class="err">Fetch failed: ' + err + '</div>');
+              document.getElementById("link").innerHTML = '<div class="err">Fetch failed: ' + err + '</div>';
             }
-          };
+          }
         <\\/script>
-        <noscript>
-          <div class="err">JavaScript is required for this page to function.</div>
-        </noscript>
       `, { title: "Admin - Generate Link" });
     }
 
