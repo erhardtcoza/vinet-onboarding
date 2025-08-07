@@ -26,6 +26,10 @@ BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en_US"
 WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
+ADMIN_IPS = "160.226.143.254"   # comma-separated; leave empty to allow all
+TERMS_R2_KEY = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"      # optional: R2 object to serve as terms
+TERMS_TEXT = ""                             # optional: plain HTML/text if not using R2
+
 
 
 [observability.logs]
