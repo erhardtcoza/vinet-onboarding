@@ -4,8 +4,6 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    const BUILD = "vinet-onboarding 2025-08-07 21:40 SAST";
-
     // Utils
     const getIP = () =>
       request.headers.get("CF-Connecting-IP") ||
@@ -16,127 +14,88 @@ export default {
       try { return await req.json(); } catch { return {}; }
     }
 
-    function noCacheHtml(body, title = "Vinet Onboarding") {
+    function page(content, title = "Vinet Onboarding") {
       return new Response(
-        `<!DOCTYPE html><html lang="en"><head>
-          <meta charset="UTF-8" />
-          <title>${title}</title>
-          <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <style>
-            body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
-            .card{background:#fff;max-width:520px;margin:2.5em auto;border-radius:1.25em;box-shadow:0 2px 12px #0002;padding:1.75em}
-            .logo{display:block;margin:0 auto 1em;max-width:90px}
-            h1,h2{color:#e2001a}
-            .btn{background:#e2001a;color:#fff;border:0;border-radius:.7em;padding:.7em 2em;font-size:1em;cursor:pointer;margin:.8em 0 0}
-            .field{margin:1em 0}
-            input,select{width:100%;padding:.7em;font-size:1em;border-radius:.5em;border:1px solid #ddd}
-            .err{color:#c00}
-            .success{color:#090}
-            .build{font-size:12px;color:#666;margin-top:10px}
-          </style>
-        </head><body>
-          <div class="card">
-            <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
-            ${body}
-            <div class="build">${BUILD}</div>
-          </div>
-        </body></html>`,
+        `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>${title}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui,sans-serif; background:#fafbfc; color:#232; }
+    .card { background:#fff; max-width:520px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
+    .logo { display:block; margin:0 auto 1em; max-width:90px; }
+    h1, h2 { color:#e2001a; }
+    .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
+    .field { margin:1em 0; }
+    input, select { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
+    .err { color:#c00; }
+    .success { color:#090; }
+    .progressbar { height:7px; background:#eee; border-radius:5px; margin:1.4em 0 2.2em; overflow:hidden; }
+    .progress { height:100%; background:#e2001a; transition:width .5s; }
+    .build { font-size:12px; color:#666; margin-top:10px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
+    ${content}
+    <div class="build">vinet-onboarding server-form build</div>
+  </div>
+</body>
+</html>`,
         {
           headers: {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
             pragma: "no-cache",
             expires: "0",
-            // allow inline script while we iterate
-            "content-security-policy":
-              "default-src 'self'; img-src 'self' https://static.vinet.co.za data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self';",
           },
         }
       );
     }
 
-    // Redirect /admin -> /admin2 (kill any stale cache)
+    // Redirect old admin -> new
     if (path === "/admin" && method === "GET") {
-      return new Response(null, { status: 302, headers: { Location: "/admin2", "cache-control": "no-store" } });
+      return new Response(null, { status: 302, headers: { Location: "/admin2" } });
     }
 
-    // Admin UI (no form, Enter mapped, with alerts)
+    // --- Admin (server-side form, no JS required) ---
     if (path === "/admin2" && method === "GET") {
-      const body = `
+      return page(`
         <h1>Generate Onboarding Link</h1>
-
-        <div id="adminBox">
+        <form action="/admin2/gen" method="GET" autocomplete="off">
           <div class="field">
             <label>Splynx Lead/Customer ID</label>
-            <input id="splynx_id" autocomplete="off" />
+            <input name="id" required autocomplete="off" />
           </div>
-          <button class="btn" id="genLinkBtn" type="button">Generate Link</button>
-        </div>
-
-        <div id="link"></div>
-
-        <p style="margin-top:14px">
-          Fallback (no JS): <br/>
-          <code>/admin2/gen?id=&lt;YOUR_ID&gt;</code>
-        </p>
-
-        <script>
-          alert("[admin2] page loaded: ${BUILD}");
-          const input = document.getElementById("splynx_id");
-          const btn   = document.getElementById("genLinkBtn");
-          const out   = document.getElementById("link");
-
-          input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") { e.preventDefault(); btn.click(); }
-          });
-
-          btn.addEventListener("click", async () => {
-            alert("[admin2] click");
-            const id = input.value.trim();
-            if (!id) { out.innerHTML = '<div class="err">Please enter an ID.</div>'; return; }
-            out.innerHTML = '<div style="color:#666">Generating…</div>';
-            try {
-              const resp = await fetch("/admin", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ id })
-              });
-              if (!resp.ok) {
-                out.innerHTML = '<div class="err">Error: '+ await resp.text() +'</div>';
-                return;
-              }
-              const data = await resp.json();
-              if (data && data.url) {
-                out.innerHTML = '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>';
-              } else {
-                out.innerHTML = '<div class="err">Unexpected response.</div>';
-              }
-            } catch (err) {
-              out.innerHTML = '<div class="err">Fetch failed.</div>';
-            }
-          });
-        <\\/script>
-      `;
-      return noCacheHtml(body, "Admin - Generate Link (v2)");
+          <button class="btn" type="submit">Generate Link</button>
+        </form>
+        <p style="margin-top:10px;color:#555">Tip: Press Enter to submit.</p>
+      `, "Admin - Generate Link");
     }
 
-    // GET fallback to generate link without JS: /admin2/gen?id=123
+    // --- Admin link generator (GET fallback endpoint) ---
     if (path === "/admin2/gen" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) {
-        return noCacheHtml(`<h2 class="err">Missing ?id</h2><p>Usage: /admin2/gen?id=319</p>`, "Admin - Fallback");
+        return page(`<h2 class="err">Missing ?id</h2><p>Usage: /admin2/gen?id=319</p>`, "Admin - Error");
       }
-      // generate like POST /admin
       const rand = Math.random().toString(36).slice(2, 10);
       const linkid = `${id}_${rand}`;
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
         id, started: false, created: Date.now(), progress: 0
       }), { expirationTtl: 86400 });
       const link = `/onboard/${linkid}`;
-      return noCacheHtml(`<p class="success">Onboarding link:</p><p><a href="${link}" target="_blank">${link}</a></p>`, "Admin - Link Ready");
+      return page(`
+        <p class="success">Onboarding link created:</p>
+        <p><a href="${link}" target="_blank">${link}</a></p>
+        <p><a class="btn" href="/admin2">Generate another</a></p>
+      `, "Admin - Link Ready");
     }
 
-    // POST /admin - create link (used by button)
+    // --- (Keep JSON POST if you later want to call it from JS) ---
     if (path === "/admin" && method === "POST") {
       const { id } = await parseBody(request);
       if (!id) return new Response(JSON.stringify({ error: "Missing ID" }), { status: 400 });
@@ -150,13 +109,14 @@ export default {
       });
     }
 
-    // Onboarding UI (kept as-is)
+    // --- Onboarding UI (resume support) ---
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2];
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!session)
-        return noCacheHtml(`<h2>Invalid or expired link</h2><p class="err">Please contact support to request a new onboarding link.</p>`, "Onboarding");
-      const body = `
+        return page(`<h2>Invalid or expired link</h2><p class="err">Please contact support to request a new onboarding link.</p>`, "Onboarding");
+
+      return page(`
         <div id="step"></div>
         <script>
           let state = ${JSON.stringify(session)};
@@ -236,8 +196,7 @@ export default {
           }
           render();
         <\\/script>
-      `;
-      return noCacheHtml(body, "Onboarding");
+      `, "Onboarding");
     }
 
     // OTP demo
