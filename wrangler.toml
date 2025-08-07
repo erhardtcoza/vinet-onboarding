@@ -27,10 +27,16 @@ WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en_US"
 WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
 ADMIN_IPS = "160.226.143.254"   # comma-separated; leave empty to allow all
-TERMS_R2_KEY = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"      # optional: R2 object to serve as terms
-TERMS_TEXT = ""                             # optional: plain HTML/text if not using R2
+TERMS_SERVICE_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"
+TERMS_DEBIT_URL   = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt"
 
+# If you want PDFs generated (upload blank/fillable PDFs to R2 and set keys)
+SERVICE_PDF_KEY = "pdf-templates/service-agreement-fillable.pdf"
+DEBIT_PDF_KEY   = "pdf-templates/debit-order-fillable.pdf"
 
+# Optional email via MailChannels (from domain must be verified in MC DNS)
+MAIL_FROM    = "Vinet Onboarding <no-reply@vinet.co.za>"
+MAIL_SUBJECT = "Your signed Vinet onboarding documents"
 
 [observability.logs]
 enabled = true
