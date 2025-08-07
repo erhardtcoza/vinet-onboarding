@@ -18,6 +18,19 @@ export default {
     const htmlHeaders = { "content-type": "text/html; charset=utf-8", ...noCache, ...csp };
     const jsHeaders   = { "content-type": "application/javascript; charset=utf-8", ...noCache };
 
+    const getIP = () =>
+      request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("x-forwarded-for") ||
+      request.headers.get("x-real-ip") || "";
+
+    const getUA = () => request.headers.get("user-agent") || "";
+
+    function ipAllowedAdmin(ip, env) {
+      const list = (env.ADMIN_IPS || "").split(",").map(s => s.trim()).filter(Boolean);
+      if (list.length === 0) return true; // no restriction configured
+      return list.includes(ip);
+    }
+
     function page(body, { title = "Vinet Onboarding" } = {}) {
       return new Response(
 `<!DOCTYPE html>
@@ -28,13 +41,13 @@ export default {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     body { font-family: system-ui, sans-serif; background:#fafbfc; color:#232; }
-    .card { background:#fff; max-width:560px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
+    .card { background:#fff; max-width:650px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
     .logo { display:block; margin:0 auto 1em; max-width:90px; }
     h1, h2 { color:#e2001a; }
     .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
     .btn-secondary { background:#eee; color:#222; border:0; border-radius:.7em; padding:.6em 1.2em; text-decoration:none; display:inline-block; }
     .field { margin:1em 0; }
-    input, select { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
+    input, select, textarea { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
     .note { font-size:12px; color:#666; }
     .err { color:#c00; }
     .success { color:#090; }
@@ -44,6 +57,8 @@ export default {
     .row > * { flex:1; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
+    .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
+    canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
   </style>
 </head>
 <body>
@@ -108,7 +123,7 @@ export default {
 
     // ------------ WhatsApp senders ------------
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
-      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // ensure matches
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // ensure matches your template
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: "whatsapp",
@@ -157,8 +172,9 @@ export default {
       }
     }
 
-    // ------------ ADMIN ------------
+    // ------------ ADMIN (IP allowlist) ------------
     if (path === "/admin2" && method === "GET") {
+      if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       return page(`
         <h1>Generate Onboarding Link</h1>
         <form action="/admin2/gen" method="GET" autocomplete="off" class="field">
@@ -173,6 +189,7 @@ export default {
     }
 
     if (path === "/admin2/gen" && method === "GET") {
+      if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const id = url.searchParams.get("id");
       if (!id) return new Response("Missing id", { status: 400 });
 
@@ -196,8 +213,8 @@ export default {
       `, { title: "Admin - Link Ready" });
     }
 
-    // Staff code admin page
     if (path === "/admin2/staff" && method === "GET") {
+      if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       return page(`
         <h1>Generate Staff Code</h1>
         <div class="field">
@@ -210,8 +227,8 @@ export default {
       `, { title: "Admin - Staff Code" });
     }
 
-    // Staff code API (generate)
     if (path === "/api/staff/gen" && method === "POST") {
+      if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await readJSON(request);
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -237,12 +254,12 @@ export default {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     body { font-family: system-ui, sans-serif; background:#fafbfc; color:#232; }
-    .card { background:#fff; max-width:560px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
+    .card { background:#fff; max-width:650px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
     .logo { display:block; margin:0 auto 1em; max-width:90px; }
     h1, h2 { color:#e2001a; }
     .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
     .field { margin:1em 0; }
-    input, select { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
+    input, select, textarea { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
     .note { font-size:12px; color:#666; }
     .err { color:#c00; }
     .success { color:#090; }
@@ -251,6 +268,8 @@ export default {
     .row { display:flex; gap:.75em; }
     .row > * { flex:1; }
     a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
+    .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
+    canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
   </style>
 </head>
 <body>
@@ -266,7 +285,7 @@ export default {
       );
     }
 
-    // ------------ STATIC: onboard.js ------------
+    // ------------ STATIC: onboard.js (includes agreement + signature) ------------
     if (path === "/static/onboard.js" && method === "GET") {
       const js = `
 (function(){
@@ -300,9 +319,36 @@ export default {
 
   let state = { progress: step };
 
+  // Simple signature pad
+  function signaturePad(canvas){
+    const ctx = canvas.getContext('2d');
+    let drawing = false, last = null;
+    const scale = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.floor(rect.width * scale);
+    canvas.height = Math.floor(rect.height * scale);
+    ctx.scale(scale, scale);
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#222';
+
+    function pos(e){
+      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+    function start(e){ drawing = true; last = pos(e); e.preventDefault(); }
+    function move(e){ if (!drawing) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; e.preventDefault(); }
+    function end(){ drawing = false; last = null; }
+    canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); window.addEventListener('mouseup', end);
+    canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); window.addEventListener('touchend', end);
+    return {
+      clear(){ ctx.clearRect(0,0,canvas.width,canvas.height); },
+      dataURL(){ return canvas.toDataURL('image/png'); }
+    };
+  }
+
   function render(){
     setProgress();
 
+    // STEP 0
     if (step === 0) {
       stepEl.innerHTML = [
         '<h2>Verify your identity</h2>',
@@ -327,7 +373,7 @@ export default {
         '</form>',
         '<a class="btnlink" id="resend">Resend code</a>'
       ].join('');
-      sendOtp(); // auto-send on first load
+      sendOtp();
       const resend = document.getElementById('resend');
       if (resend) resend.onclick = (e)=>{ e.preventDefault(); sendOtp(); };
       const form = document.getElementById('otpForm');
@@ -370,6 +416,7 @@ export default {
       return;
     }
 
+    // STEP 1
     if (step === 1) {
       stepEl.innerHTML = [
         '<h2>Contact Preferences</h2>',
@@ -404,6 +451,7 @@ export default {
       return;
     }
 
+    // STEP 2
     if (step === 2) {
       stepEl.innerHTML = [
         '<h2>Confirm Your Details</h2>',
@@ -415,6 +463,7 @@ export default {
       return;
     }
 
+    // STEP 3
     if (step === 3) {
       stepEl.innerHTML = [
         '<h2>Upload ID/POA</h2>',
@@ -426,17 +475,60 @@ export default {
       return;
     }
 
+    // STEP 4 — AGREEMENT + SIGNATURE
     if (step === 4) {
       stepEl.innerHTML = [
         '<h2>Service Agreement</h2>',
-        '<p class="note">Terms and signature step coming next.</p>',
-        '<button class="btn" id="finish">Finish</button>'
+        '<div id="terms" class="termsbox">Loading terms…</div>',
+        '<div class="field"><label><input type="checkbox" id="agreeChk"/> I have read and accept the terms</label></div>',
+        '<div class="field">',
+        '  <label>Draw your signature</label>',
+        '  <canvas id="sig" class="signature"></canvas>',
+        '  <div class="row">',
+        '    <a class="btnlink" id="clearSig">Clear</a>',
+        '    <span class="note" id="sigMsg"></span>',
+        '  </div>',
+        '</div>',
+        '<div class="row">',
+        '  <a class="btnlink" id="back3">Back</a>',
+        '  <button class="btn" id="signBtn">Agree & Sign</button>',
+        '</div>'
       ].join('');
-      const f = document.getElementById('finish');
-      if (f) f.onclick = ()=>{ step=5; state.progress=step; save(state); render(); };
+
+      // load terms
+      (async () => {
+        try {
+          const r = await fetch('/api/terms');
+          const t = await r.text();
+          document.getElementById('terms').innerHTML = t || 'Terms not available.';
+        } catch { document.getElementById('terms').textContent = 'Failed to load terms.'; }
+      })();
+
+      const canvas = document.getElementById('sig');
+      const pad = signaturePad(canvas);
+      document.getElementById('clearSig').onclick = (e)=>{ e.preventDefault(); pad.clear(); };
+
+      document.getElementById('back3').onclick = (e)=>{ e.preventDefault(); step=3; state.progress=step; save(state); render(); };
+
+      document.getElementById('signBtn').onclick = async (e)=>{
+        e.preventDefault();
+        const msg = document.getElementById('sigMsg');
+        const agreed = document.getElementById('agreeChk').checked;
+        if (!agreed) { msg.textContent = 'Please tick the checkbox to accept the terms.'; return; }
+        msg.textContent = 'Uploading signature…';
+        try {
+          const dataUrl = pad.dataURL();
+          const r = await fetch('/api/sign', { method:'POST', body: JSON.stringify({ linkid, dataUrl }) });
+          const d = await r.json().catch(()=>({ok:false}));
+          if (d.ok) { step=5; state.progress=step; save(state); render(); }
+          else { msg.textContent = d.error || 'Failed to save signature.'; }
+        } catch { msg.textContent = 'Network error.'; }
+      };
+
       return;
     }
 
+    // DONE
     stepEl.innerHTML = [
       '<h2>All set!</h2>',
       '<p>Thanks — we\\u2019ve recorded your onboarding.</p>'
@@ -471,6 +563,25 @@ export default {
   };
 })();`;
       return new Response(js, { headers: jsHeaders });
+    }
+
+    // ------------ API: TERMS ------------
+    if (path === "/api/terms" && method === "GET") {
+      // Priority: R2 object -> env text -> fallback
+      try {
+        if (env.TERMS_R2_KEY) {
+          const obj = await env.R2_UPLOADS.get(env.TERMS_R2_KEY);
+          if (obj) {
+            const txt = await obj.text();
+            return new Response(txt, { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
+          }
+        }
+      } catch (e) {
+        console.error("R2 terms fetch error", e.message);
+      }
+      const t = (env.TERMS_TEXT || "").trim();
+      if (t) return new Response(t, { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
+      return new Response("<p>By proceeding you agree to Vinet's service terms, acceptable use, and privacy policy.</p>", { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
     }
 
     // ------------ API: OTP send ------------
@@ -532,12 +643,48 @@ export default {
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
       const body = await readJSON(request);
-      const ip = request.headers.get("CF-Connecting-IP") || "";
-      const ua = request.headers.get("user-agent") || "";
+      const ip = getIP();
+      const ua = getUA();
       const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
       const next = { ...existing, ...body, last_ip: ip, last_ua: ua, last_time: Date.now() };
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
       return json({ ok:true });
+    }
+
+    // ------------ API: sign & store signature (R2) ------------
+    if (path === "/api/sign" && method === "POST") {
+      const { linkid, dataUrl } = await readJSON(request);
+      if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
+        return json({ ok:false, error:"Missing or invalid signature" }, 400);
+      }
+      const png = dataUrl.split(",")[1];
+      const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
+      const now = new Date().toISOString();
+      const ip = getIP();
+      const ua = getUA();
+
+      // Store PNG in R2
+      const sigKey = `agreements/${linkid}/signature.png`;
+      await env.R2_UPLOADS.put(sigKey, bytes.buffer, {
+        httpMetadata: { contentType: "image/png" }
+      });
+
+      // Store receipt in KV
+      const receipt = {
+        linkid,
+        signed_at: now,
+        ip, ua,
+        note: "agreement accepted",
+      };
+      await env.ONBOARD_KV.put(`agreement/${linkid}`, JSON.stringify(receipt), { expirationTtl: 60*60*24*30 });
+
+      // Mark progress done
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (sess) {
+        await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, progress: 5, agreement_signed: true, agreement_sig_key: sigKey }), { expirationTtl: 86400 });
+      }
+
+      return json({ ok:true, sigKey });
     }
 
     // ------------ 404 ------------
