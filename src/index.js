@@ -672,28 +672,33 @@ export default {
       return new Response("<p>By proceeding you agree to Vinet's service terms, acceptable use, and privacy policy.</p>", { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
     }
 
-    // ------------ API: OTP send ------------
-    if (path === "/api/otp/send" && method === "POST") {
-      const { linkid } = await readJSON(request);
-      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const splynxId = (linkid || "").split("_")[0];
+// ------------ API: OTP send ------------
+if (path === "/api/otp/send" && method === "POST") {
+  const { linkid } = await readJSON(request);
+  if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+  const splynxId = (linkid || "").split("_")[0];
 
-      let msisdn = null;
-      try { msisdn = await fetchCustomerMsisdn(splynxId); }
-      catch (e) { console.error("Splynx lookup failed", e.message); return json({ ok:false, error:"Splynx lookup failed" }, 502); }
-      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
+  let msisdn = null;
+  try { msisdn = await fetchCustomerMsisdn(splynxId); }
+  catch (e) { console.error("Splynx lookup failed", e.message); return json({ ok:false, error:"Splynx lookup failed" }, 502); }
+  if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
 
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
-      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
+  await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
 
-      try { await sendWhatsAppTemplate(msisdn, code, "en"); return json({ ok:true }); }
-      catch (e) {
-        try { await sendWhatsAppTextIfSessionOpen(msisdn, \`Your Vinet verification code is: \${code}\`); return json({ ok:true, note:"sent-as-text" }); }
-        catch (e2) { return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); }
-      }
+  try { 
+    await sendWhatsAppTemplate(msisdn, code, "en"); 
+    return json({ ok:true }); 
+  } catch (e) {
+    try { 
+      await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
+      return json({ ok:true, note:"sent-as-text" }); 
+    } catch (e2) { 
+      return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); 
     }
-
+  }
+}
     // ------------ API: OTP verify (WA + staff) ------------
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await readJSON(request);
