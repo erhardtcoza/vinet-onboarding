@@ -107,10 +107,11 @@ export default {
 
     // ------------ WhatsApp senders ------------
 async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
-  const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // your template
-  const buttonUrl = env.WHATSAPP_BUTTON_URL || env.API_URL || "https://vinet.co.za";
-
+  const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // your template name
   const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
+
+  // IMPORTANT: The URL button in the template must have a static base URL.
+  // We pass ONLY the short suffix (the OTP code), which fits the 15-char limit.
   const payload = {
     messaging_product: "whatsapp",
     to: toMsisdn,
@@ -119,17 +120,27 @@ async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
       name: templateName,
       language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
       components: [
-        // Body param {{1}} = OTP code
         { type: "body", parameters: [{ type: "text", text: code }] },
-
-        // Button(0) param {{1}} = URL suffix for your button
-        // Only include this if your template has a URL button with a variable.
         { type: "button", sub_type: "url", index: "0",
-          parameters: [{ type: "text", text: buttonUrl }] }
+          parameters: [{ type: "text", text: code }] } // <= 6 chars
       ]
     }
   };
 
+  const r = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(()=> "");
+    console.error("WA template send failed", r.status, t);
+    throw new Error(`WA template ${r.status}`);
+  }
+}
   const r = await fetch(endpoint, {
     method: "POST",
     headers: {
