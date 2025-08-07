@@ -38,7 +38,6 @@ export default {
             input, select { width: 100%; padding: 0.7em; font-size: 1em; border-radius: 0.5em; border: 1px solid #ddd; }
             .progressbar { height: 7px; background: #eee; border-radius: 5px; margin: 1.4em 0 2.2em; overflow: hidden; }
             .progress { height: 100%; background: #e2001a; transition: width 0.5s; }
-            .lang-opt { margin-right: 1em; }
             .err { color: #c00; font-size: 0.98em; }
             .success { color: #090; }
             .hidden { display: none !important; }
@@ -59,21 +58,31 @@ export default {
     if (path === "/admin" && method === "GET") {
       return html(`
         <h1>Generate Onboarding Link</h1>
-        <form id="adminForm" autocomplete="off">
+
+        <div id="adminBox">
           <div class="field">
             <label>Splynx Lead/Customer ID</label>
-            <input name="splynx_id" required autocomplete="off" />
+            <input id="splynx_id" required autocomplete="off" />
           </div>
           <button class="btn" id="genLinkBtn" type="button">Generate Link</button>
-        </form>
+        </div>
+
         <div id="link"></div>
+
         <script>
-          document.getElementById("genLinkBtn").onclick = async function() {
-            const id = document.querySelector("[name=splynx_id]").value;
-            if (!id) {
-              document.getElementById("link").innerHTML = '<div class="err">Please enter an ID.</div>';
-              return;
-            }
+          const input = document.getElementById("splynx_id");
+          const btn   = document.getElementById("genLinkBtn");
+          const out   = document.getElementById("link");
+
+          // Hitting Enter triggers our JS, not a page submit
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); btn.click(); }
+          });
+
+          btn.addEventListener("click", async () => {
+            const id = input.value.trim();
+            if (!id) { out.innerHTML = '<div class="err">Please enter an ID.</div>'; return; }
+            out.innerHTML = '<div style="color:#666">Generating…</div>';
             try {
               const resp = await fetch("/admin", { 
                 method: "POST",
@@ -81,19 +90,17 @@ export default {
                 body: JSON.stringify({ id }) 
               });
               if (!resp.ok) {
-                document.getElementById("link").innerHTML = '<div class="err">Error: ' + (await resp.text()) + '</div>';
+                out.innerHTML = '<div class="err">Error: ' + (await resp.text()) + '</div>';
                 return;
               }
               const data = await resp.json();
-              if (data.url) {
-                document.getElementById("link").innerHTML = '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>';
-              } else {
-                document.getElementById("link").innerHTML = '<div class="err">Error: Unexpected server response.</div>';
-              }
+              out.innerHTML = data.url
+                ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
+                : '<div class="err">Unexpected response.</div>';
             } catch (err) {
-              document.getElementById("link").innerHTML = '<div class="err">Fetch failed: ' + err + '</div>';
+              out.innerHTML = '<div class="err">Fetch failed.</div>';
             }
-          }
+          });
         <\\/script>
       `, { title: "Admin - Generate Link" });
     }
