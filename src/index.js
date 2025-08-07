@@ -4,15 +4,14 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // ========== Small utils ==========
-    async function j(req) { try { return await req.json(); } catch { return {}; } }
+    // ------------ utils ------------
+    async function readJSON(req) { try { return await req.json(); } catch { return {}; } }
     const noCache = {
       "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
       "pragma": "no-cache",
       "expires": "0",
     };
     const csp = {
-      // No inline scripts; only scripts from 'self'
       "content-security-policy":
         "default-src 'self'; img-src 'self' https://static.vinet.co.za data:; style-src 'self' 'unsafe-inline'; script-src 'self' https://static.cloudflareinsights.com; connect-src 'self'; frame-ancestors 'self'; base-uri 'self';"
     };
@@ -56,20 +55,25 @@ export default {
       );
     }
 
-    // ========== Splynx helpers ==========
+    // ------------ Splynx helpers ------------
     async function splynxGET(endpoint) {
       const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
         headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
       });
-      if (!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`);
+      if (!r.ok) {
+        const t = await r.text().catch(()=> "");
+        console.error("Splynx error", endpoint, r.status, t);
+        throw new Error(`Splynx GET ${endpoint} ${r.status}`);
+      }
       return r.json();
     }
+
     function pickPhone(obj) {
       if (!obj) return null;
       const tryField = (v) => {
         if (!v) return null;
         const s = String(v).trim();
-        // Your data is already "2771..." style
+        // We expect "27..." numbers per your system
         if (/^27\d{8,13}$/.test(s)) return s;
         return null;
       };
@@ -82,6 +86,7 @@ export default {
       }
       return null;
     }
+
     async function fetchCustomerMsisdn(id) {
       const eps = [
         `/admin/customers/customer/${id}`,
@@ -100,10 +105,41 @@ export default {
       return null;
     }
 
-    // ========== WhatsApp ==========
-    async function sendWhatsApp(toMsisdn, text) {
+    // ------------ WhatsApp senders ------------
+    async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinet_otp";
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
-      const payload = { messaging_product: "whatsapp", to: toMsisdn, type: "text", text: { body: text } };
+      const payload = {
+        messaging_product: "whatsapp",
+        to: toMsisdn,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: lang },
+          components: [
+            { type: "body", parameters: [{ type: "text", text: code }] }
+          ]
+        }
+      };
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(()=> "");
+        console.error("WA template send failed", r.status, t);
+        throw new Error(`WA template ${r.status}`);
+      }
+    }
+
+    async function sendWhatsAppTextIfSessionOpen(toMsisdn, bodyText) {
+      // This only succeeds if a session is open (user messaged you in last 24h)
+      const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
+      const payload = { messaging_product: "whatsapp", to: toMsisdn, type: "text", text: { body: bodyText } };
       const r = await fetch(endpoint, {
         method: "POST",
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
@@ -111,12 +147,12 @@ export default {
       });
       if (!r.ok) {
         const t = await r.text().catch(()=> "");
-        console.error("WA send failed", r.status, t);
-        throw new Error(`WA ${r.status}`);
+        console.error("WA text send failed", r.status, t);
+        throw new Error(`WA text ${r.status}`);
       }
     }
 
-    // ========== ADMIN ==========
+    // ------------ ADMIN ------------
     if (path === "/admin2" && method === "GET") {
       return page(`
         <h1>Generate Onboarding Link</h1>
@@ -127,7 +163,7 @@ export default {
             <button class="btn" type="submit">Generate Link</button>
           </div>
         </form>
-        <div class="note">This works without JavaScript.</div>
+        <div class="note">This returns JSON with the link (we can switch to an HTML result if you prefer).</div>
       `, { title: "Admin - Generate Link" });
     }
 
@@ -143,12 +179,13 @@ export default {
       return new Response(JSON.stringify({ url: full }), { headers: { "content-type": "application/json", ...noCache } });
     }
 
-    // ========== ONBOARDING (HTML only; JS loaded from /static/onboard.js) ==========
+    // ------------ ONBOARDING HTML (loads JS from /static/onboard.js) ------------
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!session) return page(`<h2 class="err">Invalid or expired link.</h2>`, { title: "Onboarding" });
 
+      const pct = (session.progress || 0) * 20 + 20;
       return new Response(
 `<!DOCTYPE html>
 <html lang="en">
@@ -177,7 +214,7 @@ export default {
 <body>
   <div class="card" id="root" data-linkid="${linkid}" data-progress="${session.progress||0}">
     <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
-    <div class="progressbar"><div id="prog" class="progress" style="width:${(session.progress||0)*20 + 20}%"></div></div>
+    <div class="progressbar"><div id="prog" class="progress" style="width:${pct}%"></div></div>
     <div id="step"></div>
   </div>
   <script src="/static/onboard.js"></script>
@@ -187,9 +224,8 @@ export default {
       );
     }
 
-    // ========== STATIC: onboard.js ==========
+    // ------------ STATIC: onboard.js ------------
     if (path === "/static/onboard.js" && method === "GET") {
-      // Pure external script – no inline code needed in HTML
       const js = `
 (function(){
   const root = document.getElementById('root');
@@ -214,7 +250,7 @@ export default {
     try {
       const r = await fetch('/api/otp/send', { method:'POST', body: JSON.stringify({ linkid }) });
       const data = await r.json().catch(()=>({ok:false}));
-      if (msg) msg.textContent = data.ok ? 'Code sent. Check your WhatsApp.' : 'Could not send code. Please contact support.';
+      if (msg) msg.textContent = data.ok ? 'Code sent. Check your WhatsApp.' : ('Failed to send: ' + (data.error || 'unknown'));
     } catch {
       if (msg) msg.textContent = 'Network error sending code.';
     }
@@ -332,27 +368,49 @@ export default {
       return new Response(js, { headers: jsHeaders });
     }
 
-    // ========== API: OTP send ==========
+    // ------------ API: OTP send ------------
     if (path === "/api/otp/send" && method === "POST") {
-      const { linkid } = await j(request);
+      const { linkid } = await readJSON(request);
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+
       const splynxId = (linkid || "").split("_")[0];
+
+      // 1) get msisdn from Splynx
+      let msisdn = null;
       try {
-        const msisdn = await fetchCustomerMsisdn(splynxId);
-        if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
-        const code = String(Math.floor(100000 + Math.random() * 900000));
-        await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
-        await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
-        await sendWhatsApp(msisdn, `Your Vinet verification code is: ${code}`);
+        msisdn = await fetchCustomerMsisdn(splynxId);
+      } catch (e) {
+        console.error("Splynx lookup failed", e.message);
+        return json({ ok:false, error:"Splynx lookup failed" }, 502);
+      }
+      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
+
+      // 2) make a code and store it
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+
+      // 3) send via template first; if that fails, try plain text (session)
+      try {
+        await sendWhatsAppTemplate(msisdn, code, "en");
+        console.log("OTP sent via template", msisdn);
         return json({ ok:true });
       } catch (e) {
-        return json({ ok:false, error:"WhatsApp or Splynx error" }, 502);
+        console.warn("Template send failed, trying text...", e.message);
+        try {
+          await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
+          console.log("OTP sent via text (session)", msisdn);
+          return json({ ok:true, note:"sent-as-text" });
+        } catch (e2) {
+          console.error("Both sends failed", e2.message);
+          return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502);
+        }
       }
     }
 
-    // ========== API: OTP verify ==========
+    // ------------ API: OTP verify ------------
     if (path === "/api/otp/verify" && method === "POST") {
-      const { linkid, otp } = await j(request);
+      const { linkid, otp } = await readJSON(request);
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
       const expected = await env.ONBOARD_KV.get(`otp/${linkid}`);
       const ok = !!expected && expected === otp;
@@ -363,10 +421,10 @@ export default {
       return json({ ok });
     }
 
-    // ========== API: save progress ==========
+    // ------------ API: save progress ------------
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
-      const body = await j(request);
+      const body = await readJSON(request);
       const ip = request.headers.get("CF-Connecting-IP") || "";
       const ua = request.headers.get("user-agent") || "";
       const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
@@ -375,10 +433,9 @@ export default {
       return json({ ok:true });
     }
 
-    // ========== 404 ==========
+    // ------------ 404 ------------
     return new Response("Not found", { status: 404 });
 
-    // helpers
     function json(obj, status=200) {
       return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...noCache } });
     }
