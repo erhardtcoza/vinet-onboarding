@@ -54,15 +54,70 @@ export default {
       );
     }
 
-    // E.164-ish normalizer (defaults ZA if leading 0)
-    function normalizeMsisdn(input) {
-      if (!input) return null;
-      let s = String(input).replace(/[^\d+]/g, "");
-      if (s.startsWith("+")) s = s.slice(1);
-      if (s.startsWith("0") && s.length >= 10) s = "27" + s.slice(1); // ZA default
-      // basic sanity
-      if (!/^\d{10,15}$/.test(s)) return null;
-      return s;
+    // Extract Splynx ID from linkid like "319_abcd1234"
+    function parseSplynxIdFromLink(linkid) {
+      return String(linkid || "").split("_")[0];
+    }
+
+    // Basic phone pick from Splynx payload (expects "277..." format per your note)
+    function pickSplynxMsisdn(obj) {
+      if (!obj || typeof obj !== "object") return null;
+      const candidates = [
+        obj.phone_mobile,
+        obj.mobile,
+        obj.phone,
+        obj.whatsapp,
+        obj.msisdn,
+      ].filter(Boolean);
+      for (const v of candidates) {
+        const s = String(v).trim();
+        if (/^27\d{9,13}$/.test(s)) return s; // 27 + 9..13 digits
+      }
+      // Look into nested contact arrays if present
+      for (const key of Object.keys(obj)) {
+        const val = obj[key];
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            const m = pickSplynxMsisdn(item);
+            if (m) return m;
+          }
+        } else if (val && typeof val === "object") {
+          const m = pickSplynxMsisdn(val);
+          if (m) return m;
+        }
+      }
+      return null;
+    }
+
+    async function splynxGET(env, endpoint) {
+      const resp = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+        headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+      });
+      if (!resp.ok) {
+        const t = await resp.text().catch(()=> "");
+        throw new Error(`Splynx GET ${endpoint} ${resp.status} ${t}`);
+      }
+      return resp.json();
+    }
+
+    // Try common customer/lead endpoints to find a number (kept simple, no assumptions)
+    async function fetchSplynxMsisdn(env, id) {
+      const endpoints = [
+        `/admin/customers/${id}`,
+        `/admin/customers/${id}/contacts`,
+        `/crm/leads/${id}`,
+        `/crm/leads/${id}/contacts`,
+      ];
+      for (const ep of endpoints) {
+        try {
+          const data = await splynxGET(env, ep);
+          const msisdn = pickSplynxMsisdn(data);
+          if (msisdn) return msisdn;
+        } catch (e) {
+          // continue trying others
+        }
+      }
+      return null;
     }
 
     async function sendWhatsApp(env, toMsisdn, message) {
@@ -82,7 +137,7 @@ export default {
         body: JSON.stringify(payload),
       });
       if (!resp.ok) {
-        const txt = await resp.text();
+        const txt = await resp.text().catch(()=> "");
         console.error("WhatsApp send error", resp.status, txt);
         throw new Error(`WhatsApp API ${resp.status}`);
       }
@@ -104,7 +159,7 @@ export default {
           </div>
           <button class="btn" type="submit">Generate Link</button>
         </form>
-        <p class="note">You can also open: <code>/admin2/gen?id=319</code></p>
+        <p class="note">Or open: <code>/admin2/gen?id=319</code></p>
       `, "Admin - Generate Link");
     }
 
@@ -126,7 +181,7 @@ export default {
       `, "Admin - Link Ready");
     }
 
-    // JSON POST generator still available (unused by admin2 page now)
+    // JSON POST still available if you later need it
     if (path === "/admin" && method === "POST") {
       const { id } = await parseJson(request);
       if (!id) return new Response(JSON.stringify({ error: "Missing ID" }), { status: 400 });
@@ -165,47 +220,40 @@ export default {
           }
 
           function getStep() {
-            // Step 0: WhatsApp OTP (collect phone, send, verify)
+            // Step 0: WhatsApp OTP sent to number from Splynx (no input)
             if (step === 0) {
               return \`
-                <form id="waForm" autocomplete="off">
+                <p>We sent a 6-digit code to your WhatsApp number on file.</p>
+                <form id="otpForm" autocomplete="off">
                   <div class="field">
-                    <label>Mobile number for WhatsApp OTP</label>
-                    <input name="msisdn" placeholder="+27xxxxxxxxx or 0xxxxxxxxx" required />
-                    <p class="note">We will send a 6-digit code to your WhatsApp.</p>
+                    <label>Enter OTP</label>
+                    <input name="otp" maxlength="6" pattern="\\\\d{6}" required />
                   </div>
-                  <button class="btn">Send code</button>
-                  <div id="waMsg"></div>
-                </form>
-                <form id="otpForm" class="field" autocomplete="off" style="margin-top:10px">
-                  <label>Enter OTP</label>
-                  <input name="otp" maxlength="6" pattern="\\\\d{6}" />
                   <button class="btn" type="submit">Verify</button>
-                  <div id="otpMsg"></div>
+                  <div id="otpMsg" class="note"></div>
                 </form>
                 <script>
-                  const waForm = document.getElementById('waForm');
-                  const otpForm = document.getElementById('otpForm');
-                  const waMsg = document.getElementById('waMsg');
-                  const otpMsg = document.getElementById('otpMsg');
-
-                  waForm.onsubmit = async (e) => {
-                    e.preventDefault();
-                    waMsg.textContent = 'Sending code...';
-                    const msisdn = waForm.msisdn.value.trim();
-                    const res = await fetch('/api/otp/send', { method:'POST', body: JSON.stringify({ linkid: '${linkid}', msisdn }) });
+                  // Trigger send immediately on render
+                  (async () => {
+                    const res = await fetch('/api/otp/send', { method:'POST', body: JSON.stringify({ linkid: '${linkid}' }) });
                     const data = await res.json().catch(()=>({ok:false}));
-                    waMsg.textContent = data.ok ? 'Code sent via WhatsApp.' : ('Failed to send code' + (data.error ? ': '+data.error : ''));
-                  };
+                    const msg = document.getElementById('otpMsg');
+                    if (data.ok) {
+                      msg.textContent = 'Code sent. Check your WhatsApp.';
+                    } else {
+                      msg.textContent = 'Could not send code. Please contact support.';
+                    }
+                  })();
 
+                  const otpForm = document.getElementById('otpForm');
                   otpForm.onsubmit = async (e) => {
                     e.preventDefault();
                     const otp = otpForm.otp.value.trim();
-                    if (!/^[0-9]{6}$/.test(otp)) { otpMsg.textContent = 'Enter a valid 6-digit code.'; return; }
                     const res = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid: '${linkid}', otp }) });
                     const data = await res.json().catch(()=>({ok:false}));
+                    const msg = document.getElementById('otpMsg');
                     if (data.ok) { step++; state.progress = step; update(); render(); }
-                    else { otpMsg.textContent = 'Invalid code.'; }
+                    else { msg.textContent = 'Invalid code. Try again.'; }
                   };
                 <\\/script>
               \`;
@@ -254,25 +302,27 @@ export default {
       `, "Onboarding");
     }
 
-    // ---------- OTP API (WhatsApp) ----------
+    // ---------- OTP API (WhatsApp via Splynx number) ----------
     if (path === "/api/otp/send" && method === "POST") {
-      const { linkid, msisdn } = await parseJson(request);
-      if (!linkid || !msisdn) {
-        return new Response(JSON.stringify({ ok:false, error:"Missing linkid or msisdn" }), { headers:{ "content-type":"application/json" }, status:400 });
+      const { linkid } = await parseJson(request);
+      if (!linkid) {
+        return new Response(JSON.stringify({ ok:false, error:"Missing linkid" }), { headers:{ "content-type":"application/json" }, status:400 });
       }
-      const to = normalizeMsisdn(msisdn);
-      if (!to) {
-        return new Response(JSON.stringify({ ok:false, error:"Invalid phone format" }), { headers:{ "content-type":"application/json" }, status:400 });
+      const splynxId = parseSplynxIdFromLink(linkid);
+      // get number from Splynx
+      const msisdn = await fetchSplynxMsisdn(env, splynxId);
+      if (!msisdn) {
+        return new Response(JSON.stringify({ ok:false, error:"No WhatsApp number on file" }), { headers:{ "content-type":"application/json" }, status:404 });
       }
 
       // generate & store code
       const code = String(Math.floor(100000 + Math.random()*900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 }); // 10 min
-      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, to, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
 
       // send via WhatsApp
       try {
-        await sendWhatsApp(env, to, `Your Vinet verification code is: ${code}`);
+        await sendWhatsApp(env, msisdn, `Your Vinet verification code is: ${code}`);
         return new Response(JSON.stringify({ ok:true }), { headers: { "content-type":"application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ ok:false, error:"WhatsApp send failed" }), { headers: { "content-type":"application/json" }, status:502 });
@@ -284,7 +334,6 @@ export default {
       const expected = await env.ONBOARD_KV.get(`otp/${linkid}`);
       const ok = !!expected && expected === otp;
       if (ok) {
-        // extend session TTL on success
         const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
         if (sess) {
           await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
