@@ -24,7 +24,8 @@ WHATSAPP_TOKEN = "EAALpZCXUFpXsBO9tCyAuJUdO9MObRocFxZAZCJlxheOZBNp8CTvDn1Was9K48
 VERIFY_TOKEN = "vinet-whatsapp"
 BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
-WHATSAPP_TEMPLATE_LANG = "en_US"   # or your exact language code in Meta (e.g., en_US)
+WHATSAPP_TEMPLATE_LANG = "en"
+WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
 
 
 [observability.logs]
