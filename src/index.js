@@ -68,7 +68,7 @@ export default {
         </form>
         <div id="link"></div>
         <script>
-          document.getElementById("adminForm").onsubmit = async e => {
+          document.getElementById("adminForm").onsubmit = async function(e) {
             e.preventDefault();
             const id = document.querySelector("[name=splynx_id]").value;
             const resp = await fetch("/admin", { 
@@ -80,6 +80,7 @@ export default {
             document.getElementById("link").innerHTML = data.url 
               ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
               : '<div class="err">Error generating link.</div>';
+            return false;
           };
         <\\/script>
       `, { title: "Admin - Generate Link" });
