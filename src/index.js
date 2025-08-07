@@ -59,18 +59,21 @@ export default {
     if (path === "/admin" && method === "GET") {
       return html(`
         <h1>Generate Onboarding Link</h1>
-        <form id="adminForm" autocomplete="off">
+        <form id="adminForm" autocomplete="off" onsubmit="return false">
           <div class="field">
             <label>Splynx Lead/Customer ID</label>
             <input name="splynx_id" required autocomplete="off" />
           </div>
-          <button class="btn" type="submit">Generate Link</button>
+          <button class="btn" id="genLinkBtn" type="button">Generate Link</button>
         </form>
         <div id="link"></div>
         <script>
-          document.getElementById("adminForm").onsubmit = async function(e) {
-            e.preventDefault();
+          document.getElementById("genLinkBtn").onclick = async function() {
             const id = document.querySelector("[name=splynx_id]").value;
+            if (!id) {
+              document.getElementById("link").innerHTML = '<div class="err">Please enter an ID.</div>';
+              return;
+            }
             const resp = await fetch("/admin", { 
               method: "POST",
               headers: { "content-type": "application/json" },
@@ -80,7 +83,6 @@ export default {
             document.getElementById("link").innerHTML = data.url 
               ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
               : '<div class="err">Error generating link.</div>';
-            return false;
           };
         <\\/script>
       `, { title: "Admin - Generate Link" });
@@ -179,7 +181,7 @@ export default {
                 <\\/script>
               \`;
             }
-            // Steps 2+: review details, product selection, uploads, agreement, finish
+            // Steps 2+: review details, uploads, agreement, finish (no products)
             return '<p>More onboarding steps here (WIP)...</p>';
           }
 
@@ -197,11 +199,10 @@ export default {
     // --- /api/otp/send [POST] ---
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await parseBody(request);
-      // TODO: Fetch contact from Splynx by lead/customer ID, send OTP (store to KV)
-      // Here we just fake-send a code for demo purposes:
+      // TODO: Integrate WhatsApp OTP here (Cloud API)
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 }); // valid 10min
-      // TODO: Send code to user's email/phone here (integrate with Splynx contact/email/SMS)
+      // TODO: Send code to user's WhatsApp number here
       console.log(`[DEMO] OTP for ${linkid}: ${code}`);
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
     }
