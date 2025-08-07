@@ -108,7 +108,7 @@ export default {
 
     // ------------ WhatsApp senders ------------
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
-      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // ensure this matches in Meta
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // ensure matches
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: "whatsapp",
@@ -120,7 +120,7 @@ export default {
           components: [
             // Body {{1}} = OTP
             { type: "body", parameters: [{ type: "text", text: code }] },
-            // URL button {{1}} = short param (OTP). Your template base URL should be like:
+            // URL button {{1}} = short param (OTP). Template base URL should be like:
             // https://onboard.vinet.co.za/verify?code=
             { type: "button", sub_type: "url", index: "0",
               parameters: [{ type: "text", text: code }] }
@@ -168,7 +168,7 @@ export default {
             <button class="btn" type="submit">Generate Link</button>
           </div>
         </form>
-        <div class="note">Works without JavaScript.</div>
+        <div class="note">Works without JavaScript. Staff fallback: <a class="btnlink" href="/admin2/staff">Generate staff code</a></div>
       `, { title: "Admin - Generate Link" });
     }
 
@@ -194,6 +194,31 @@ export default {
           <a class="btn-secondary" href="/admin2">Generate another</a>
         </p>
       `, { title: "Admin - Link Ready" });
+    }
+
+    // Staff code admin page
+    if (path === "/admin2/staff" && method === "GET") {
+      return page(`
+        <h1>Generate Staff Code</h1>
+        <div class="field">
+          <label>Onboarding link ID (e.g. 319_ab12cd34)</label>
+          <input id="linkid" placeholder="paste link id here" />
+        </div>
+        <button class="btn" id="gen">Generate Staff Code</button>
+        <div id="out" class="field"></div>
+        <script src="/static/staff.js"></script>
+      `, { title: "Admin - Staff Code" });
+    }
+
+    // Staff code API (generate)
+    if (path === "/api/staff/gen" && method === "POST") {
+      const { linkid } = await readJSON(request);
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!session) return json({ ok:false, error:"Unknown linkid" }, 404);
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await env.ONBOARD_KV.put(`staffotp/${linkid}`, code, { expirationTtl: 900 }); // 15 minutes
+      return json({ ok:true, linkid, code });
     }
 
     // ------------ ONBOARDING HTML (loads JS from /static/onboard.js) ------------
@@ -280,8 +305,19 @@ export default {
 
     if (step === 0) {
       stepEl.innerHTML = [
-        '<h2>Verify your number</h2>',
-        '<p class="note">We\\u2019re using the WhatsApp number on your account.</p>',
+        '<h2>Verify your identity</h2>',
+        '<div class="note">Choose a method:</div>',
+        '<div class="row">',
+        '  <a class="btnlink" id="method-wa">WhatsApp OTP</a>',
+        '  <a class="btnlink" id="method-staff">I have a code from Vinet</a>',
+        '</div>',
+        '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+        '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+      ].join('');
+
+      // WhatsApp UI
+      const wa = document.getElementById('waBox');
+      wa.innerHTML = [
         '<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div>',
         '<form id="otpForm" autocomplete="off" class="field">',
         '  <div class="row">',
@@ -291,19 +327,46 @@ export default {
         '</form>',
         '<a class="btnlink" id="resend">Resend code</a>'
       ].join('');
-      sendOtp();
+      sendOtp(); // auto-send on first load
       const resend = document.getElementById('resend');
       if (resend) resend.onclick = (e)=>{ e.preventDefault(); sendOtp(); };
       const form = document.getElementById('otpForm');
       if (form) form.onsubmit = async (e)=>{
         e.preventDefault();
         const otp = form.otp.value.trim();
-        const r = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid, otp }) });
-        const data = await r.json().catch(()=>({ok:false}));
+        const r = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid, otp, kind:'wa' }) });
+        const d = await r.json().catch(()=>({ok:false}));
         const msg = document.getElementById('otpmsg');
-        if (data.ok) { step=1; state.progress=step; save(state); render(); }
+        if (d.ok) { step=1; state.progress=step; save(state); render(); }
         else { if (msg) msg.textContent = 'Invalid code. Try again.'; }
       };
+
+      // Staff UI
+      const staff = document.getElementById('staffBox');
+      staff.innerHTML = [
+        '<div class="note">Ask Vinet for a one-time staff code.</div>',
+        '<form id="staffForm" autocomplete="off" class="field">',
+        '  <div class="row">',
+        '    <input name="otp" maxlength="6" pattern="\\\\d{6}" placeholder="6-digit code from Vinet" required />',
+        '    <button class="btn" type="submit">Verify</button>',
+        '  </div>',
+        '</form>',
+        '<div id="staffMsg" class="note"></div>'
+      ].join('');
+      const staffForm = document.getElementById('staffForm');
+      if (staffForm) staffForm.onsubmit = async (e)=>{
+        e.preventDefault();
+        const otp = staffForm.otp.value.trim();
+        const r = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid, otp, kind:'staff' }) });
+        const d = await r.json().catch(()=>({ok:false}));
+        const msg = document.getElementById('staffMsg');
+        if (d.ok) { step=1; state.progress=step; save(state); render(); }
+        else { if (msg) msg.textContent = 'Invalid or expired staff code.'; }
+      };
+
+      // Switchers
+      document.getElementById('method-wa').onclick = (e)=>{ e.preventDefault(); wa.style.display='block'; staff.style.display='none'; };
+      document.getElementById('method-staff').onclick = (e)=>{ e.preventDefault(); wa.style.display='none'; staff.style.display='block'; };
       return;
     }
 
@@ -385,6 +448,31 @@ export default {
       return new Response(js, { headers: jsHeaders });
     }
 
+    // ------------ STATIC: staff.js ------------
+    if (path === "/static/staff.js" && method === "GET") {
+      const js = `
+(() => {
+  const $ = (s)=>document.querySelector(s);
+  const out = $('#out');
+  $('#gen').onclick = async () => {
+    const linkid = ($('#linkid')?.value || '').trim();
+    if (!linkid) { out.innerHTML = '<div class="err">Enter linkid</div>'; return; }
+    try {
+      const r = await fetch('/api/staff/gen', { method:'POST', body: JSON.stringify({ linkid }) });
+      const d = await r.json().catch(()=>({ok:false}));
+      if (d.ok) {
+        out.innerHTML = '<div class="success">Staff code: <b>'+d.code+'</b> (valid 15 min)</div>';
+      } else {
+        out.innerHTML = '<div class="err">'+(d.error||'error')+'</div>';
+      }
+    } catch {
+      out.innerHTML = '<div class="err">Request failed</div>';
+    }
+  };
+})();`;
+      return new Response(js, { headers: jsHeaders });
+    }
+
     // ------------ API: OTP send ------------
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await readJSON(request);
@@ -421,15 +509,21 @@ export default {
       }
     }
 
-    // ------------ API: OTP verify ------------
+    // ------------ API: OTP verify (WA + staff) ------------
     if (path === "/api/otp/verify" && method === "POST") {
-      const { linkid, otp } = await readJSON(request);
+      const { linkid, otp, kind } = await readJSON(request);
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
-      const expected = await env.ONBOARD_KV.get(`otp/${linkid}`);
+
+      const key = kind === "staff" ? `staffotp/${linkid}` : `otp/${linkid}`;
+      const expected = await env.ONBOARD_KV.get(key);
       const ok = !!expected && expected === otp;
+
       if (ok) {
         const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-        if (sess) await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
+        if (sess) {
+          await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
+        }
+        if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`); // burn staff code
       }
       return json({ ok });
     }
