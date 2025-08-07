@@ -55,11 +55,11 @@ export default {
       );
     }
 
-    // --- /admin: Generate onboarding link ---
+    // --- /admin: Generate onboarding link (GET) ---
     if (path === "/admin" && method === "GET") {
       return html(`
         <h1>Generate Onboarding Link</h1>
-        <form method="POST">
+        <form id="adminForm" autocomplete="off">
           <div class="field">
             <label>Splynx Lead/Customer ID</label>
             <input name="splynx_id" required autocomplete="off" />
@@ -68,15 +68,19 @@ export default {
         </form>
         <div id="link"></div>
         <script>
-        document.querySelector("form").onsubmit = async e => {
-          e.preventDefault();
-          const id = document.querySelector("[name=splynx_id]").value;
-          const resp = await fetch("/admin", { method:"POST", body: JSON.stringify({id}) });
-          const data = await resp.json();
-          document.getElementById("link").innerHTML = data.url 
-            ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
-            : '<div class="err">Error generating link.</div>';
-        };
+          document.getElementById("adminForm").onsubmit = async e => {
+            e.preventDefault();
+            const id = document.querySelector("[name=splynx_id]").value;
+            const resp = await fetch("/admin", { 
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ id }) 
+            });
+            const data = await resp.json();
+            document.getElementById("link").innerHTML = data.url 
+              ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
+              : '<div class="err">Error generating link.</div>';
+          };
         <\\/script>
       `, { title: "Admin - Generate Link" });
     }
