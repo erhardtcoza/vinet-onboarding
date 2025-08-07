@@ -1,0 +1,24 @@
+name = "vinet-onboarding"
+main = "src/index.js"
+compatibility_date = "2025-08-05"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vinet-onboarding-db"
+database_id = "d273502b-7566-4934-abc9-ae1e38b7ccdc"
+
+[[kv_namespaces]]
+binding = "ONBOARD_KV"
+id = "fc2d1cfd11a84226b9de86f8957be5d3"
+
+[[r2_buckets]]
+binding = "R2_UPLOADS"
+bucket_name = "vinet-onboarding-uploads"
+
+[vars]
+SPLYNX_API = "https://splynx.vinet.co.za/api/2.0"
+SPLYNX_AUTH = "NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
+API_URL = "https://onboard.vinet.co.za"
+
+[observability.logs]
+enabled = true
