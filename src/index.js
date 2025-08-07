@@ -77,7 +77,7 @@ export default {
             ? '<div class="success">Onboarding link: <a href="'+data.url+'" target="_blank">'+data.url+'</a></div>'
             : '<div class="err">Error generating link.</div>';
         };
-        </script>
+        <\\/script>
       `, { title: "Admin - Generate Link" });
     }
 
@@ -127,7 +127,7 @@ export default {
               return \`
                 <form id="otpForm">
                   <label>OTP Code (sent to your registered contact)</label>
-                  <input name="otp" maxlength="6" required pattern="\\d{6}" autocomplete="one-time-code" />
+                  <input name="otp" maxlength="6" required pattern="\\\\d{6}" autocomplete="one-time-code" />
                   <button class="btn">Verify</button>
                   <div id="otpmsg"></div>
                 </form>
@@ -141,7 +141,7 @@ export default {
                     if (data.ok) { step++; state.progress=step; updateSession(); render(); }
                     else document.getElementById('otpmsg').innerHTML = '<span class="err">Invalid OTP</span>';
                   }
-                <\/script>
+                <\\/script>
               \`;
             }
             if (step === 1) {
@@ -171,7 +171,7 @@ export default {
                     state.secondary = e.target.secondary.value;
                     step++; state.progress=step; updateSession(); render();
                   }
-                <\/script>
+                <\\/script>
               \`;
             }
             // Steps 2+: review details, product selection, uploads, agreement, finish
@@ -185,7 +185,7 @@ export default {
             });
           }
           render();
-        <\/script>
+        <\\/script>
       `);
     }
 
