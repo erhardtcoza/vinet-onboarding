@@ -59,6 +59,9 @@ export default {
     a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
     .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
     canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
+    ul.files { list-style: none; padding: 0; }
+    ul.files li { display:flex; justify-content:space-between; align-items:center; padding:.4em .6em; border:1px solid #eee; border-radius:.5em; margin:.35em 0; }
+    ul.files li .meta { font-size:12px; color:#555; }
   </style>
 </head>
 <body>
@@ -90,7 +93,7 @@ export default {
       const tryField = (v) => {
         if (!v) return null;
         const s = String(v).trim();
-        if (/^27\d{8,13}$/.test(s)) return s; // already 27xxxxxxxxx
+        if (/^27\d{8,13}$/.test(s)) return s;
         return null;
       };
       const direct = [obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp, obj.msisdn, obj.primary_phone];
@@ -123,7 +126,7 @@ export default {
 
     // ------------ WhatsApp senders ------------
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
-      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp"; // ensure matches your template
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: "whatsapp",
@@ -133,10 +136,7 @@ export default {
           name: templateName,
           language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
           components: [
-            // Body {{1}} = OTP
             { type: "body", parameters: [{ type: "text", text: code }] },
-            // URL button {{1}} = short param (OTP). Template base URL should be like:
-            // https://onboard.vinet.co.za/verify?code=
             { type: "button", sub_type: "url", index: "0",
               parameters: [{ type: "text", text: code }] }
           ]
@@ -234,11 +234,11 @@ export default {
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!session) return json({ ok:false, error:"Unknown linkid" }, 404);
       const code = String(Math.floor(100000 + Math.random() * 900000));
-      await env.ONBOARD_KV.put(`staffotp/${linkid}`, code, { expirationTtl: 900 }); // 15 minutes
+      await env.ONBOARD_KV.put(`staffotp/${linkid}`, code, { expirationTtl: 900 });
       return json({ ok:true, linkid, code });
     }
 
-    // ------------ ONBOARDING HTML (loads JS from /static/onboard.js) ------------
+    // ------------ ONBOARDING HTML ------------
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -270,6 +270,9 @@ export default {
     a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
     .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
     canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
+    ul.files { list-style: none; padding: 0; }
+    ul.files li { display:flex; justify-content:space-between; align-items:center; padding:.4em .6em; border:1px solid #eee; border-radius:.5em; margin:.35em 0; }
+    ul.files li .meta { font-size:12px; color:#555; }
   </style>
 </head>
 <body>
@@ -285,7 +288,7 @@ export default {
       );
     }
 
-    // ------------ STATIC: onboard.js (includes agreement + signature) ------------
+    // ------------ STATIC: onboard.js (includes uploads + agreement) ------------
     if (path === "/static/onboard.js" && method === "GET") {
       const js = `
 (function(){
@@ -317,7 +320,7 @@ export default {
     }
   }
 
-  let state = { progress: step };
+  let state = { progress: step, uploads: [] };
 
   // Simple signature pad
   function signaturePad(canvas){
@@ -343,6 +346,32 @@ export default {
       clear(){ ctx.clearRect(0,0,canvas.width,canvas.height); },
       dataURL(){ return canvas.toDataURL('image/png'); }
     };
+  }
+
+  function renderUploads(list){
+    if (!Array.isArray(list)) list = [];
+    if (!list.length) return '<div class="note">No files uploaded yet.</div>';
+    return '<ul class="files">' + list.map((f, i) =>
+      '<li><div><b>'+f.label+'</b><div class="meta">'+f.name+' • '+Math.round((f.size||0)/1024)+' KB</div></div>' +
+      '<button class="btn" data-del="'+i+'" style="padding:.4em .8em">Remove</button></li>'
+    ).join('') + '</ul>';
+  }
+
+  function bindDeletions(){
+    document.querySelectorAll('button[data-del]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const idx = parseInt(btn.getAttribute('data-del'),10);
+        const f = state.uploads[idx];
+        if (!f) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch('/api/upload/delete', { method:'POST', body: JSON.stringify({ linkid, key: f.key }) });
+          const d = await r.json().catch(()=>({ok:false}));
+          if (d.ok) { state.uploads.splice(idx,1); save(state); render(); }
+          else { btn.disabled = false; alert('Remove failed'); }
+        } catch { btn.disabled = false; alert('Network error'); }
+      };
+    });
   }
 
   function render(){
@@ -463,19 +492,80 @@ export default {
       return;
     }
 
-    // STEP 3
+    // STEP 3 — Upload ID/POA
     if (step === 3) {
       stepEl.innerHTML = [
-        '<h2>Upload ID/POA</h2>',
-        '<p class="note">Upload interface coming next. You can continue for now.</p>',
-        '<button class="btn" id="next">Continue</button>'
+        '<h2>Upload your documents</h2>',
+        '<div class="note">Allowed: PDF, JPG, PNG. Max 8 MB each.</div>',
+        '<form id="upForm" class="field" enctype="multipart/form-data">',
+        '  <div class="field">',
+        '    <label>Identity Document</label>',
+        '    <input type="file" name="idfile" accept=".pdf,image/*" />',
+        '  </div>',
+        '  <div class="field">',
+        '    <label>Proof of Address</label>',
+        '    <input type="file" name="poafile" accept=".pdf,image/*" />',
+        '  </div>',
+        '  <div class="row">',
+        '    <button class="btn" type="submit">Upload</button>',
+        '    <a class="btnlink" id="skip">Skip</a>',
+        '  </div>',
+        '</form>',
+        '<div id="uplMsg" class="note"></div>',
+        '<div id="uplList"></div>',
+        '<div class="row" style="margin-top:10px">',
+        '  <a class="btnlink" id="back2">Back</a>',
+        '  <button class="btn" id="cont">Continue</button>',
+        '</div>'
       ].join('');
-      const n = document.getElementById('next');
-      if (n) n.onclick = ()=>{ step=4; state.progress=step; save(state); render(); };
+
+      const listEl = document.getElementById('uplList');
+      const msg = document.getElementById('uplMsg');
+      function refreshList(){
+        listEl.innerHTML = renderUploads(state.uploads);
+        bindDeletions();
+      }
+      refreshList();
+
+      document.getElementById('back2').onclick = (e)=>{ e.preventDefault(); step=2; state.progress=step; save(state); render(); };
+      document.getElementById('skip').onclick = (e)=>{ e.preventDefault(); step=4; state.progress=step; save(state); render(); };
+      document.getElementById('cont').onclick = (e)=>{ e.preventDefault(); step=4; state.progress=step; save(state); render(); };
+
+      document.getElementById('upForm').onsubmit = async (e)=>{
+        e.preventDefault();
+        const idf = e.target.idfile.files[0];
+        const poa = e.target.poafile.files[0];
+        if (!idf && !poa) { msg.textContent = 'Choose at least one file.'; return; }
+
+        const uploads = [];
+        async function doOne(file, label){
+          const fd = new FormData();
+          fd.append('linkid', linkid);
+          fd.append('type', label);
+          fd.append('file', file);
+          const r = await fetch('/api/upload', { method:'POST', body: fd });
+          const d = await r.json().catch(()=>({ok:false}));
+          if (!d.ok) throw new Error(d.error || 'Upload failed');
+          return d.file;
+        }
+
+        msg.textContent = 'Uploading...';
+        try {
+          if (idf) uploads.push(await doOne(idf, 'id'));
+          if (poa) uploads.push(await doOne(poa, 'poa'));
+          state.uploads = (state.uploads || []).concat(uploads);
+          save(state);
+          msg.textContent = 'Uploaded.';
+          refreshList();
+          e.target.reset();
+        } catch (err) {
+          msg.textContent = err.message || 'Upload failed.';
+        }
+      };
       return;
     }
 
-    // STEP 4 — AGREEMENT + SIGNATURE
+    // STEP 4 — Agreement + signature
     if (step === 4) {
       stepEl.innerHTML = [
         '<h2>Service Agreement</h2>',
@@ -495,7 +585,6 @@ export default {
         '</div>'
       ].join('');
 
-      // load terms
       (async () => {
         try {
           const r = await fetch('/api/terms');
@@ -567,7 +656,6 @@ export default {
 
     // ------------ API: TERMS ------------
     if (path === "/api/terms" && method === "GET") {
-      // Priority: R2 object -> env text -> fallback
       try {
         if (env.TERMS_R2_KEY) {
           const obj = await env.R2_UPLOADS.get(env.TERMS_R2_KEY);
@@ -588,35 +676,21 @@ export default {
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await readJSON(request);
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-
       const splynxId = (linkid || "").split("_")[0];
 
-      // 1) get msisdn
       let msisdn = null;
-      try {
-        msisdn = await fetchCustomerMsisdn(splynxId);
-      } catch (e) {
-        console.error("Splynx lookup failed", e.message);
-        return json({ ok:false, error:"Splynx lookup failed" }, 502);
-      }
+      try { msisdn = await fetchCustomerMsisdn(splynxId); }
+      catch (e) { console.error("Splynx lookup failed", e.message); return json({ ok:false, error:"Splynx lookup failed" }, 502); }
       if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
 
-      // 2) make code
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
       await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
 
-      // 3) send template; fallback to text if session is open
-      try {
-        await sendWhatsAppTemplate(msisdn, code, "en");
-        return json({ ok:true });
-      } catch (e) {
-        try {
-          await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
-          return json({ ok:true, note:"sent-as-text" });
-        } catch (e2) {
-          return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502);
-        }
+      try { await sendWhatsAppTemplate(msisdn, code, "en"); return json({ ok:true }); }
+      catch (e) {
+        try { await sendWhatsAppTextIfSessionOpen(msisdn, \`Your Vinet verification code is: \${code}\`); return json({ ok:true, note:"sent-as-text" }); }
+        catch (e2) { return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); }
       }
     }
 
@@ -624,17 +698,13 @@ export default {
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await readJSON(request);
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
-
       const key = kind === "staff" ? `staffotp/${linkid}` : `otp/${linkid}`;
       const expected = await env.ONBOARD_KV.get(key);
       const ok = !!expected && expected === otp;
-
       if (ok) {
         const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-        if (sess) {
-          await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
-        }
-        if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`); // burn staff code
+        if (sess) await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
+        if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`);
       }
       return json({ ok });
     }
@@ -651,6 +721,56 @@ export default {
       return json({ ok:true });
     }
 
+    // ------------ API: file upload (multipart -> R2) ------------
+    if (path === "/api/upload" && method === "POST") {
+      const ct = request.headers.get("content-type") || "";
+      if (!ct.includes("multipart/form-data")) return json({ ok:false, error:"Invalid content-type" }, 415);
+      const form = await request.formData();
+      const linkid = (form.get("linkid") || "").toString();
+      const type = (form.get("type") || "").toString(); // 'id' | 'poa'
+      const file = form.get("file");
+      if (!linkid || !type || !file || typeof file === "string") return json({ ok:false, error:"Missing fields" }, 400);
+
+      const ALLOWED = ["application/pdf", "image/jpeg", "image/png"];
+      const MAX = 8 * 1024 * 1024; // 8 MB
+      const mime = file.type || "";
+      const size = file.size || 0;
+      if (!ALLOWED.includes(mime)) return json({ ok:false, error:"Unsupported file type" }, 400);
+      if (size > MAX) return json({ ok:false, error:"File too large (8MB max)" }, 400);
+
+      const name = (file.name || "upload").replace(/[^\w.\-]+/g, "_").slice(0, 80);
+      const ts = Date.now();
+      const key = `uploads/${linkid}/${type}-${ts}-${name}`;
+      const buf = await file.arrayBuffer();
+
+      await env.R2_UPLOADS.put(key, buf, { httpMetadata: { contentType: mime } });
+
+      // update session uploads
+      const sess = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+      const item = { key, label: type === "id" ? "ID Document" : "Proof of Address", name, size, mime, ts };
+      const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+      uploads.push(item);
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
+
+      return json({ ok:true, file: item });
+    }
+
+    // ------------ API: delete uploaded file ------------
+    if (path === "/api/upload/delete" && method === "POST") {
+      const { linkid, key } = await readJSON(request);
+      if (!linkid || !key) return json({ ok:false, error:"Missing params" }, 400);
+
+      // delete from R2
+      await env.R2_UPLOADS.delete(key).catch(()=>{});
+
+      // remove from session
+      const sess = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+      const uploads = (sess.uploads || []).filter(u => u.key !== key);
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
+
+      return json({ ok:true });
+    }
+
     // ------------ API: sign & store signature (R2) ------------
     if (path === "/api/sign" && method === "POST") {
       const { linkid, dataUrl } = await readJSON(request);
@@ -663,22 +783,14 @@ export default {
       const ip = getIP();
       const ua = getUA();
 
-      // Store PNG in R2
       const sigKey = `agreements/${linkid}/signature.png`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, {
         httpMetadata: { contentType: "image/png" }
       });
 
-      // Store receipt in KV
-      const receipt = {
-        linkid,
-        signed_at: now,
-        ip, ua,
-        note: "agreement accepted",
-      };
+      const receipt = { linkid, signed_at: now, ip, ua, note: "agreement accepted" };
       await env.ONBOARD_KV.put(`agreement/${linkid}`, JSON.stringify(receipt), { expirationTtl: 60*60*24*30 });
 
-      // Mark progress done
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (sess) {
         await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, progress: 5, agreement_signed: true, agreement_sig_key: sigKey }), { expirationTtl: 86400 });
