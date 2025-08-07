@@ -32,6 +32,7 @@ export default {
     .logo { display:block; margin:0 auto 1em; max-width:90px; }
     h1, h2 { color:#e2001a; }
     .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
+    .btn-secondary { background:#eee; color:#222; border:0; border-radius:.7em; padding:.6em 1.2em; text-decoration:none; display:inline-block; }
     .field { margin:1em 0; }
     input, select { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
     .note { font-size:12px; color:#666; }
@@ -41,7 +42,7 @@ export default {
     .progress { height:100%; background:#e2001a; transition:width .4s; }
     .row { display:flex; gap:.75em; }
     .row > * { flex:1; }
-    a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   </style>
 </head>
 <body>
@@ -73,8 +74,7 @@ export default {
       const tryField = (v) => {
         if (!v) return null;
         const s = String(v).trim();
-        // We expect "27..." numbers per your system
-        if (/^27\d{8,13}$/.test(s)) return s;
+        if (/^27\d{8,13}$/.test(s)) return s; // already 27xxxxxxxxx
         return null;
       };
       const direct = [obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp, obj.msisdn, obj.primary_phone];
@@ -107,7 +107,7 @@ export default {
 
     // ------------ WhatsApp senders ------------
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
-      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinet_otp";
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinet_otp"; // set WHATSAPP_TEMPLATE_NAME=vinetotp
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
       const payload = {
         messaging_product: "whatsapp",
@@ -115,7 +115,7 @@ export default {
         type: "template",
         template: {
           name: templateName,
-          language: { code: lang },
+          language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
           components: [
             { type: "body", parameters: [{ type: "text", text: code }] }
           ]
@@ -137,7 +137,6 @@ export default {
     }
 
     async function sendWhatsAppTextIfSessionOpen(toMsisdn, bodyText) {
-      // This only succeeds if a session is open (user messaged you in last 24h)
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
       const payload = { messaging_product: "whatsapp", to: toMsisdn, type: "text", text: { body: bodyText } };
       const r = await fetch(endpoint, {
@@ -163,20 +162,32 @@ export default {
             <button class="btn" type="submit">Generate Link</button>
           </div>
         </form>
-        <div class="note">This returns JSON with the link (we can switch to an HTML result if you prefer).</div>
+        <div class="note">Works without JavaScript.</div>
       `, { title: "Admin - Generate Link" });
     }
 
     if (path === "/admin2/gen" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return new Response("Missing id", { status: 400 });
+
       const token = Math.random().toString(36).slice(2, 10);
       const linkid = `${id}_${token}`;
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
         id, created: Date.now(), progress: 0
       }), { expirationTtl: 86400 });
+
       const full = `${url.origin}/onboard/${linkid}`;
-      return new Response(JSON.stringify({ url: full }), { headers: { "content-type": "application/json", ...noCache } });
+      return page(`
+        <h1>Onboarding Link</h1>
+        <div class="field">
+          <label>URL</label>
+          <input class="mono" value="${full}" readonly />
+        </div>
+        <p>
+          <a class="btn" href="${full}" target="_blank">Open link</a>
+          <a class="btn-secondary" href="/admin2">Generate another</a>
+        </p>
+      `, { title: "Admin - Link Ready" });
     }
 
     // ------------ ONBOARDING HTML (loads JS from /static/onboard.js) ------------
@@ -375,7 +386,7 @@ export default {
 
       const splynxId = (linkid || "").split("_")[0];
 
-      // 1) get msisdn from Splynx
+      // 1) get msisdn
       let msisdn = null;
       try {
         msisdn = await fetchCustomerMsisdn(splynxId);
@@ -385,24 +396,20 @@ export default {
       }
       if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
 
-      // 2) make a code and store it
+      // 2) make code
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
       await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
 
-      // 3) send via template first; if that fails, try plain text (session)
+      // 3) send template; fallback to text if session is open
       try {
         await sendWhatsAppTemplate(msisdn, code, "en");
-        console.log("OTP sent via template", msisdn);
         return json({ ok:true });
       } catch (e) {
-        console.warn("Template send failed, trying text...", e.message);
         try {
           await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
-          console.log("OTP sent via text (session)", msisdn);
           return json({ ok:true, note:"sent-as-text" });
         } catch (e2) {
-          console.error("Both sends failed", e2.message);
           return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502);
         }
       }
