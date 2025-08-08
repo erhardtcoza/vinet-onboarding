@@ -26,7 +26,7 @@ BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en_US"
 WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
-ADMIN_IPS = "160.226.143.254"   # comma-separated; leave empty to allow all
+ADMIN_IPS = "160.226.143.254, 160.226.128.0/20"   
 TERMS_SERVICE_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"
 TERMS_DEBIT_URL   = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt"
 EFT_BANK_NAME    = "First National Bank (FNB/RMB)"
@@ -35,8 +35,6 @@ EFT_ACCOUNT_NO   = "62757054996"
 EFT_BRANCH_CODE  = "250655"
 EFT_REFERENCE    = "SPLYNX-ID"
 EFT_NOTES        = "Please remember that all accounts are payable on or before the 1st of every month."
-ADMIN_IPS = "160.226.143.254,160.226.128.0/20"   # comma-separated
-
 
 # If you want PDFs generated (upload blank/fillable PDFs to R2 and set keys)
 SERVICE_PDF_KEY = "pdf-templates/service-agreement-fillable.pdf"
