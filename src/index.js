@@ -1,4 +1,5 @@
-import { PDFDocument } from "pdf-lib";
+// src/index.js
+import { PDFDocument } from "pdf-lib"; // requires package.json dependency
 
 export default {
   async fetch(request, env) {
@@ -82,6 +83,11 @@ export default {
       );
     }
 
+    function json(obj, status=200) {
+      return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...noCache } });
+    }
+    function escapeHtml(s=""){return s.replace(/[&<>"']/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));}
+
     // ---------- Splynx helpers ----------
     async function splynxGET(endpoint) {
       const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
@@ -103,7 +109,7 @@ export default {
       return r.json().catch(()=> ({}));
     }
 
-    // best phone finder
+    // phone helpers
     function pickPhone(obj) {
       if (!obj) return null;
       const check = (v) => {
@@ -152,7 +158,7 @@ export default {
       };
     }
 
-    // ---------- WhatsApp send ----------
+    // WhatsApp helpers
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
       const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -165,7 +171,7 @@ export default {
           language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
           components: [
             { type: "body", parameters: [{ type: "text", text: code }] },
-            // If template has a URL button param (max 15 chars), pass last 6 of code
+            // If your template has a URL button param (<=15 chars), pass last 6 of code
             { type: "button", sub_type: "url", index: "0",
               parameters: [{ type: "text", text: code.slice(-6) }] }
           ]
@@ -189,7 +195,7 @@ export default {
       if (!r.ok) throw new Error(`WA text ${r.status}`);
     }
 
-    // ---------- ADMIN DASHBOARD at "/" ----------
+    // ---------- ADMIN DASHBOARD ----------
     if (path === "/" && method === "GET") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       return page(`
@@ -206,7 +212,6 @@ export default {
       `, { title: "Admin" });
     }
 
-    // ---------- STATIC: admin.js ----------
     if (path === "/static/admin.js" && method === "GET") {
       const js = `(()=> {
   const tabs = document.querySelectorAll('.tab');
@@ -295,7 +300,7 @@ export default {
       return new Response(js, { headers: jsHeaders });
     }
 
-    // ---------- Admin: review page ----------
+    // ---------- Admin: review ----------
     if (path === "/admin/review" && method === "GET") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
@@ -403,7 +408,7 @@ export default {
       `, { title: "Review" });
     }
 
-    // ---------- API: Admin list (inprog / pending / approved) ----------
+    // ---------- Admin list ----------
     if (path === "/api/admin/list" && method === "GET") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const mode = url.searchParams.get("mode") || "pending";
@@ -423,7 +428,7 @@ export default {
       return json({ items });
     }
 
-    // ---------- API: Generate onboarding link ----------
+    // ---------- Generate onboarding link ----------
     if (path === "/api/admin/genlink" && method === "POST") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const { id } = await readJSON(request);
@@ -436,7 +441,7 @@ export default {
       return json({ url: `${url.origin}/onboard/${linkid}` });
     }
 
-    // ---------- API: Staff OTP ----------
+    // ---------- Staff OTP ----------
     if (path === "/api/staff/gen" && method === "POST") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await readJSON(request);
@@ -595,7 +600,6 @@ export default {
       `, { title: "Debit Order" });
     }
 
-    // ---------- API: save debit form ----------
     if (path === "/api/debit/save" && method === "POST") {
       const b = await readJSON(request);
       const required = ["account_holder","id_number","email","phone","bank_name","branch_code","account_number","account_type","debit_day","start_month"];
@@ -608,7 +612,7 @@ export default {
       return json({ ok:true, ref: key });
     }
 
-    // ---------- API: TERMS (service + conditional debit) ----------
+    // ---------- TERMS ----------
     if (path === "/api/terms" && method === "GET") {
       const pay = (url.searchParams.get("pay") || "eft").toLowerCase();
       const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
@@ -621,7 +625,7 @@ export default {
       return new Response(html || "<p>Terms unavailable.</p>", { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
     }
 
-    // ---------- Onboarding UI (same flow, shortened here) ----------
+    // ---------- Onboarding UI ----------
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -671,14 +675,181 @@ export default {
       );
     }
 
-    // ---------- STATIC: onboard.js (unchanged from working version you deployed) ----------
+    // full onboard.js (client flow)
     if (path === "/static/onboard.js" && method === "GET") {
-      // (same file you already deployed in the last build — omitted for brevity to keep this response tighter)
-      // If you want me to paste it again, say "paste onboard.js" and I’ll drop it in verbatim.
-      return new Response("// onboard.js served by previous build", { headers: jsHeaders });
+      const js = `
+(function(){
+  const root = document.getElementById('root');
+  if (!root) return;
+  const linkid = root.getAttribute('data-linkid2');
+  let step = parseInt(root.getAttribute('data-progress') || '0', 10) || 0;
+
+  // steps: 0 welcome, 1 otp, 2 prefs, 3 details, 4 uploads, 5 agreement, 6 done
+  const total = 6;
+  const stepEl = document.getElementById('step');
+  const progEl = document.getElementById('prog');
+  let state = { progress: step, uploads: [], edits: {} };
+
+  function setProgress(){ const pct=Math.min(100, Math.round(((step+1)/(total+1))*100)); if (progEl) progEl.style.width=pct+'%'; }
+  function save(){ try{ fetch('/api/progress/'+linkid,{method:'POST',body:JSON.stringify(state)});}catch{} }
+
+  async function sendOtp(){
+    const msg=document.getElementById('otpmsg'); if(msg) msg.textContent='Sending code to WhatsApp...';
+    try{ const r=await fetch('/api/otp/send',{method:'POST',body:JSON.stringify({linkid})}); const d=await r.json().catch(()=>({ok:false}));
+      if(msg) msg.textContent=d.ok?'Code sent. Check your WhatsApp.':('Failed to send: '+(d.error||'unknown')); }catch{ if(msg) msg.textContent='Network error sending code.'; }
+  }
+
+  function signaturePad(canvas){
+    const ctx=canvas.getContext('2d'); let drawing=false,last=null;
+    function resize(){ const scale=window.devicePixelRatio||1; const rect=canvas.getBoundingClientRect(); canvas.width=Math.floor(rect.width*scale); canvas.height=Math.floor(rect.height*scale); ctx.scale(scale,scale); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#222'; }
+    resize(); window.addEventListener('resize',resize);
+    function rect(){ return canvas.getBoundingClientRect(); }
+    function pos(e){ const r=rect(); if(e.touches&&e.touches[0]) return {x:e.touches[0].clientX-r.left,y:e.touches[0].clientY-r.top}; return {x:e.clientX-r.left,y:e.clientY-r.top}; }
+    function start(e){ drawing=true; last=pos(e); e.preventDefault(); }
+    function move(e){ if(!drawing) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; e.preventDefault(); }
+    function end(){ drawing=false; last=null; }
+    canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+    canvas.addEventListener('touchstart',start,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',end);
+    return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); }, dataURL(){ return canvas.toDataURL('image/png'); } };
+  }
+
+  async function fetchProfile(){
+    try { const id=(linkid||'').split('_')[0]; const r=await fetch('/api/splynx/profile?id='+encodeURIComponent(id)); if(!r.ok) return null; return await r.json(); }
+    catch { return null; }
+  }
+
+  function renderUploads(list){
+    if(!Array.isArray(list)) list=[];
+    if(!list.length) return '<div class="note">No files uploaded yet.</div>';
+    return '<ul class="files">'+list.map((f,i)=>'<li><div><b>'+f.label+'</b><div class="meta">'+f.name+' • '+Math.round((f.size||0)/1024)+' KB</div></div><button class="btn" data-del="'+i+'" style="padding:.4em .8em">Remove</button></li>').join('')+'</ul>';
+  }
+  function bindDeletions(){
+    document.querySelectorAll('button[data-del]').forEach(btn=>{
+      btn.onclick=async()=>{ const idx=parseInt(btn.getAttribute('data-del'),10); const f=state.uploads[idx]; if(!f) return; btn.disabled=true;
+        try{ const r=await fetch('/api/upload/delete',{method:'POST',body:JSON.stringify({linkid,key:f.key})}); const d=await r.json().catch(()=>({ok:false}));
+          if(d.ok){ state.uploads.splice(idx,1); save(); render(); } else { btn.disabled=false; alert('Remove failed'); } }
+        catch{ btn.disabled=false; alert('Network error'); }
+      };
+    });
+  }
+
+  function render(){
+    setProgress();
+
+    if(step===0){
+      stepEl.innerHTML='<h2>Welcome</h2><p>We\\u2019ll quickly verify you and confirm a few details.</p><button class="btn" id="start">Let\\u2019s begin</button>';
+      document.getElementById('start').onclick=()=>{ step=1; state.progress=step; save(); render(); };
+      return;
     }
 
-    // ---------- API: OTP send / verify ----------
+    if(step===1){
+      stepEl.innerHTML=[
+        '<h2>Verify your identity</h2>',
+        '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
+        '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+        '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+      ].join('');
+      const wa=document.getElementById('waBox');
+      wa.innerHTML='<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div><form id="otpForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\\\d{6}" placeholder="6-digit code" required /><button class="btn" type="submit">Verify</button></div></form><a class="btn-outline" id="resend">Resend code</a>';
+      sendOtp();
+      document.getElementById('resend').onclick=(e)=>{ e.preventDefault(); sendOtp(); };
+      document.getElementById('otpForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"wa"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; save(); render(); } else { document.getElementById('otpmsg').textContent='Invalid code. Try again.'; } };
+      const staff=document.getElementById('staffBox');
+      staff.innerHTML='<div class="note">Ask Vinet for a one-time staff code.</div><form id="staffForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\\\d{6}" placeholder="6-digit code from Vinet" required /><button class="btn" type="submit">Verify</button></div></form><div id="staffMsg" class="note"></div>';
+      document.getElementById('staffForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"staff"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; save(); render(); } else { document.getElementById('staffMsg').textContent='Invalid or expired staff code.'; } };
+      const pwa=document.getElementById('p-wa'), pst=document.getElementById('p-staff');
+      pwa.onclick=()=>{ pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
+      pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
+      return;
+    }
+
+    if(step===2){
+      const id=(linkid||'').split('_')[0];
+      const quickEft='/info/eft';
+      const quickDebit='/info/debit?id='+encodeURIComponent(id);
+      const pay=state.pay_method||'eft';
+      stepEl.innerHTML=[
+        '<h2>Contact Preferences</h2>',
+        '<div class="field"><label>Preferred Language</label><select id="lang"><option value="en" '+(state.lang==='en'?'selected':'')+'>English</option><option value="af" '+(state.lang==='af'?'selected':'')+'>Afrikaans</option><option value="both" '+(state.lang==='both'?'selected':'')+'>Both</option></select></div>',
+        '<div class="field"><label>Payment Method</label><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div><div class="note" id="pm-note" style="margin-top:.6em"></div></div>',
+        '<div class="field"><label>Secondary Contact (optional)</label><input id="secondary" placeholder="Name and number (optional)" value="'+(state.secondary||'')+'" /></div>',
+        '<div class="row"><a class="btn-outline" id="back1">Back</a><button class="btn" id="cont">Continue</button></div>'
+      ].join('');
+      function setNote(which){ const el=document.getElementById('pm-note'); if(which==='debit') el.innerHTML='Need a debit order? <a href="'+quickDebit+'" target="_blank">Open debit form</a>'; else el.innerHTML='Prefer EFT? <a href="'+quickEft+'" target="_blank">View EFT details</a>'; }
+      setNote(pay);
+      document.getElementById('pm-eft').onclick=()=>{ state.pay_method='eft'; save(); render(); };
+      document.getElementById('pm-debit').onclick=()=>{ state.pay_method='debit'; save(); render(); };
+      document.getElementById('back1').onclick=(e)=>{ e.preventDefault(); step=1; state.progress=step; save(); render(); };
+      document.getElementById('cont').onclick=(e)=>{ e.preventDefault(); state.lang=document.getElementById('lang').value; state.secondary=document.getElementById('secondary').value||''; if(!state.pay_method) state.pay_method='eft'; step=3; state.progress=step; save(); render(); };
+      return;
+    }
+
+    if(step===3){
+      stepEl.innerHTML='<h2>Confirm your details</h2><div id="profBox" class="note">Loading your profile…</div>';
+      (async ()=>{ const prof=await fetchProfile(); const p=prof||{}; const cur={ full_name: state.edits.full_name ?? p.full_name ?? '', email: state.edits.email ?? p.email ?? '', phone: state.edits.phone ?? p.phone ?? '', street: state.edits.street ?? p.street ?? '', city: state.edits.city ?? p.city ?? '', zip: state.edits.zip ?? p.zip ?? '' };
+        document.getElementById('profBox').innerHTML=[
+          '<div class="field"><label>Full name</label><input id="f_full" value="'+(cur.full_name||'')+'" /></div>',
+          '<div class="row"><div class="field"><label>Email</label><input id="f_email" value="'+(cur.email||'')+'" /></div><div class="field"><label>Phone</label><input id="f_phone" value="'+(cur.phone||'')+'" /></div></div>',
+          '<div class="row"><div class="field"><label>Street</label><input id="f_street" value="'+(cur.street||'')+'" /></div><div class="field"><label>City</label><input id="f_city" value="'+(cur.city||'')+'" /></div></div>',
+          '<div class="field"><label>ZIP Code</label><input id="f_zip" value="'+(cur.zip||'')+'" /></div>',
+          '<div class="row"><a class="btn-outline" id="back2">Back</a><button class="btn" id="cont">Looks good</button></div>',
+          '<div class="note">We\\u2019ll use these updates later to sync with our system.</div>'
+        ].join('');
+        document.getElementById('back2').onclick=(e)=>{ e.preventDefault(); step=2; state.progress=step; save(); render(); };
+        document.getElementById('cont').onclick=(e)=>{ e.preventDefault(); state.edits={ full_name:document.getElementById('f_full').value.trim(), email:document.getElementById('f_email').value.trim(), phone:document.getElementById('f_phone').value.trim(), street:document.getElementById('f_street').value.trim(), city:document.getElementById('f_city').value.trim(), zip:document.getElementById('f_zip').value.trim() }; step=4; state.progress=step; save(); render(); };
+      })();
+      return;
+    }
+
+    if(step===4){
+      stepEl.innerHTML=[
+        '<h2>Upload your documents</h2><div class="note">Allowed: PDF, JPG, PNG. Max 8 MB each.</div>',
+        '<form id="upForm" class="field" enctype="multipart/form-data">',
+        '<div class="field"><label>Identity Document</label><input type="file" name="idfile" accept=".pdf,image/*" /></div>',
+        '<div class="field"><label>Proof of Address</label><input type="file" name="poafile" accept=".pdf,image/*" /></div>',
+        '<div class="row"><button class="btn" type="submit">Upload</button><a class="btn-outline" id="skip">Skip</a></div></form>',
+        '<div id="uplMsg" class="note"></div><div id="uplList"></div>',
+        '<div class="row" style="margin-top:10px"><a class="btn-outline" id="back3">Back</a><button class="btn" id="cont">Continue</button></div>'
+      ].join('');
+      const listEl=document.getElementById('uplList'), msg=document.getElementById('uplMsg');
+      function refresh(){ listEl.innerHTML=renderUploads(state.uploads); bindDeletions(); } refresh();
+      document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; save(); render(); };
+      document.getElementById('skip').onclick=(e)=>{ e.preventDefault(); step=5; state.progress=step; save(); render(); };
+      document.getElementById('cont').onclick=(e)=>{ e.preventDefault(); step=5; state.progress=step; save(); render(); };
+      document.getElementById('upForm').onsubmit=async(e)=>{ e.preventDefault(); const idf=e.target.idfile.files[0]; const poa=e.target.poafile.files[0]; if(!idf && !poa){ msg.textContent='Choose at least one file.'; return; }
+        async function up(file,label){ const fd=new FormData(); fd.append('linkid',linkid); fd.append('type',label); fd.append('file',file); const r=await fetch('/api/upload',{method:'POST',body:fd}); const d=await r.json().catch(()=>({ok:false})); if(!d.ok) throw new Error(d.error||'Upload failed'); return d.file; }
+        msg.textContent='Uploading...'; try{ if(idf) state.uploads.push(await up(idf,'id')); if(poa) state.uploads.push(await up(poa,'poa')); save(); msg.textContent='Uploaded.'; refresh(); e.target.reset(); } catch(err){ msg.textContent=err.message||'Upload failed.'; }
+      };
+      return;
+    }
+
+    if(step===5){
+      stepEl.innerHTML=[
+        '<h2>Service Agreement</h2>',
+        '<div id="terms" class="termsbox">Loading terms…</div>',
+        '<div class="field"><label><input type="checkbox" id="agreeChk"/> I have read and accept the terms</label></div>',
+        '<div class="field"><label>Draw your signature</label><canvas id="sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="clearSig">Clear</a><span class="note" id="sigMsg"></span></div></div>',
+        '<div class="row"><a class="btn-outline" id="back4">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
+      ].join('');
+      (async()=>{ try{ const pay=(state.pay_method||'eft'); const r=await fetch('/api/terms?pay='+encodeURIComponent(pay)); const t=await r.text(); document.getElementById('terms').innerHTML=t||'Terms not available.'; }catch{ document.getElementById('terms').textContent='Failed to load terms.'; }})();
+      const pad=signaturePad(document.getElementById('sig'));
+      document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); pad.clear(); };
+      document.getElementById('back4').onclick=(e)=>{ e.preventDefault(); step=4; state.progress=step; save(); render(); };
+      document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to accept the terms.'; return; } msg.textContent='Uploading signature…';
+        try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=6; state.progress=step; save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
+      };
+      return;
+    }
+
+    stepEl.innerHTML='<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your onboarding.</p>';
+  }
+
+  render();
+})();`;
+      return new Response(js, { headers: jsHeaders });
+    }
+
+    // ---------- OTP ----------
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await readJSON(request);
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
@@ -719,7 +890,7 @@ export default {
       return json({ ok });
     }
 
-    // ---------- API: progress save ----------
+    // ---------- progress ----------
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
       const body = await readJSON(request);
@@ -731,7 +902,7 @@ export default {
       return json({ ok:true });
     }
 
-    // ---------- Uploads ----------
+    // ---------- uploads ----------
     if (path === "/api/upload" && method === "POST") {
       const ct = request.headers.get("content-type") || "";
       if (!ct.includes("multipart/form-data")) return json({ ok:false, error:"Invalid content-type" }, 415);
@@ -772,7 +943,7 @@ export default {
       return json({ ok:true });
     }
 
-    // ---------- Sign (mark pending) ----------
+    // ---------- sign (mark pending) ----------
     if (path === "/api/sign" && method === "POST") {
       const { linkid, dataUrl } = await readJSON(request);
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing or invalid signature" }, 400);
@@ -800,7 +971,7 @@ export default {
       return json({ ok:true, sigKey });
     }
 
-    // ---------- Profile API for onboarding ----------
+    // ---------- profile ----------
     if (path === "/api/splynx/profile" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return json({ error: "Missing id" }, 400);
@@ -808,7 +979,7 @@ export default {
       catch { return json({ error: "Lookup failed" }, 502); }
     }
 
-    // ---------- PDF: helpers ----------
+    // ---------- PDF helpers ----------
     async function fetchTemplateBytes(which) {
       const msaURL = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
       const doURL  = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
@@ -826,11 +997,12 @@ export default {
     }
     function toSafeText(v) { return (v == null ? "" : String(v)).slice(0, 200); }
 
-    // ---------- API: PDF field list ----------
+    // ---------- PDF: field list ----------
     if (path === "/api/pdf/fields" && method === "GET") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const file = (url.searchParams.get("file") || "msa").toLowerCase();
       try {
+        if (!PDFDocument) throw new Error("pdf-lib not bundled");
         const bytes = await fetchTemplateBytes(file);
         const pdf = await PDFDocument.load(bytes);
         const form = pdf.getForm();
@@ -841,7 +1013,7 @@ export default {
       }
     }
 
-    // ---------- API: PDF status (existence) ----------
+    // ---------- PDF: status ----------
     if (path === "/api/pdf/status" && method === "GET") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
@@ -855,7 +1027,7 @@ export default {
       return json({ ok:true, pay_method: (sess.pay_method || "eft"), msa: msaObj ? msaKey : null, debit: doObj ? doKey : null });
     }
 
-    // ---------- API: PDF generate ----------
+    // ---------- PDF: generate ----------
     if (path === "/api/pdf/generate" && method === "POST") {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       const { linkid, which } = await readJSON(request);
@@ -863,7 +1035,8 @@ export default {
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return json({ ok:false, error:"Session not found" }, 404);
 
-      // Collect data
+      if (!PDFDocument) return json({ ok:false, error:"pdf-lib not bundled. Add it to package.json dependencies." }, 500);
+
       const id = String(sess.id || "").trim();
       const now = new Date();
       const dateISO = now.toISOString().slice(0,10);
@@ -882,23 +1055,20 @@ export default {
         debit_info: null
       };
 
-      // Try pick latest debit form KV if exists (optional enrichment)
+      // try latest debit form
       const debitList = await env.ONBOARD_KV.list({ prefix: `debit/${id}/`, limit: 1 });
       if (debitList.keys && debitList.keys[0]) {
         const rec = await env.ONBOARD_KV.get(debitList.keys[0].name, "json");
         data.debit_info = rec || null;
       }
 
-      // Signature PNG
       const sigPng = await getSigBytes(env, linkid);
 
-      // Fillers
       async function generateMSA() {
         const tpl = await fetchTemplateBytes("msa");
         const pdf = await PDFDocument.load(tpl);
         const form = pdf.getForm();
 
-        // Try common field names; skip if not found
         const setText = (name, val) => { try { form.getTextField(name).setText(val||""); } catch {} };
         setText("FullName", data.full_name);
         setText("Name", data.full_name);
@@ -912,7 +1082,6 @@ export default {
         setText("ZIP", data.zip);
         setText("Date", data.date_iso);
 
-        // Signature (approx placement) — configurable via env
         if (sigPng) {
           const png = await pdf.embedPng(sigPng);
           const pageIndex = parseInt(env.PDF_SIG_PAGE || "0", 10) || 0;
@@ -980,7 +1149,6 @@ export default {
           const key = await generateDO();
           return json({ ok: !!key, key: key || null, note: key ? undefined : "Not debit method" });
         }
-        // If unspecified, generate both where applicable
         const k1 = await generateMSA();
         const k2 = await generateDO();
         return json({ ok:true, msa:k1, debit:k2 });
@@ -988,12 +1156,6 @@ export default {
         return json({ ok:false, error: e.message || "PDF generation failed" }, 500);
       }
     }
-
-    // ---------- helpers ----------
-    function json(obj, status=200) {
-      return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...noCache } });
-    }
-    function escapeHtml(s=""){return s.replace(/[&<>"']/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));}
 
     // ---------- 404 ----------
     return new Response("Not found", { status: 404 });
