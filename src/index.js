@@ -520,24 +520,40 @@ function onboardHTML(linkid) {
       prog(); save(); render();
     };
 
-    function renderPM(){
-      const c=document.getElementById('pmBox');
-      if(state.pay_method==='eft'){
-        c.innerHTML='<div class="row">\
-          <div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"></div>\
-          <div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"></div></div>\
-          <div class="row">\
-          <div class="field"><label>Account Number</label><input readonly value="62757054996"></div>\
-          <div class="field"><label>Branch Code</label><input readonly value="250655"></div></div>\
-          <div class="field"><label><b>Reference (use this EXACTLY)</b></label><input readonly value="${esc(id)}" style="font-weight:700;color:#b00012"></div>\
-          <div class="center"><button class="btn-link" onclick="location.href='/info/eft?id=${encodeURIComponent(id)}'">Print banking details</button></div>';
-      } else {
-        c.innerHTML = renderDebitForm() + '<div class="terms" id="doTerms">Loading terms…</div>';
-        fetch('/api/terms?only=debit').then(r=>r.text()).then(t=>{document.getElementById('doTerms').innerHTML=t||'Terms not available.'}).catch(()=>{document.getElementById('doTerms').textContent='Failed to load terms.'});
-      }
-    }
-    renderPM();
+   function renderPM(){
+  const c = document.getElementById('pmBox');
+  if (state.pay_method === 'eft') {
+    // id is defined at the top of step2: const id = (linkid||'').split('_')[0];
+    c.innerHTML =
+      '<div class="row">\
+        <div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"></div>\
+        <div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"></div>\
+      </div>\
+      <div class="row">\
+        <div class="field"><label>Account Number</label><input readonly value="62757054996"></div>\
+        <div class="field"><label>Branch Code</label><input readonly value="250655"></div>\
+      </div>\
+      <div class="field"><label><b>Reference (use this EXACTLY)</b></label>\
+        <input readonly id="refInput" style="font-weight:700;color:#b00012">\
+      </div>\
+      <div class="center">\
+        <button class="btn-link" id="printBtn">Print banking details</button>\
+      </div>';
+
+    // Fill at runtime (avoid server-side interpolation)
+    document.getElementById('refInput').value = id;
+    document.getElementById('printBtn').onclick = () => {
+      location.href = '/info/eft?id=' + encodeURIComponent(id);
+    };
+  } else {
+    c.innerHTML = renderDebitForm() + '<div class="terms" id="doTerms">Loading terms…</div>';
+    fetch('/api/terms?only=debit')
+      .then(r => r.text())
+      .then(t => { document.getElementById('doTerms').innerHTML = t || 'Terms not available.'; })
+      .catch(() => { document.getElementById('doTerms').textContent = 'Failed to load terms.'; });
   }
+}
+
 
   function step3(){ // Debit Order Terms + Signature (only for debit)
     prog();
