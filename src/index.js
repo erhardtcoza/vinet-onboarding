@@ -1,4 +1,4 @@
-// --- Vinet Onboarding Worker (rolled-back + fixes) ---
+// --- Vinet Onboarding Worker (rolled-back + fixes + client PDF links) ---
 // Single-file Worker with:
 // - Admin dashboard (IP allowlisted)
 // - Onboarding flow (OTP via WhatsApp, payment select, confirm details, uploads, agreement, finish)
@@ -6,20 +6,20 @@
 // - Debit Order page (GET/POST), saved to KV, read-only in admin
 // - Terms endpoints
 // - R2 uploads (ID + POA, 5MB each)
-// - PDF generation stub left as-is behind admin approve
+// - PDF generation on signature -> client download links
 
-const ALLOWED_CIDR = "160.226.128.0/20";
 const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
 const TERMS_SERVICE_URL_DEFAULT = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+const TEMPLATE_MSA_URL = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
+const TEMPLATE_DO_URL  = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 
 // ---------- Helpers ----------
 function ipAllowed(request) {
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return false;
-  // CIDR 160.226.128.0/20 => a=160,b=226,c in [128..143]
   const [a, b, c] = ip.split(".").map(Number);
-  return a === 160 && b === 226 && c >= 128 && c <= 143;
+  return a === 160 && b === 226 && c >= 128 && c <= 143; // 160.226.128.0/20
 }
 
 async function fetchText(url) {
@@ -86,7 +86,6 @@ async function fetchProfileForDisplay(env, id) {
   const src = cust || lead || {};
   const phone = pickPhone({ ...src, contacts });
 
-  // Street handling: include street_1 + street_2 fallback
   const street =
     src.street ||
     [src.street_1, src.street_2].filter(Boolean).join(" ") ||
@@ -102,7 +101,6 @@ async function fetchProfileForDisplay(env, id) {
     city: src.city || "",
     street,
     zip: src.zip_code || src.zip || "",
-    partner: src.partner || src.location || "",
     payment_method: src.payment_method || "",
   };
 }
@@ -346,6 +344,103 @@ input[type=checkbox] { transform: scale(1.4); transform-origin: left center; mar
 </html>`;
 }
 
+// ---------- PDF generation (client download on sign) ----------
+async function generateAgreementPDFs(env, linkid, sess, sigBytes) {
+  // Load pdf-lib dynamically
+  const { PDFDocument } = await import("pdf-lib");
+
+  // Gather basic data
+  const splynx_id = (linkid || "").split("_")[0];
+  const full_name = (sess.edits && sess.edits.full_name) || "";
+  const email     = (sess.edits && sess.edits.email) || "";
+  const phone     = (sess.edits && sess.edits.phone) || "";
+  const street    = (sess.edits && sess.edits.street) || "";
+  const city      = (sess.edits && sess.edits.city) || "";
+  const zip       = (sess.edits && sess.edits.zip) || "";
+  const debit     = sess.debit || null;
+  const today     = new Date().toLocaleDateString("en-ZA");
+
+  async function fillAndStamp(url, fields, sigOpts) {
+    const tplRes = await fetch(url);
+    const pdfDoc = await PDFDocument.load(await tplRes.arrayBuffer());
+
+    // Try to fill forms if fields exist
+    try {
+      const form = pdfDoc.getForm();
+      for (const [k, v] of Object.entries(fields)) {
+        try { form.getTextField(k).setText(String(v ?? "")); } catch {}
+      }
+      form.flatten();
+    } catch {
+      // no form – ignore
+    }
+
+    // Stamp signature (bottom-right by default)
+    if (sigBytes) {
+      const png = await pdfDoc.embedPng(sigBytes);
+      const pages = pdfDoc.getPages();
+      const page = pages[pages.length - 1];
+      const { width, height } = page.getSize();
+      const sigW = Math.min(220, width * 0.35);
+      const sigH = (png.height / png.width) * sigW;
+      const x = (sigOpts?.x ?? (width - sigW - 40));
+      const y = (sigOpts?.y ?? (40));
+      page.drawImage(png, { x, y, width: sigW, height: sigH });
+      // date text near signature
+      page.drawText(`Signed: ${today}`, { x, y: y + sigH + 8, size: 10 });
+      if (full_name) page.drawText(full_name, { x, y: y + sigH + 22, size: 10 });
+    }
+
+    return await pdfDoc.save();
+  }
+
+  // MSA is always generated
+  const msaFields = {
+    "Client Full Name": full_name,
+    "Client ID": "", // we don't collect SA ID on service form – leave blank or map if available
+    "Client Address": `${street} ${city} ${zip}`.trim(),
+    "Client Email": email,
+    "Client Phone": phone,
+    "Vinet Customer ID": String(splynx_id),
+    "Agreement Date": today,
+    "Signature Name": full_name,
+  };
+  const msaPdf = await fillAndStamp(TEMPLATE_MSA_URL, msaFields);
+
+  // DO only if debit chosen
+  let doPdf = null;
+  if (debit) {
+    const doFields = {
+      "Bank Account Holder Name": debit.account_holder || "",
+      "Bank Account Holder ID no": debit.id_number || "",
+      "Bank": debit.bank_name || "",
+      "Bank Account No": debit.account_number || "",
+      "Bank Account Type": debit.account_type || "",
+      "Debit Order Date": String(debit.debit_day || ""),
+      "Client Full Name": full_name,
+      "Agreement Date": today,
+    };
+    doPdf = await fillAndStamp(TEMPLATE_DO_URL, doFields);
+  }
+
+  // Save to R2
+  const msaKey = `agreements/${linkid}/msa.pdf`;
+  await env.R2_UPLOADS.put(msaKey, msaPdf, { httpMetadata: { contentType: "application/pdf" } });
+  let doKey = null;
+  if (doPdf) {
+    doKey = `agreements/${linkid}/do.pdf`;
+    await env.R2_UPLOADS.put(doKey, doPdf, { httpMetadata: { contentType: "application/pdf" } });
+  }
+
+  // Public URLs (served by R2 public bucket or via API gateway if configured)
+  const base = env.API_URL || "";
+  // If your R2 is public via the bucket domain, replace with that here.
+  const msaUrl = `${base}/r2/${encodeURIComponent(msaKey)}`; // adjust if you have a CDN mapping
+  const doUrl  = doKey ? `${base}/r2/${encodeURIComponent(doKey)}` : null;
+
+  return { msaKey, doKey, msaUrl, doUrl };
+}
+
 // ---------- Worker ----------
 export default {
   async fetch(request, env, ctx) {
@@ -464,9 +559,7 @@ export default {
         template: {
           name: templateName,
           language: { code: env.WHATSAPP_TEMPLATE_LANG || "en_US" },
-          components: [
-            { type: "body", parameters: [{ type: "text", text: code }] }
-          ],
+          components: [{ type: "body", parameters: [{ type: "text", text: code }] }],
         },
       };
       const r = await fetch(endpoint, {
@@ -572,28 +665,37 @@ export default {
       return json({ ok: true });
     }
 
-    // Store signature + mark pending
+    // Store signature + mark pending + GENERATE PDFs + return URLs
     if (path === "/api/sign" && method === "POST") {
       const { linkid, dataUrl } = await request.json().catch(() => ({}));
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
         return json({ ok: false, error: "Missing/invalid signature" }, 400);
       }
       const png = dataUrl.split(",")[1];
-      const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+      const sigBytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
       const sigKey = `agreements/${linkid}/signature.png`;
-      await env.R2_UPLOADS.put(sigKey, bytes.buffer, { httpMetadata: { contentType: "image/png" } });
+      await env.R2_UPLOADS.put(sigKey, sigBytes.buffer, { httpMetadata: { contentType: "image/png" } });
 
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return json({ ok: false, error: "Unknown session" }, 404);
+
+      // Generate PDFs and get URLs
+      let pdfUrls = { msaUrl: null, doUrl: null };
+      try {
+        pdfUrls = await generateAgreementPDFs(env, linkid, sess, sigBytes);
+      } catch (e) {
+        // If PDF generation fails, still mark as pending but return without URLs
+      }
 
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
         ...sess,
         agreement_signed: true,
         agreement_sig_key: sigKey,
-        status: "pending" // waiting for admin approval
+        status: "pending",
+        downloads: { msa: pdfUrls.msaUrl, do: pdfUrls.doUrl }
       }), { expirationTtl: 86400 });
 
-      return json({ ok: true, sigKey });
+      return json({ ok: true, ...pdfUrls });
     }
 
     // File uploads (ID + POA), 5MB cap
@@ -719,7 +821,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
 </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // Admin approve (PDF generation kept; can expose to client later if needed)
+    // Admin approve (status only; PDFs already generated for client)
     if (path === "/api/admin/approve" && method === "POST") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(() => ({}));
@@ -727,9 +829,6 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
 
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return json({ ok: false, error: "No session" }, 404);
-
-      // (Optional) generate PDFs here as in previous version...
-      // Skipping details to keep stable. You can re-enable your existing pdf-lib code block.
 
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status: "approved" }), {
         expirationTtl: 86400,
@@ -753,7 +852,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       return json({ ok:true });
     }
 
-    // Onboarding UI renderer (with uploads step, bigger checkboxes, no language/secondary)
+    // Onboarding UI renderer (uploads step + final downloads)
     function renderOnboardUI(linkid) {
       return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8" />
@@ -779,6 +878,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
   canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
   input[type=checkbox]{ transform: scale(1.35); transform-origin: left center; margin-right: 8px; }
   .eftbox { background:#f9f9f9; border:1px solid #eee; border-radius:.7em; padding: .8em 1em; }
+  .downloads a { display:inline-block; margin-right:10px; }
 </style>
 </head>
 <body>
@@ -793,9 +893,9 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
   const stepEl = document.getElementById('step');
   const progEl = document.getElementById('prog');
   let step = 0;
-  let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
+  let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft', downloads: {} };
 
-  const TOTAL_STEPS = 6; // 0..6 (0 welcome, 1 verify, 2 pay, 3 confirm, 4 uploads, 5 agree, 6 finish)
+  const TOTAL_STEPS = 6;
   function pct(){ return Math.min(100, Math.round(((step+1)/(TOTAL_STEPS+1))*100)); }
   function setProg(){ progEl.style.width = pct() + '%'; }
   function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
@@ -823,13 +923,11 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); }, dataURL(){ return canvas.toDataURL('image/png'); } };
   }
 
-  // 0 Welcome
   function step0(){
     stepEl.innerHTML = '<h2>Welcome</h2><p>We\\u2019ll quickly verify you and confirm a few details.</p><button class="btn" id="start">Let\\u2019s begin</button>';
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
-  // 1 Verify
   function step1(){
     stepEl.innerHTML = [
       '<h2>Verify your identity</h2>',
@@ -853,7 +951,6 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
   }
 
-  // 2 Payment method (EFT inline + link, Debit auto form)
   function step2(){
     const pay = state.pay_method || 'eft';
     stepEl.innerHTML = [
@@ -924,7 +1021,6 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     };
   }
 
-  // 3 Confirm details (includes street address)
   function step3(){
     stepEl.innerHTML='<h2>Confirm your details</h2><div id="box" class="note">Loading…</div>';
     (async()=>{
@@ -947,7 +1043,6 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     })();
   }
 
-  // 4 Supporting documents (ID + Proof of Address)
   function step4(){
     stepEl.innerHTML = [
       '<h2>Upload supporting documents</h2>',
@@ -965,10 +1060,9 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       const msg = document.getElementById('upMsg');
       const idF = document.getElementById('idFile').files[0];
       const poaF = document.getElementById('poaFile').files[0];
-      const id = (linkid||'').split('_')[0];
 
       async function uploadOne(file, label){
-        if (!file) return true; // optional
+        if (!file) return true;
         if (file.size > 5*1024*1024) { msg.textContent = label+': file too large (max 5MB)'; return false; }
         const arr = await file.arrayBuffer();
         const q = new URLSearchParams({ linkid, label, filename: file.name });
@@ -989,7 +1083,6 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     };
   }
 
-  // 5 Agreement + signature (checkbox larger, pay-specific terms)
   function step5(){
     stepEl.innerHTML=[
       '<h2>Service Agreement</h2>',
@@ -1002,17 +1095,30 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     const pad=sigPad(document.getElementById('sig'));
     document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); pad.clear(); };
     document.getElementById('back4').onclick=(e)=>{ e.preventDefault(); step=4; state.progress=step; setProg(); save(); render(); };
-    document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to accept the terms.'; return; } msg.textContent='Uploading signature…';
-      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=6; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
+    document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to accept the terms.'; return; } msg.textContent='Finalising…';
+      try{
+        const dataUrl=pad.dataURL();
+        const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})});
+        const d=await r.json().catch(()=>({ok:false}));
+        if(d.ok){
+          state.downloads = { msa: d.msaUrl || '', do: d.doUrl || '' };
+          step=6; state.progress=step; setProg(); save(); render();
+        } else {
+          msg.textContent=d.error||'Failed to finalise.';
+        }
+      }catch{ msg.textContent='Network error.'; }
     };
   }
 
-  // 6 Finish
   function step6(){
+    const a = [];
+    if (state.downloads && state.downloads.msa) a.push('<a class="btn-outline" target="_blank" href="'+state.downloads.msa+'">Download MSA</a>');
+    if (state.pay_method==='debit' && state.downloads && state.downloads.do) a.push('<a class="btn-outline" target="_blank" href="'+state.downloads.do+'">Download Debit Order</a>');
     stepEl.innerHTML=[
       '<h2>All set!</h2>',
       '<p>Thanks - we\\u2019ve recorded your information. Our team will be in contact shortly.</p>',
-      '<p>If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinet.co.za</b></p>'
+      '<p>If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinet.co.za</b></p>',
+      (a.length?('<div class="downloads" style="margin-top:.6em">'+a.join(' ')+'</div>'):'')
     ].join('');
   }
 
@@ -1041,40 +1147,9 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       const key = `debit/${id}/${ts}`;
       const record = { ...b, splynx_id: id, created: ts, ip: getIP(request), ua: getUA(request) };
       await env.ONBOARD_KV.put(key, JSON.stringify(record), { expirationTtl: 60*60*24*90 });
-      // also attach to session if exists
-      const sessKey = Object.keys((await env.ONBOARD_KV.list({ prefix: "onboard/" })).keys.reduce((acc,k)=>{acc[k.name]=1;return acc;},{})).find(()=>false); // noop
       return json({ ok:true, ref:key });
     }
 
-   // R2 file proxy: GET /r2/<key...>
-if (path.startsWith("/r2/") && method === "GET") {
-  const key = decodeURIComponent(path.slice(4)); // everything after "/r2/"
-  if (!key || key.includes("..")) return new Response("Bad key", { status: 400 });
-
-  const obj = await env.R2_UPLOADS.get(key);
-  if (!obj) return new Response("Not found", { status: 404 });
-
-  // Try metadata content-type, else sniff from extension, else octet-stream
-  let ct = obj.httpMetadata?.contentType;
-  if (!ct) {
-    const ext = key.split(".").pop()?.toLowerCase();
-    if (ext === "pdf") ct = "application/pdf";
-    else if (["png","jpg","jpeg","webp"].includes(ext)) ct = `image/${ext === "jpg" ? "jpeg" : ext}`;
-    else if (ext === "txt") ct = "text/plain; charset=utf-8";
-    else ct = "application/octet-stream";
-  }
-
-  return new Response(obj.body, {
-    headers: {
-      "content-type": ct,
-      "cache-control": "private, max-age=0",
-      ...(obj.httpMetadata?.contentDisposition
-        ? { "content-disposition": obj.httpMetadata.contentDisposition }
-        : {}),
-    },
-  });
-}
-    
     // Default 404
     return new Response("Not found", { status: 404 });
   }
