@@ -288,7 +288,7 @@ export default {
       );
     }
 
-    // ------------ STATIC: onboard.js (includes uploads + agreement) ------------
+    // ------------ STATIC: onboard.js ------------
     if (path === "/static/onboard.js" && method === "GET") {
       const js = `
 (function(){
@@ -326,16 +326,22 @@ export default {
   function signaturePad(canvas){
     const ctx = canvas.getContext('2d');
     let drawing = false, last = null;
-    const scale = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.floor(rect.width * scale);
-    canvas.height = Math.floor(rect.height * scale);
-    ctx.scale(scale, scale);
-    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#222';
+    function resize(){
+      const scale = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * scale);
+      canvas.height = Math.floor(rect.height * scale);
+      ctx.scale(scale, scale);
+      ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#222';
+    }
+    resize();
+    window.addEventListener('resize', resize);
 
+    function rect(){ return canvas.getBoundingClientRect(); }
     function pos(e){
-      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const r = rect();
+      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
     }
     function start(e){ drawing = true; last = pos(e); e.preventDefault(); }
     function move(e){ if (!drawing) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; e.preventDefault(); }
@@ -343,7 +349,7 @@ export default {
     canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); window.addEventListener('mouseup', end);
     canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); window.addEventListener('touchend', end);
     return {
-      clear(){ ctx.clearRect(0,0,canvas.width,canvas.height); },
+      clear(){ const r = canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); },
       dataURL(){ return canvas.toDataURL('image/png'); }
     };
   }
@@ -459,6 +465,13 @@ export default {
         '    </select>',
         '  </div>',
         '  <div class="field">',
+        '    <label>Payment Method</label>',
+        '    <select name="pay_method" required>',
+        '      <option value="eft">EFT</option>',
+        '      <option value="debit">Debit order</option>',
+        '    </select>',
+        '  </div>',
+        '  <div class="field">',
         '    <label>Secondary Contact (optional)</label>',
         '    <input name="secondary" placeholder="Name and number (optional)" />',
         '  </div>',
@@ -475,6 +488,7 @@ export default {
         e.preventDefault();
         state.lang = prefs.lang.value;
         state.secondary = prefs.secondary.value || '';
+        state.pay_method = prefs.pay_method.value;
         step=2; state.progress=step; save(state); render();
       };
       return;
@@ -565,7 +579,7 @@ export default {
       return;
     }
 
-    // STEP 4 — Agreement + signature
+    // STEP 4 — Agreement + signature (terms based on pay_method)
     if (step === 4) {
       stepEl.innerHTML = [
         '<h2>Service Agreement</h2>',
@@ -587,7 +601,8 @@ export default {
 
       (async () => {
         try {
-          const r = await fetch('/api/terms');
+          const pay = (state.pay_method || 'eft');
+          const r = await fetch('/api/terms?pay=' + encodeURIComponent(pay));
           const t = await r.text();
           document.getElementById('terms').innerHTML = t || 'Terms not available.';
         } catch { document.getElementById('terms').textContent = 'Failed to load terms.'; }
@@ -654,51 +669,62 @@ export default {
       return new Response(js, { headers: jsHeaders });
     }
 
-    // ------------ API: TERMS ------------
+    // ------------ API: TERMS (service + conditional debit) ------------
     if (path === "/api/terms" && method === "GET") {
-      try {
-        if (env.TERMS_R2_KEY) {
-          const obj = await env.R2_UPLOADS.get(env.TERMS_R2_KEY);
-          if (obj) {
-            const txt = await obj.text();
-            return new Response(txt, { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
-          }
-        }
-      } catch (e) {
-        console.error("R2 terms fetch error", e.message);
+      const pay = (url.searchParams.get("pay") || "eft").toLowerCase();
+      const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+      const debUrl = env.TERMS_DEBIT_URL   || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+
+      async function fetchText(u) {
+        if (!u) return "";
+        try {
+          const r = await fetch(u, { cf: { cacheEverything: true, cacheTtl: 300 } });
+          return r.ok ? await r.text() : "";
+        } catch { return ""; }
       }
-      const t = (env.TERMS_TEXT || "").trim();
-      if (t) return new Response(t, { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
-      return new Response("<p>By proceeding you agree to Vinet's service terms, acceptable use, and privacy policy.</p>", { headers: { "content-type":"text/html; charset=utf-8", ...noCache } });
+
+      const [svc, deb] = await Promise.all([
+        fetchText(svcUrl),
+        pay === "debit" ? fetchText(debUrl) : Promise.resolve("")
+      ]);
+
+      const html =
+        `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${escapeHtml(svc)}</pre>` +
+        (deb ? `<hr/><h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${escapeHtml(deb)}</pre>` : "");
+
+      return new Response(html || "<p>Terms unavailable.</p>", {
+        headers: { "content-type": "text/html; charset=utf-8", ...noCache }
+      });
     }
 
-// ------------ API: OTP send ------------
-if (path === "/api/otp/send" && method === "POST") {
-  const { linkid } = await readJSON(request);
-  if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-  const splynxId = (linkid || "").split("_")[0];
+    // ------------ API: OTP send ------------
+    if (path === "/api/otp/send" && method === "POST") {
+      const { linkid } = await readJSON(request);
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const splynxId = (linkid || "").split("_")[0];
 
-  let msisdn = null;
-  try { msisdn = await fetchCustomerMsisdn(splynxId); }
-  catch (e) { console.error("Splynx lookup failed", e.message); return json({ ok:false, error:"Splynx lookup failed" }, 502); }
-  if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
+      let msisdn = null;
+      try { msisdn = await fetchCustomerMsisdn(splynxId); }
+      catch (e) { console.error("Splynx lookup failed", e.message); return json({ ok:false, error:"Splynx lookup failed" }, 502); }
+      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
-  await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
 
-  try { 
-    await sendWhatsAppTemplate(msisdn, code, "en"); 
-    return json({ ok:true }); 
-  } catch (e) {
-    try { 
-      await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
-      return json({ ok:true, note:"sent-as-text" }); 
-    } catch (e2) { 
-      return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); 
+      try { 
+        await sendWhatsAppTemplate(msisdn, code, "en"); 
+        return json({ ok:true }); 
+      } catch (e) {
+        try { 
+          await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
+          return json({ ok:true, note:"sent-as-text" }); 
+        } catch (e2) { 
+          return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); 
+        }
+      }
     }
-  }
-}
+
     // ------------ API: OTP verify (WA + staff) ------------
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await readJSON(request);
@@ -788,17 +814,22 @@ if (path === "/api/otp/send" && method === "POST") {
       const ip = getIP();
       const ua = getUA();
 
+      // Store PNG in R2
       const sigKey = `agreements/${linkid}/signature.png`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, {
         httpMetadata: { contentType: "image/png" }
       });
 
+      // Store receipt in KV (30 days)
       const receipt = { linkid, signed_at: now, ip, ua, note: "agreement accepted" };
       await env.ONBOARD_KV.put(`agreement/${linkid}`, JSON.stringify(receipt), { expirationTtl: 60*60*24*30 });
 
+      // Mark progress done
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (sess) {
-        await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, progress: 5, agreement_signed: true, agreement_sig_key: sigKey }), { expirationTtl: 86400 });
+        await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
+          ...sess, progress: 5, agreement_signed: true, agreement_sig_key: sigKey
+        }), { expirationTtl: 86400 });
       }
 
       return json({ ok:true, sigKey });
@@ -807,9 +838,10 @@ if (path === "/api/otp/send" && method === "POST") {
     // ------------ 404 ------------
     return new Response("Not found", { status: 404 });
 
-    // helper
+    // helpers
     function json(obj, status=200) {
       return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", ...noCache } });
     }
+    function escapeHtml(s=""){return s.replace(/[&<>"']/g,c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));}
   }
 }
