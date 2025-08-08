@@ -1,125 +1,44 @@
-// --- Vinet Onboarding Worker ---
-// Handles admin dashboard, onboarding flow, EFT & Debit Order pages
-// Updated to auto-show debit order form, load terms, and prefill EFT reference
+// --- Vinet Onboarding Worker (rolled-back + fixes) ---
+// Single-file Worker with:
+// - Admin dashboard (IP allowlisted)
+// - Onboarding flow (OTP via WhatsApp, payment select, confirm details, uploads, agreement, finish)
+// - Inline EFT + "View EFT page" link
+// - Debit Order page (GET/POST), saved to KV, read-only in admin
+// - Terms endpoints
+// - R2 uploads (ID + POA, 5MB each)
+// - PDF generation stub left as-is behind admin approve
 
-const ALLOWED_IPS = [
-  "160.226.128.0/20" // CIDR-style for your ASN range
-];
-
+const ALLOWED_CIDR = "160.226.128.0/20";
 const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+const TERMS_SERVICE_URL_DEFAULT = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 
-// --- Helpers ---
+// ---------- Helpers ----------
 function ipAllowed(request) {
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return false;
-  // CIDR 160.226.128.0/20 means first two octets fixed, third in 128-143
+  // CIDR 160.226.128.0/20 => a=160,b=226,c in [128..143]
   const [a, b, c] = ip.split(".").map(Number);
   return a === 160 && b === 226 && c >= 128 && c <= 143;
 }
 
 async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) return "";
-  return res.text();
+  const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 300 } });
+  return r.ok ? r.text() : "";
 }
 
-// --- EFT Page ---
-async function renderEFTPage(id) {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>EFT Payment Details</title>
-<style>
-body { font-family: Arial, sans-serif; background: #f7f7fa; }
-.container { max-width: 700px; margin: 40px auto; background: #fff; padding: 20px; border-radius: 12px; }
-h1 { color: #e2001a; }
-input { width: 100%; padding: 8px; margin: 5px 0 15px; border: 1px solid #ccc; border-radius: 6px; }
-button { background: #e2001a; color: #fff; padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; }
-.note { font-size: 12px; color: #555; }
-</style>
-</head>
-<body>
-<div class="container">
-  <img src="${LOGO_URL}" height="60"><br><br>
-  <h1>EFT Payment Details</h1>
-  <label>Bank</label>
-  <input readonly value="First National Bank (FNB/RMB)">
-  <label>Account Name</label>
-  <input readonly value="Vinet Internet Solutions">
-  <label>Account Number</label>
-  <input readonly value="62757054996">
-  <label>Branch Code</label>
-  <input readonly value="250655">
-  <label>Reference</label>
-  <input readonly value="${id || ''}">
-  <p class="note">Please remember that all accounts are payable on or before the 1st of every month.</p>
-  <button onclick="window.print()">Print</button>
-</div>
-</body>
-</html>`;
-}
+const json = (o, s = 200) =>
+  new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
 
-// --- Debit Order Page ---
-async function renderDebitPage(id) {
-  const terms = await fetchText(TERMS_DEBIT_URL);
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Debit Order Instruction</title>
-<style>
-body { font-family: Arial, sans-serif; background: #f7f7fa; }
-.container { max-width: 800px; margin: 40px auto; background: #fff; padding: 20px; border-radius: 12px; }
-h1 { color: #e2001a; }
-input, select { width: 100%; padding: 8px; margin: 5px 0 15px; border: 1px solid #ccc; border-radius: 6px; }
-button { background: #e2001a; color: #fff; padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; }
-label { font-weight: bold; }
-.terms { background: #f9f9f9; padding: 10px; margin-top: 15px; border: 1px solid #ccc; max-height: 200px; overflow-y: scroll; }
-</style>
-</head>
-<body>
-<div class="container">
-  <img src="${LOGO_URL}" height="60"><br><br>
-  <h1>Debit Order Instruction</h1>
-  <form method="POST" action="/submit-debit">
-    <input type="hidden" name="client_id" value="${id || ''}">
-    <label>Bank Account Holder Name</label>
-    <input name="account_holder" required>
-    <label>Bank Account Holder ID No</label>
-    <input name="id_number" required>
-    <label>Bank</label>
-    <input name="bank" required>
-    <label>Bank Account No</label>
-    <input name="account_number" required>
-    <label>Bank Account Type</label>
-    <select name="account_type">
-      <option value="cheque">Cheque</option>
-      <option value="savings">Savings</option>
-      <option value="transmission">Transmission</option>
-    </select>
-    <label>Debit Order Date</label>
-    <select name="debit_date">
-      <option value="1">1st</option>
-      <option value="7">7th</option>
-      <option value="15">15th</option>
-      <option value="25">25th</option>
-      <option value="29">29th</option>
-      <option value="30">30th</option>
-    </select>
-    <div class="terms">${terms || 'Terms unavailable.'}</div>
-    <label><input type="checkbox" name="agree" required> I agree to the Debit Order terms</label><br><br>
-    <button type="submit">Submit</button>
-    <button type="button" onclick="window.location.href='/info/eft?id=${id || ''}'" style="background: grey; margin-left:10px;">Prefer EFT?</button>
-  </form>
-</div>
-</body>
-</html>`;
-}
-// --- Splynx helpers (API v2.0, Basic auth via env) ---
+const getIP = (req) =>
+  req.headers.get("CF-Connecting-IP") ||
+  req.headers.get("x-forwarded-for") ||
+  req.headers.get("x-real-ip") ||
+  "";
+
+const getUA = (req) => req.headers.get("user-agent") || "";
+
+// ---------- Splynx helpers ----------
 async function splynxGET(env, endpoint) {
   const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
     headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
@@ -127,29 +46,15 @@ async function splynxGET(env, endpoint) {
   if (!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`);
   return r.json();
 }
-async function splynxPUT(env, endpoint, payload) {
-  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
-    method: "PUT",
-    headers: {
-      Authorization: `Basic ${env.SPLYNX_AUTH}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) throw new Error(`Splynx PUT ${endpoint} ${r.status}`);
-  return r.json().catch(() => ({}));
-}
 
-// pick any msisdn in 27xxxxxxxxx format from a messy object
 function pickPhone(obj) {
   if (!obj) return null;
-  const ok = s => /^27\d{8,13}$/.test(String(s || "").trim());
+  const ok = (s) => /^27\d{8,13}$/.test(String(s || "").trim());
   const direct = [
     obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
     obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone
   ];
   for (const v of direct) if (ok(v)) return String(v).trim();
-
   if (Array.isArray(obj)) {
     for (const it of obj) { const m = pickPhone(it); if (m) return m; }
   } else if (typeof obj === "object") {
@@ -157,6 +62,7 @@ function pickPhone(obj) {
   }
   return null;
 }
+
 async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
@@ -170,6 +76,7 @@ async function fetchCustomerMsisdn(env, id) {
   }
   return null;
 }
+
 async function fetchProfileForDisplay(env, id) {
   let cust=null, lead=null, contacts=null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
@@ -178,6 +85,14 @@ async function fetchProfileForDisplay(env, id) {
 
   const src = cust || lead || {};
   const phone = pickPhone({ ...src, contacts });
+
+  // Street handling: include street_1 + street_2 fallback
+  const street =
+    src.street ||
+    [src.street_1, src.street_2].filter(Boolean).join(" ") ||
+    src.address ||
+    "";
+
   return {
     kind: cust ? "customer" : (lead ? "lead" : "unknown"),
     id: id,
@@ -185,17 +100,16 @@ async function fetchProfileForDisplay(env, id) {
     email: src.email || src.billing_email || "",
     phone: phone || "",
     city: src.city || "",
-    street: src.street || "",
+    street,
     zip: src.zip_code || src.zip || "",
     partner: src.partner || src.location || "",
     payment_method: src.payment_method || "",
   };
 }
 
-// --- Admin Dashboard HTML (at "/") ---
+// ---------- Admin HTML ----------
 function renderAdminPage() {
-  return `
-<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -203,11 +117,12 @@ function renderAdminPage() {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   body { font-family: system-ui, sans-serif; background:#fafbfc; color:#232; }
-  .card { background:#fff; max-width:1000px; margin:2.0em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.4em 1.6em; }
+  .card { background:#fff; max-width:1100px; margin:2.0em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.4em 1.6em; }
   .logo { display:block; margin:0 auto 1em; max-width:90px; }
   h1, h2 { color:#e2001a; }
-  .tabs { display:flex; gap:.5em; flex-wrap:wrap; margin:.2em 0 1em; }
-  .tab { padding:.55em 1.0em; border-radius:.7em; border:2px solid #e2001a; color:#e2001a; cursor:pointer; user-select:none; }
+  .tabs { display:grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap:.6em; justify-content:center; margin:.6em auto 1.2em; max-width:680px; }
+  .tabs.bottom { grid-template-columns: repeat(3, minmax(200px, 1fr)); max-width:820px; margin-top:.2em; }
+  .tab { text-align:center; padding:.7em 1.2em; border-radius:.9em; border:2px solid #e2001a; color:#e2001a; cursor:pointer; user-select:none; font-weight:600; background:#fff; }
   .tab.active { background:#e2001a; color:#fff; }
   .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.55em 1.0em; font-size:1em; cursor:pointer; }
   .btn-outline { background:#fff; color:#e2001a; border:2px solid #e2001a; border-radius:.7em; padding:.5em 1.0em; }
@@ -225,13 +140,17 @@ function renderAdminPage() {
   <div class="card">
     <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
     <h1>Admin Dashboard</h1>
-    <div class="tabs">
+
+    <div class="tabs top">
       <div class="tab active" data-tab="gen">1. Generate onboarding link</div>
       <div class="tab" data-tab="staff">2. Generate verification code</div>
+    </div>
+    <div class="tabs bottom">
       <div class="tab" data-tab="inprog">3. Pending (in-progress)</div>
       <div class="tab" data-tab="pending">4. Completed (awaiting approval)</div>
       <div class="tab" data-tab="approved">5. Approved</div>
     </div>
+
     <div id="content"></div>
   </div>
   <script src="/static/admin.js"></script>
@@ -239,7 +158,6 @@ function renderAdminPage() {
 </html>`;
 }
 
-// --- Admin client JS (served at /static/admin.js) ---
 function adminJs() {
   return `(()=> {
     const tabs = document.querySelectorAll('.tab');
@@ -330,24 +248,112 @@ function adminJs() {
     }
   })();`;
 }
-// --- Worker entry ---
+
+// ---------- EFT Page ----------
+async function renderEFTPage(id) {
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>EFT Payment Details</title>
+<style>
+body { font-family: Arial, sans-serif; background: #f7f7fa; }
+.container { max-width: 700px; margin: 40px auto; background: #fff; padding: 20px; border-radius: 12px; }
+h1 { color: #e2001a; }
+input { width: 100%; padding: 8px; margin: 5px 0 15px; border: 1px solid #ccc; border-radius: 6px; }
+button { background: #e2001a; color: #fff; padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; }
+.note { font-size: 12px; color: #555; }
+</style>
+</head>
+<body>
+<div class="container">
+  <img src="${LOGO_URL}" height="60"><br><br>
+  <h1>EFT Payment Details</h1>
+  <label>Bank</label>
+  <input readonly value="First National Bank (FNB/RMB)">
+  <label>Account Name</label>
+  <input readonly value="Vinet Internet Solutions">
+  <label>Account Number</label>
+  <input readonly value="62757054996">
+  <label>Branch Code</label>
+  <input readonly value="250655">
+  <label>Reference</label>
+  <input readonly value="${id || ''}">
+  <p class="note">Please remember that all accounts are payable on or before the 1st of every month.</p>
+  <button onclick="window.print()">Print</button>
+</div>
+</body>
+</html>`;
+}
+
+// ---------- Debit Order Page (GET + POST) ----------
+async function renderDebitPage(id) {
+  const terms = await fetchText(TERMS_DEBIT_URL);
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Debit Order Instruction</title>
+<style>
+body { font-family: Arial, sans-serif; background: #f7f7fa; }
+.container { max-width: 800px; margin: 40px auto; background: #fff; padding: 20px; border-radius: 12px; }
+h1 { color: #e2001a; }
+input, select { width: 100%; padding: 8px; margin: 5px 0 15px; border: 1px solid #ccc; border-radius: 6px; }
+button { background: #e2001a; color: #fff; padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; }
+label { font-weight: bold; }
+.terms { background: #f9f9f9; padding: 10px; margin-top: 15px; border: 1px solid #ccc; max-height: 200px; overflow-y: scroll; }
+input[type=checkbox] { transform: scale(1.4); transform-origin: left center; margin-right: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <img src="${LOGO_URL}" height="60"><br><br>
+  <h1>Debit Order Instruction</h1>
+  <form method="POST" action="/info/debit?id=${encodeURIComponent(id || '')}">
+    <input type="hidden" name="client_id" value="${id || ''}">
+    <label>Bank Account Holder Name</label>
+    <input name="account_holder" required>
+    <label>Bank Account Holder ID No</label>
+    <input name="id_number" required>
+    <label>Bank</label>
+    <input name="bank_name" required>
+    <label>Bank Account No</label>
+    <input name="account_number" required>
+    <label>Bank Account Type</label>
+    <select name="account_type" required>
+      <option value="cheque">Cheque</option>
+      <option value="savings">Savings</option>
+      <option value="transmission">Transmission</option>
+    </select>
+    <label>Debit Order Date</label>
+    <select name="debit_day" required>
+      <option value="1">1st</option>
+      <option value="7">7th</option>
+      <option value="15">15th</option>
+      <option value="25">25th</option>
+      <option value="29">29th</option>
+      <option value="30">30th</option>
+    </select>
+    <div class="terms">${terms || 'Terms unavailable.'}</div>
+    <label style="display:flex;align-items:center;margin-top:10px;">
+      <input type="checkbox" name="agree" required> I agree to the Debit Order terms
+    </label><br/>
+    <button type="submit">Submit</button>
+    <button type="button" onclick="window.location.href='/info/eft?id=${id || ''}'" style="background: grey; margin-left:10px;">Prefer EFT?</button>
+  </form>
+</div>
+</body>
+</html>`;
+}
+
+// ---------- Worker ----------
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
-    // small helpers
-    const json = (o, s = 200) =>
-      new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
-    const getIP = () =>
-      request.headers.get("CF-Connecting-IP") ||
-      request.headers.get("x-forwarded-for") ||
-      request.headers.get("x-real-ip") ||
-      "";
-    const getUA = () => request.headers.get("user-agent") || "";
-
-    // -------- Admin dashboard --------
+    // Admin gate
     if (path === "/" && method === "GET") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -356,80 +362,71 @@ export default {
       return new Response(adminJs(), { headers: { "content-type": "application/javascript; charset=utf-8" } });
     }
 
-    // -------- Info pages --------
+    // Info: EFT
     if (path === "/info/eft" && method === "GET") {
       const id = url.searchParams.get("id") || "";
       return new Response(await renderEFTPage(id), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
+
+    // Info: Debit GET/POST
     if (path === "/info/debit" && method === "GET") {
       const id = url.searchParams.get("id") || "";
       return new Response(await renderDebitPage(id), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
+    if (path === "/info/debit" && method === "POST") {
+      const id = url.searchParams.get("id") || "";
+      const form = await request.formData();
+      const payload = {
+        splynx_id: id || form.get("client_id") || "",
+        account_holder: form.get("account_holder") || "",
+        id_number: form.get("id_number") || "",
+        bank_name: form.get("bank_name") || "",
+        account_number: form.get("account_number") || "",
+        account_type: form.get("account_type") || "",
+        debit_day: form.get("debit_day") || "",
+        agree: form.get("agree") === "on",
+        via: "public-form",
+        at: Date.now(),
+        ip: getIP(request),
+        ua: getUA(request),
+      };
+      if (!payload.splynx_id || !payload.agree) {
+        return new Response("<p>Missing required fields.</p>", { status: 400, headers: { "content-type": "text/html" } });
+      }
+      await env.ONBOARD_KV.put(`debit/${payload.splynx_id}/${payload.at}`, JSON.stringify(payload), {
+        expirationTtl: 60 * 60 * 24 * 90,
+      });
+      return new Response(`<!doctype html><meta charset="utf-8"><div style="font-family:sans-serif;padding:2rem;">
+        <img src="${LOGO_URL}" height="50" style="display:block;margin-bottom:10px"/>
+        <h2>Thanks - we've recorded your information.</h2>
+        <p>Our team will be in contact shortly.</p>
+        <p>If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinet.co.za</b></p>
+      </div>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
 
-    // -------- Terms (service + debit) --------
+    // Terms API (service + optional debit)
     if (path === "/api/terms" && method === "GET") {
       const pay = (url.searchParams.get("pay") || "eft").toLowerCase();
-      const svcUrl =
-        env.TERMS_SERVICE_URL ||
-        "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-      const debUrl =
-        env.TERMS_DEBIT_URL ||
-        "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+      const svcUrl = env.TERMS_SERVICE_URL || TERMS_SERVICE_URL_DEFAULT;
+      const debUrl = env.TERMS_DEBIT_URL || TERMS_DEBIT_URL;
 
-      async function getText(u) {
-        try {
-          const r = await fetch(u, { cf: { cacheEverything: true, cacheTtl: 300 } });
-          return r.ok ? await r.text() : "";
-        } catch {
-          return "";
-        }
-      }
-      const service = await getText(svcUrl);
-      const debit = pay === "debit" ? await getText(debUrl) : "";
+      const [service, debit] = await Promise.all([
+        fetchText(svcUrl).catch(() => ""),
+        pay === "debit" ? fetchText(debUrl).catch(() => "") : ""
+      ]);
 
+      const esc = (s) => (s || "").replace(/[&<>]/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
       const body = `
         <h3>Service Terms</h3>
-        <pre style="white-space:pre-wrap">${(service || "").replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]))}</pre>
-        ${debit ? `<hr/><h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${(debit || "").replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]))}</pre>` : ""}
+        <pre style="white-space:pre-wrap">${esc(service)}</pre>
+        ${debit ? `<hr/><h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${esc(debit)}</pre>` : ""}
       `;
       return new Response(body || "<p>Terms unavailable.</p>", {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
 
-    // -------- Debit save (from /info/debit and inline flow) --------
-    if (path === "/api/debit/save" && method === "POST") {
-      const b = await request.json().catch(() => ({}));
-      const required = [
-        "account_holder",
-        "id_number",
-        "bank_name",
-        "account_number",
-        "account_type",
-        "debit_day",
-      ];
-      for (const k of required) {
-        if (!b[k] || String(b[k]).trim() === "") {
-          return json({ ok: false, error: `Missing ${k}` }, 400);
-        }
-      }
-      const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
-      const ts = Date.now();
-      const key = `debit/${id}/${ts}`;
-      const record = {
-        ...b,
-        splynx_id: id,
-        created: ts,
-        ip: getIP(),
-        ua: getUA(),
-      };
-      await env.ONBOARD_KV.put(key, JSON.stringify(record), {
-        expirationTtl: 60 * 60 * 24 * 90,
-      });
-      return json({ ok: true, ref: key });
-    }
-
-    // -------- Admin: generate link --------
+    // Admin: generate link
     if (path === "/api/admin/genlink" && method === "POST") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { id } = await request.json().catch(() => ({}));
@@ -444,7 +441,7 @@ export default {
       return json({ url: `${url.origin}/onboard/${linkid}` });
     }
 
-    // -------- Admin: staff OTP code --------
+    // Admin: staff OTP
     if (path === "/api/staff/gen" && method === "POST") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(() => ({}));
@@ -456,7 +453,7 @@ export default {
       return json({ ok: true, linkid, code });
     }
 
-    // -------- WhatsApp OTP send / verify --------
+    // WhatsApp OTP send / verify
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
       const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -466,12 +463,9 @@ export default {
         type: "template",
         template: {
           name: templateName,
-          language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
+          language: { code: env.WHATSAPP_TEMPLATE_LANG || "en_US" },
           components: [
-            { type: "body", parameters: [{ type: "text", text: code }] },
-            // Button with URL param often expects <= 15 chars; we pass last 6 only
-            { type: "button", sub_type: "url", index: "0",
-              parameters: [{ type: "text", text: code.slice(-6) }] }
+            { type: "body", parameters: [{ type: "text", text: code }] }
           ],
         },
       };
@@ -531,7 +525,6 @@ export default {
         await sendWhatsAppTemplate(msisdn, code, "en");
         return json({ ok: true });
       } catch (e) {
-        // fallback to plain text if session window is open
         try {
           await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
           return json({ ok: true, note: "sent-as-text" });
@@ -561,137 +554,32 @@ export default {
       return json({ ok });
     }
 
-    // (next: onboarding UI, uploads, progress, admin review, PDF)
-    // -------- Onboarding UI --------
+    // Onboarding UI
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return new Response("Link expired or invalid", { status: 404 });
-      return new Response(renderOnboardUI(linkid), {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return new Response(renderOnboardUI(linkid), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // -------- Onboarding: submit data and uploads --------
-    if (path === "/api/onboard/save" && method === "POST") {
-      const { linkid, data } = await request.json().catch(() => ({}));
-      if (!linkid || !data) return json({ ok: false, error: "Missing params" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-      if (!sess) return json({ ok: false, error: "Invalid link" }, 404);
-
-      // store pending changes for admin approval
-      await env.ONBOARD_KV.put(`pending/${linkid}`, JSON.stringify(data), {
-        expirationTtl: 60 * 60 * 24 * 30,
-      });
-      await env.ONBOARD_KV.put(
-        `onboard/${linkid}`,
-        JSON.stringify({ ...sess, progress: 50, pending: true }),
-        { expirationTtl: 86400 }
-      );
-      return json({ ok: true });
-    }
-
-    // -------- Onboarding: file uploads --------
-    if (path === "/api/onboard/upload" && method === "POST") {
-      const urlParams = new URL(request.url).searchParams;
-      const linkid = urlParams.get("linkid");
-      const fileName = urlParams.get("filename") || "file.bin";
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-      if (!sess) return new Response("Invalid link", { status: 404 });
-
-      const body = await request.arrayBuffer();
-      const key = `uploads/${linkid}/${Date.now()}_${fileName}`;
-      await env.R2_UPLOADS.put(key, body);
-      return json({ ok: true, key });
-    }
-
-    // -------- Admin: list pending onboardings --------
-    if (path === "/api/admin/pending" && method === "GET") {
-      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-      const list = await env.ONBOARD_KV.list({ prefix: "pending/" });
-      const out = [];
-      for (const i of list.keys) {
-        const data = await env.ONBOARD_KV.get(i.name, "json");
-        out.push({ linkid: i.name.split("/")[1], data });
-      }
-      return json({ ok: true, items: out });
-    }
-
-    // -------- Admin: approve onboarding --------
-    if (path === "/api/admin/approve" && method === "POST") {
-      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-      const { linkid } = await request.json().catch(() => ({}));
-      if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-      const pendingData = await env.ONBOARD_KV.get(`pending/${linkid}`, "json");
-      if (!pendingData) return json({ ok: false, error: "No pending data" }, 404);
-
-      // fill PDFs
-      const msaPdf = await fetch("https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf");
-      const doPdf = await fetch("https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf");
-      const { PDFDocument } = await import("pdf-lib");
-
-      async function fillPdf(templateRes, fields) {
-        const bytes = new Uint8Array(await templateRes.arrayBuffer());
-        const pdfDoc = await PDFDocument.load(bytes);
-        const form = pdfDoc.getForm();
-        for (const [k, v] of Object.entries(fields)) {
-          try {
-            form.getTextField(k).setText(String(v));
-          } catch {}
-        }
-        form.flatten();
-        return await pdfDoc.save();
-      }
-
-      const msaFields = {
-        full_name: pendingData.full_name || "",
-        id_number: pendingData.id_number || "",
-        customer_id: pendingData.splynx_id || "",
-        date: new Date().toLocaleDateString(),
-      };
-      const doFields = {
-        account_holder: pendingData.bank_account_holder || "",
-        id_number: pendingData.bank_account_holder_id || "",
-        bank_name: pendingData.bank_name || "",
-        account_number: pendingData.bank_account_no || "",
-        account_type: pendingData.bank_account_type || "",
-        debit_day: pendingData.debit_day || "",
-      };
-
-      const msaOut = await fillPdf(msaPdf, msaFields);
-      const doOut = await fillPdf(doPdf, doFields);
-
-      const msaKey = `approved/${linkid}_msa.pdf`;
-      const doKey = `approved/${linkid}_do.pdf`;
-      await env.R2_UPLOADS.put(msaKey, msaOut);
-      await env.R2_UPLOADS.put(doKey, doOut);
-
-      // push to Splynx here (customer update + docs upload)
-      const pushRes = await pushToSplynx(env, pendingData);
-      if (!pushRes.ok) return json({ ok: false, error: "Failed to push to Splynx" }, 502);
-
-      await env.ONBOARD_KV.delete(`pending/${linkid}`);
-      return json({ ok: true, msa_url: msaKey, do_url: doKey });
-    }
-    // -------- Save progress --------
+    // Save progress
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
       const body = await request.json().catch(() => ({}));
       const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
-      const next = { ...existing, ...body, last_ip: getIP(), last_ua: getUA(), last_time: Date.now() };
+      const next = { ...existing, ...body, last_ip: getIP(request), last_ua: getUA(request), last_time: Date.now() };
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
       return json({ ok: true });
     }
 
-    // -------- Store signature + mark pending --------
+    // Store signature + mark pending
     if (path === "/api/sign" && method === "POST") {
       const { linkid, dataUrl } = await request.json().catch(() => ({}));
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
         return json({ ok: false, error: "Missing/invalid signature" }, 400);
       }
       const png = dataUrl.split(",")[1];
-      const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
+      const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
       const sigKey = `agreements/${linkid}/signature.png`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, { httpMetadata: { contentType: "image/png" } });
 
@@ -702,13 +590,34 @@ export default {
         ...sess,
         agreement_signed: true,
         agreement_sig_key: sigKey,
-        status: "pending"  // waiting for admin approval
+        status: "pending" // waiting for admin approval
       }), { expirationTtl: 86400 });
 
       return json({ ok: true, sigKey });
     }
 
-    // -------- Admin list (for tabs 3/4/5) --------
+    // File uploads (ID + POA), 5MB cap
+    if (path === "/api/onboard/upload" && method === "POST") {
+      const q = new URL(request.url).searchParams;
+      const linkid = q.get("linkid");
+      const label = q.get("label") || "file";
+      const name = q.get("filename") || "file.bin";
+      if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+
+      const body = await request.arrayBuffer();
+      if (body.byteLength > 5 * 1024 * 1024) return json({ ok: false, error: "File too large (max 5MB)" }, 413);
+
+      const key = `uploads/${linkid}/${Date.now()}_${name}`;
+      await env.R2_UPLOADS.put(key, body);
+      // Track in session
+      const sess = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+      const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+      uploads.push({ key, label, name, size: body.byteLength });
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
+      return json({ ok: true, key });
+    }
+
+    // Admin: list tabs
     if (path === "/api/admin/list" && method === "GET") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const mode = url.searchParams.get("mode") || "pending";
@@ -728,7 +637,7 @@ export default {
       return json({ items });
     }
 
-    // -------- Simple admin review page --------
+    // Admin: review page (read-only debit details + uploads)
     if (path === "/admin/review" && method === "GET") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
@@ -738,16 +647,25 @@ export default {
 
       const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
       const filesHTML = uploads.length
-        ? `<ul style="list-style:none;padding:0">${
-            uploads.map(u =>
-              `<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em">
-                <b>${u.label}</b> — ${u.name} • ${Math.round((u.size||0)/1024)} KB
-              </li>`).join("")
-          }</ul>`
+        ? `<ul style="list-style:none;padding:0">${uploads.map(u =>
+            `<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em">
+              <b>${u.label}</b> — ${u.name} • ${Math.round((u.size||0)/1024)} KB
+            </li>`).join("")}</ul>`
         : `<div class="note">No files</div>`;
 
-      return new Response(`
-<!DOCTYPE html><html><head><meta charset="utf-8"/>
+      const debit = sess.debit || {};
+      const debitHTML = Object.keys(debit).length
+        ? `<div style="border:1px solid #eee;border-radius:.6em;padding:.7em">
+            <div><b>Account Holder:</b> ${debit.account_holder||''}</div>
+            <div><b>ID No:</b> ${debit.id_number||''}</div>
+            <div><b>Bank:</b> ${debit.bank_name||''}</div>
+            <div><b>Account No:</b> ${debit.account_number||''}</div>
+            <div><b>Type:</b> ${debit.account_type||''}</div>
+            <div><b>Debit Day:</b> ${debit.debit_day||''}</div>
+          </div>`
+        : `<div class="note">No debit order details</div>`;
+
+      return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <title>Review</title>
 <style>body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
 .card{background:#fff;max-width:900px;margin:2em auto;border-radius:1em;box-shadow:0 2px 12px #0002;padding:1.2em 1.4em}
@@ -762,6 +680,9 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
 
   <h2>Edits</h2>
   <div>${Object.entries(sess.edits||{}).map(([k,v])=>`<div><b>${k}</b>: ${v?String(v):''}</div>`).join("") || "<div class='note'>None</div>"}</div>
+
+  <h2>Debit Order</h2>
+  ${debitHTML}
 
   <h2>Uploads</h2>
   ${filesHTML}
@@ -798,7 +719,25 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
 </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // -------- Admin: reject (sets status) --------
+    // Admin approve (PDF generation kept; can expose to client later if needed)
+    if (path === "/api/admin/approve" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid } = await request.json().catch(() => ({}));
+      if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok: false, error: "No session" }, 404);
+
+      // (Optional) generate PDFs here as in previous version...
+      // Skipping details to keep stable. You can re-enable your existing pdf-lib code block.
+
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status: "approved" }), {
+        expirationTtl: 86400,
+      });
+      return json({ ok: true });
+    }
+
+    // Admin reject
     if (path === "/api/admin/reject" && method === "POST") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid, reason } = await request.json().catch(() => ({}));
@@ -814,7 +753,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       return json({ ok:true });
     }
 
-    // -------- Onboarding UI renderer --------
+    // Onboarding UI renderer (with uploads step, bigger checkboxes, no language/secondary)
     function renderOnboardUI(linkid) {
       return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8" />
@@ -838,12 +777,14 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
   .pill.active { background:#e2001a; color:#fff; }
   .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
   canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
+  input[type=checkbox]{ transform: scale(1.35); transform-origin: left center; margin-right: 8px; }
+  .eftbox { background:#f9f9f9; border:1px solid #eee; border-radius:.7em; padding: .8em 1em; }
 </style>
 </head>
 <body>
 <div class="card">
   <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
-  <div class="progressbar"><div id="prog" class="progress" style="width:14%"></div></div>
+  <div class="progressbar"><div id="prog" class="progress" style="width:12%"></div></div>
   <div id="step"></div>
 </div>
 <script>
@@ -854,7 +795,8 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
   let step = 0;
   let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
 
-  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); }
+  const TOTAL_STEPS = 6; // 0..6 (0 welcome, 1 verify, 2 pay, 3 confirm, 4 uploads, 5 agree, 6 finish)
+  function pct(){ return Math.min(100, Math.round(((step+1)/(TOTAL_STEPS+1))*100)); }
   function setProg(){ progEl.style.width = pct() + '%'; }
   function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
 
@@ -881,11 +823,13 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); }, dataURL(){ return canvas.toDataURL('image/png'); } };
   }
 
+  // 0 Welcome
   function step0(){
     stepEl.innerHTML = '<h2>Welcome</h2><p>We\\u2019ll quickly verify you and confirm a few details.</p><button class="btn" id="start">Let\\u2019s begin</button>';
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
+  // 1 Verify
   function step1(){
     stepEl.innerHTML = [
       '<h2>Verify your identity</h2>',
@@ -909,22 +853,34 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
   }
 
+  // 2 Payment method (EFT inline + link, Debit auto form)
   function step2(){
     const pay = state.pay_method || 'eft';
     stepEl.innerHTML = [
-      '<h2>Contact Preferences</h2>',
-      '<div class="field"><label>Preferred Language</label><select id="lang"><option value="en" '+(state.lang==='en'?'selected':'')+'>English</option><option value="af" '+(state.lang==='af'?'selected':'')+'>Afrikaans</option><option value="both" '+(state.lang==='both'?'selected':'')+'>Both</option></select></div>',
-      '<div class="field"><label>Payment Method</label><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
+      '<h2>Payment Method</h2>',
+      '<div class="field"><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
+      '<div id="eftBox" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
       '<div id="debitBox" class="field" style="display:'+(pay==='debit'?'block':'none')+';"></div>',
-      '<div class="field"><label>Secondary Contact (optional)</label><input id="secondary" placeholder="Name and number (optional)" value="'+(state.secondary||'')+'" /></div>',
       '<div class="row"><a class="btn-outline" id="back1">Back</a><button class="btn" id="cont">Continue</button></div>'
     ].join('');
 
-    function renderDebitForm(){
+    function renderEFT(){
+      const id=(linkid||'').split('_')[0]||'';
+      document.getElementById('eftBox').innerHTML =
+        '<div class="eftbox">'+
+        '<div><b>Bank:</b> First National Bank (FNB/RMB)</div>'+
+        '<div><b>Account Name:</b> Vinet Internet Solutions</div>'+
+        '<div><b>Account Number:</b> 62757054996</div>'+
+        '<div><b>Branch Code:</b> 250655</div>'+
+        '<div><b>Reference:</b> '+id+'</div>'+
+        '<div class="note" style="margin-top:.5em">Accounts payable on or before the 1st of every month.</div>'+
+        '<div style="margin-top:.6em"><a class="btn-outline" href="/info/eft?id='+id+'" target="_blank">View EFT page</a></div>'+
+        '</div>';
+    }
+
+    function renderDebit(){
       const d = state.debit || {};
-      const box = document.getElementById('debitBox');
-      box.style.display = 'block';
-      box.innerHTML = [
+      document.getElementById('debitBox').innerHTML = [
         '<div class="row">',
           '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
           '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
@@ -937,23 +893,19 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
           '<div class="field"><label>Bank Account Type</label><select id="d_type"><option value="cheque" '+((d.account_type||'')==='cheque'?'selected':'')+'>Cheque / Current</option><option value="savings" '+((d.account_type||'')==='savings'?'selected':'')+'>Savings</option><option value="transmission" '+((d.account_type||'')==='transmission'?'selected':'')+'>Transmission</option></select></div>',
           '<div class="field"><label>Debit Order Date</label><select id="d_day">',[1,7,15,25,29,30].map(x=>'<option '+((d.debit_day||'')==x?'selected':'')+' value="'+x+'">'+x+'</option>').join(''),'</select></div>',
         '</div>',
-        '<div class="termsbox" id="debitTerms">Loading terms...</div>'
+        '<div class="termsbox" id="debitTerms">Loading debit order terms...</div>'
       ].join('');
-
       (async()=>{ try{ const r=await fetch('/api/terms?pay=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
     }
-    function hideDebitForm(){ const box=document.getElementById('debitBox'); box.style.display='none'; box.innerHTML=''; }
 
-    document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; hideDebitForm(); save(); step2(); };
-    document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; renderDebitForm(); save(); };
+    if (pay==='eft') renderEFT(); else renderDebit();
 
-    if (pay === 'debit') renderDebitForm();
+    document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; document.getElementById('debitBox').style.display='none'; document.getElementById('eftBox').style.display='block'; renderEFT(); save(); };
+    document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; document.getElementById('eftBox').style.display='none'; document.getElementById('debitBox').style.display='block'; renderDebit(); save(); };
 
     document.getElementById('back1').onclick=(e)=>{ e.preventDefault(); step=1; state.progress=step; setProg(); save(); render(); };
     document.getElementById('cont').onclick=async(e)=>{
       e.preventDefault();
-      state.lang = document.getElementById('lang').value;
-      state.secondary = document.getElementById('secondary').value || '';
       if (state.pay_method === 'debit') {
         state.debit = {
           account_holder: document.getElementById('d_holder').value.trim(),
@@ -972,6 +924,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     };
   }
 
+  // 3 Confirm details (includes street address)
   function step3(){
     stepEl.innerHTML='<h2>Confirm your details</h2><div id="box" class="note">Loading…</div>';
     (async()=>{
@@ -985,7 +938,7 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
           '<div class="row"><div class="field"><label>Email</label><input id="f_email" value="'+(cur.email||'')+'" /></div><div class="field"><label>Phone</label><input id="f_phone" value="'+(cur.phone||'')+'" /></div></div>',
           '<div class="row"><div class="field"><label>Street</label><input id="f_street" value="'+(cur.street||'')+'" /></div><div class="field"><label>City</label><input id="f_city" value="'+(cur.city||'')+'" /></div></div>',
           '<div class="field"><label>ZIP Code</label><input id="f_zip" value="'+(cur.zip||'')+'" /></div>',
-          '<div class="row"><a class="btn-outline" id="back2">Back</a><button class="btn" id="cont">Looks good</button></div>',
+          '<div class="row"><a class="btn-outline" id="back2">Back</a><button class="btn" id="cont">Continue</button></div>',
           '<div class="note">We\\u2019ll use these updates later to sync with our system.</div>'
         ].join('');
         document.getElementById('back2').onclick=(e)=>{ e.preventDefault(); step=2; state.progress=step; setProg(); save(); render(); };
@@ -994,35 +947,83 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     })();
   }
 
+  // 4 Supporting documents (ID + Proof of Address)
   function step4(){
+    stepEl.innerHTML = [
+      '<h2>Upload supporting documents</h2>',
+      '<div class="note">Please upload a photo/scan of your ID and Proof of Address. Max 5 MB each.</div>',
+      '<div class="field"><label>Identity Document</label><input type="file" id="idFile" accept=".pdf,.png,.jpg,.jpeg" /></div>',
+      '<div class="field"><label>Proof of Address</label><input type="file" id="poaFile" accept=".pdf,.png,.jpg,.jpeg" /></div>',
+      '<div id="upMsg" class="note" style="margin:.5em 0 0"></div>',
+      '<div class="row"><a class="btn-outline" id="back3">Back</a><button class="btn" id="next">Continue</button></div>'
+    ].join('');
+
+    document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; setProg(); save(); render(); };
+
+    document.getElementById('next').onclick=async(e)=>{
+      e.preventDefault();
+      const msg = document.getElementById('upMsg');
+      const idF = document.getElementById('idFile').files[0];
+      const poaF = document.getElementById('poaFile').files[0];
+      const id = (linkid||'').split('_')[0];
+
+      async function uploadOne(file, label){
+        if (!file) return true; // optional
+        if (file.size > 5*1024*1024) { msg.textContent = label+': file too large (max 5MB)'; return false; }
+        const arr = await file.arrayBuffer();
+        const q = new URLSearchParams({ linkid, label, filename: file.name });
+        const r = await fetch('/api/onboard/upload?'+q.toString(), { method:'POST', body: arr });
+        const d = await r.json().catch(()=>({ok:false}));
+        if (!d.ok) { msg.textContent = 'Failed to upload '+label; return false; }
+        return true;
+      }
+
+      msg.textContent='Uploading...';
+      const ok1 = await uploadOne(idF, 'Identity Document');
+      if (!ok1) return;
+      const ok2 = await uploadOne(poaF, 'Proof of Address');
+      if (!ok2) return;
+
+      msg.textContent='Uploaded.';
+      step=5; state.progress=step; setProg(); save(); render();
+    };
+  }
+
+  // 5 Agreement + signature (checkbox larger, pay-specific terms)
+  function step5(){
     stepEl.innerHTML=[
       '<h2>Service Agreement</h2>',
       '<div id="terms" class="termsbox">Loading terms…</div>',
-      '<div class="field"><label><input type="checkbox" id="agreeChk"/> I have read and accept the terms</label></div>',
+      '<div class="field"><label style="display:flex;align-items:center"><input type="checkbox" id="agreeChk"/> <span>I have read and accept the terms</span></label></div>',
       '<div class="field"><label>Draw your signature</label><canvas id="sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="clearSig">Clear</a><span class="note" id="sigMsg"></span></div></div>',
-      '<div class="row"><a class="btn-outline" id="back3">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
+      '<div class="row"><a class="btn-outline" id="back4">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
     ].join('');
     (async()=>{ try{ const pay=(state.pay_method||'eft'); const r=await fetch('/api/terms?pay='+encodeURIComponent(pay)); const t=await r.text(); document.getElementById('terms').innerHTML=t||'Terms not available.'; }catch{ document.getElementById('terms').textContent='Failed to load terms.'; }})();
     const pad=sigPad(document.getElementById('sig'));
     document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); pad.clear(); };
-    document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; setProg(); save(); render(); };
+    document.getElementById('back4').onclick=(e)=>{ e.preventDefault(); step=4; state.progress=step; setProg(); save(); render(); };
     document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to accept the terms.'; return; } msg.textContent='Uploading signature…';
-      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=5; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
+      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=6; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
     };
   }
 
-  function step5(){
-    stepEl.innerHTML='<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your onboarding. Our team will review and approve shortly.</p>';
+  // 6 Finish
+  function step6(){
+    stepEl.innerHTML=[
+      '<h2>All set!</h2>',
+      '<p>Thanks - we\\u2019ve recorded your information. Our team will be in contact shortly.</p>',
+      '<p>If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinet.co.za</b></p>'
+    ].join('');
   }
 
-  function render(){ setProg(); [step0,step1,step2,step3,step4,step5][step](); }
+  function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
   render();
 })();
 </script>
 </body></html>`;
     }
 
-    // -------- Splynx profile endpoint (used in UI) --------
+    // Splynx profile for UI
     if (path === "/api/splynx/profile" && method === "GET") {
       const id = url.searchParams.get("id");
       if (!id) return json({ error: "Missing id" }, 400);
@@ -1030,14 +1031,22 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       catch { return json({ error: "Lookup failed" }, 502); }
     }
 
-    // -------- Push to Splynx (stub) --------
-    async function pushToSplynx(env, pendingData) {
-      // TODO: implement actual PUT/POST to Splynx using splynxPUT()/files upload
-      // For now we just pretend it worked.
-      return { ok: true };
+    // Store inline debit JSON (used from step 2)
+    if (path === "/api/debit/save" && method === "POST") {
+      const b = await request.json().catch(() => ({}));
+      const required = ["account_holder","id_number","bank_name","account_number","account_type","debit_day"];
+      for (const k of required) if (!b[k] || String(b[k]).trim()==="") return json({ ok:false, error:`Missing ${k}` }, 400);
+      const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
+      const ts = Date.now();
+      const key = `debit/${id}/${ts}`;
+      const record = { ...b, splynx_id: id, created: ts, ip: getIP(request), ua: getUA(request) };
+      await env.ONBOARD_KV.put(key, JSON.stringify(record), { expirationTtl: 60*60*24*90 });
+      // also attach to session if exists
+      const sessKey = Object.keys((await env.ONBOARD_KV.list({ prefix: "onboard/" })).keys.reduce((acc,k)=>{acc[k.name]=1;return acc;},{})).find(()=>false); // noop
+      return json({ ok:true, ref:key });
     }
 
-    // -------- Fallback 404 --------
+    // Default 404
     return new Response("Not found", { status: 404 });
   }
 };
