@@ -34,7 +34,8 @@ EFT_ACCOUNT_NAME = "Vinet Internet Solutions"
 EFT_ACCOUNT_NO   = "62757054996"
 EFT_BRANCH_CODE  = "250655"
 EFT_REFERENCE    = "SPLYNX-ID"
-EFT_NOTES        = "Please remember that all accounts are payable on or before the 1st of every month"
+EFT_NOTES        = "Please remember that all accounts are payable on or before the 1st of every month."
+ADMIN_IPS = "160.226.143.254,160.226.128.0/20"   # comma-separated
 
 
 # If you want PDFs generated (upload blank/fillable PDFs to R2 and set keys)
