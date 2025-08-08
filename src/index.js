@@ -45,7 +45,9 @@ export default {
     .logo { display:block; margin:0 auto 1em; max-width:90px; }
     h1, h2 { color:#e2001a; }
     .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
+    .btn-outline { background:#fff; color:#e2001a; border:2px solid #e2001a; border-radius:.7em; padding:.6em 1.4em; }
     .btn-secondary { background:#eee; color:#222; border:0; border-radius:.7em; padding:.6em 1.2em; text-decoration:none; display:inline-block; }
+    .btn-pill { padding:.7em 1.4em; border-radius:999px; }
     .field { margin:1em 0; }
     input, select, textarea { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
     .note { font-size:12px; color:#666; }
@@ -55,13 +57,16 @@ export default {
     .progress { height:100%; background:#e2001a; transition:width .4s; }
     .row { display:flex; gap:.75em; }
     .row > * { flex:1; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .col-2 { display:grid; grid-template-columns: 1fr 1fr; gap: .75em; }
     a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
     .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
     canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
     ul.files { list-style: none; padding: 0; }
     ul.files li { display:flex; justify-content:space-between; align-items:center; padding:.4em .6em; border:1px solid #eee; border-radius:.5em; margin:.35em 0; }
     ul.files li .meta { font-size:12px; color:#555; }
+    .pill-wrap { display:flex; gap:.6em; flex-wrap:wrap; }
+    .pill { border:2px solid #e2001a; color:#e2001a; padding:.5em 1em; border-radius:999px; cursor:pointer; user-select:none; }
+    .pill.active { background:#e2001a; color:#fff; }
   </style>
 </head>
 <body>
@@ -88,6 +93,7 @@ export default {
       return r.json();
     }
 
+    // Try to pick a msisdn (already in 27… format)
     function pickPhone(obj) {
       if (!obj) return null;
       const tryField = (v) => {
@@ -124,6 +130,30 @@ export default {
       return null;
     }
 
+    // Compact, merged “profile” to show/edit
+    async function fetchProfileForDisplay(id) {
+      // Try customer then lead; take best available fields
+      let cust = null, lead = null, contacts = null;
+      try { cust = await splynxGET(`/admin/customers/customer/${id}`); } catch {}
+      if (!cust) { try { lead = await splynxGET(`/crm/leads/${id}`); } catch {} }
+      try { contacts = await splynxGET(`/admin/customers/${id}/contacts`); } catch {}
+
+      const src = cust || lead || {};
+      const phone = pickPhone({ ...src, contacts });
+      return {
+        kind: cust ? "customer" : (lead ? "lead" : "unknown"),
+        id: id,
+        full_name: src.full_name || src.name || "",
+        email: src.email || src.billing_email || "",
+        phone: phone || "",
+        city: src.city || "",
+        street: src.street || "",
+        zip: src.zip_code || src.zip || "",
+        partner: src.partner || src.location || "",
+        payment_method: src.payment_method || "", // display only
+      };
+    }
+
     // ------------ WhatsApp senders ------------
     async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
       const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
@@ -137,8 +167,9 @@ export default {
           language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
           components: [
             { type: "body", parameters: [{ type: "text", text: code }] },
+            // If your template has a URL button requiring a short param:
             { type: "button", sub_type: "url", index: "0",
-              parameters: [{ type: "text", text: code }] }
+              parameters: [{ type: "text", text: code.slice(-6) }] }
           ]
         }
       };
@@ -184,7 +215,7 @@ export default {
             <button class="btn" type="submit">Generate Link</button>
           </div>
         </form>
-        <div class="note">Works without JavaScript. Staff fallback: <a class="btnlink" href="/admin2/staff">Generate staff code</a></div>
+        <div class="note">Staff: <a class="btnlink" href="/admin2/staff">Generate staff code</a></div>
       `, { title: "Admin - Generate Link" });
     }
 
@@ -202,10 +233,7 @@ export default {
       const full = `${url.origin}/onboard/${linkid}`;
       return page(`
         <h1>Onboarding Link</h1>
-        <div class="field">
-          <label>URL</label>
-          <input class="mono" value="${full}" readonly />
-        </div>
+        <div class="field"><label>URL</label><input value="${full}" readonly /></div>
         <p>
           <a class="btn" href="${full}" target="_blank">Open link</a>
           <a class="btn-secondary" href="/admin2">Generate another</a>
@@ -217,10 +245,7 @@ export default {
       if (!ipAllowedAdmin(getIP(), env)) return new Response("Forbidden", { status: 403 });
       return page(`
         <h1>Generate Staff Code</h1>
-        <div class="field">
-          <label>Onboarding link ID (e.g. 319_ab12cd34)</label>
-          <input id="linkid" placeholder="paste link id here" />
-        </div>
+        <div class="field"><label>Onboarding link ID (e.g. 319_ab12cd34)</label><input id="linkid" /></div>
         <button class="btn" id="gen">Generate Staff Code</button>
         <div id="out" class="field"></div>
         <script src="/static/staff.js"></script>
@@ -238,13 +263,116 @@ export default {
       return json({ ok:true, linkid, code });
     }
 
-    // ------------ ONBOARDING HTML ------------
+    // ------------ INFO: EFT details ------------
+    if (path === "/info/eft" && method === "GET") {
+      const bank   = env.EFT_BANK_NAME    || "Your Bank";
+      const accnm  = env.EFT_ACCOUNT_NAME || "Vinet Internet Solutions (Pty) Ltd";
+      const accno  = env.EFT_ACCOUNT_NO   || "0000000000";
+      const branch = env.EFT_BRANCH_CODE  || "000000";
+      const ref    = env.EFT_REFERENCE    || "Your Splynx ID / Invoice No";
+      const notes  = env.EFT_NOTES        || "";
+      return page(`
+        <h1>EFT Payment Details</h1>
+        <div class="field"><label>Bank</label><input value="${bank}" readonly /></div>
+        <div class="field"><label>Account Name</label><input value="${accnm}" readonly /></div>
+        <div class="field"><label>Account Number</label><input value="${accno}" readonly /></div>
+        <div class="field"><label>Branch Code</label><input value="${branch}" readonly /></div>
+        <div class="field"><label>Reference</label><input value="${ref}" readonly /></div>
+        ${notes ? `<p class="note">${notes}</p>` : ""}
+        <p><a class="btn" href="javascript:window.print()">Print</a></p>
+      `, { title: "EFT Details" });
+    }
+
+    // ------------ INFO: Debit order + terms ------------
+    if (path === "/info/debit" && method === "GET") {
+      const splynxId = url.searchParams.get("id") || "";
+      return page(`
+        <h1>Debit Order Instruction</h1>
+        <form id="debitForm" autocomplete="off" class="field">
+          <div class="row">
+            <div class="field"><label>Account Holder</label><input name="account_holder" required /></div>
+            <div class="field"><label>ID / Company Reg No</label><input name="id_number" required /></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Contact Email</label><input name="email" type="email" required /></div>
+            <div class="field"><label>Contact Number</label><input name="phone" required /></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Bank</label><input name="bank_name" required /></div>
+            <div class="field"><label>Branch Code</label><input name="branch_code" required /></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Account Number</label><input name="account_number" required /></div>
+            <div class="field"><label>Account Type</label>
+              <select name="account_type" required>
+                <option value="cheque">Cheque / Current</option>
+                <option value="savings">Savings</option>
+                <option value="transmission">Transmission</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Preferred Debit Day</label>
+              <select name="debit_day" required>
+                ${Array.from({length:28}, (_,i)=>`<option>${i+1}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field"><label>Start Month</label><input name="start_month" type="month" required /></div>
+          </div>
+          ${splynxId ? `<input type="hidden" name="splynx_id" value="${splynxId}" />` : ""}
+          <div class="termsbox" id="termsBox">Loading terms…</div>
+          <div class="field"><label><input type="checkbox" id="agree" /> I agree to the Debit Order terms</label></div>
+          <div class="row">
+            <button class="btn" type="submit">Submit</button>
+            <a class="btnlink" href="/info/eft">Prefer EFT?</a>
+          </div>
+          <div id="msg" class="note" style="margin-top:8px"></div>
+        </form>
+        <script>
+          (async () => {
+            try {
+              const r = await fetch('/api/terms?pay=debit'); const t = await r.text();
+              document.getElementById('termsBox').innerHTML = t || 'Terms not available.';
+            } catch { document.getElementById('termsBox').textContent = 'Failed to load terms.'; }
+          })();
+          document.getElementById('debitForm').onsubmit = async (e)=>{
+            e.preventDefault();
+            const msg = document.getElementById('msg');
+            if (!document.getElementById('agree').checked) { msg.textContent='Please accept the Debit Order terms.'; return; }
+            const data = Object.fromEntries(new FormData(e.target).entries());
+            msg.textContent='Submitting...';
+            try {
+              const r = await fetch('/api/debit/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});
+              const d = await r.json().catch(()=>({ok:false}));
+              msg.textContent = d.ok ? 'Saved. Our team will activate your debit order.' : (d.error||'Could not save.');
+              if (d.ok) e.target.reset();
+            } catch { msg.textContent='Network error.'; }
+          };
+        <\/script>
+      `, { title: "Debit Order" });
+    }
+
+    // ------------ API: save debit order ------------
+    if (path === "/api/debit/save" && method === "POST") {
+      const b = await readJSON(request);
+      const required = ["account_holder","id_number","email","phone","bank_name","branch_code","account_number","account_type","debit_day","start_month"];
+      for (const k of required) {
+        if (!b[k] || String(b[k]).trim() === "") return json({ ok:false, error:`Missing ${k}` }, 400);
+      }
+      const ts = Date.now();
+      const id = (b.splynx_id || "unknown").toString();
+      const key = `debit/${id}/${ts}`;
+      const record = { ...b, created: ts, ip: getIP(), ua: getUA() };
+      await env.ONBOARD_KV.put(key, JSON.stringify(record), { expirationTtl: 60*60*24*90 });
+      return json({ ok:true, ref: key });
+    }
+
+    // ------------ Onboarding HTML (welcome-first flow) ------------
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const session = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!session) return page(`<h2 class="err">Invalid or expired link.</h2>`, { title: "Onboarding" });
-
-      const pct = (session.progress || 0) * 20 + 20;
+      const pct = (session.progress || 0) * 14 + 14; // 7 steps incl done => 14% increments
       return new Response(
 `<!DOCTYPE html>
 <html lang="en">
@@ -258,6 +386,7 @@ export default {
     .logo { display:block; margin:0 auto 1em; max-width:90px; }
     h1, h2 { color:#e2001a; }
     .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
+    .btn-outline { background:#fff; color:#e2001a; border:2px solid #e2001a; border-radius:.7em; padding:.6em 1.4em; }
     .field { margin:1em 0; }
     input, select, textarea { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
     .note { font-size:12px; color:#666; }
@@ -267,10 +396,12 @@ export default {
     .progress { height:100%; background:#e2001a; transition:width .4s; }
     .row { display:flex; gap:.75em; }
     .row > * { flex:1; }
-    a.btnlink { display:inline-block; background:#eee; color:#222; padding:.5em .8em; border-radius:.6em; text-decoration:none; margin-top:.8em; }
+    .pill-wrap { display:flex; gap:.6em; flex-wrap:wrap; margin:.6em 0 0; }
+    .pill { border:2px solid #e2001a; color:#e2001a; padding:.6em 1.2em; border-radius:999px; cursor:pointer; user-select:none; }
+    .pill.active { background:#e2001a; color:#fff; }
     .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
     canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
-    ul.files { list-style: none; padding: 0; }
+    ul.files { list-style:none; padding:0; }
     ul.files li { display:flex; justify-content:space-between; align-items:center; padding:.4em .6em; border:1px solid #eee; border-radius:.5em; margin:.35em 0; }
     ul.files li .meta { font-size:12px; color:#555; }
   </style>
@@ -288,7 +419,7 @@ export default {
       );
     }
 
-    // ------------ STATIC: onboard.js ------------
+    // ------------ STATIC: onboard.js (welcome + buttons + details) ------------
     if (path === "/static/onboard.js" && method === "GET") {
       const js = `
 (function(){
@@ -296,16 +427,26 @@ export default {
   if (!root) return;
   const linkid = root.getAttribute('data-linkid');
   let step = parseInt(root.getAttribute('data-progress') || '0', 10) || 0;
-  const total = 5;
+  // Steps:
+  // 0: Welcome
+  // 1: OTP (WhatsApp or Staff)
+  // 2: Contact prefs + Payment buttons
+  // 3: Review/edit details
+  // 4: Uploads
+  // 5: Agreements + signature
+  // 6: Done
+  const total = 6;
+
   const stepEl = document.getElementById('step');
   const progEl = document.getElementById('prog');
+  let state = { progress: step, uploads: [], edits: {} };
 
   function setProgress(){
     const pct = Math.min(100, Math.round(((step+1)/(total+1))*100));
     if (progEl) progEl.style.width = pct + '%';
   }
-  function save(state){
-    try { fetch('/api/progress/' + linkid, { method:'POST', body: JSON.stringify(state) }); } catch(e){}
+  function save(){
+    try { fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }); } catch(e){}
   }
 
   async function sendOtp(){
@@ -313,45 +454,11 @@ export default {
     if (msg) msg.textContent = 'Sending code to WhatsApp...';
     try {
       const r = await fetch('/api/otp/send', { method:'POST', body: JSON.stringify({ linkid }) });
-      const data = await r.json().catch(()=>({ok:false}));
-      if (msg) msg.textContent = data.ok ? 'Code sent. Check your WhatsApp.' : ('Failed to send: ' + (data.error || 'unknown'));
+      const d = await r.json().catch(()=>({ok:false}));
+      if (msg) msg.textContent = d.ok ? 'Code sent. Check your WhatsApp.' : ('Failed to send: ' + (d.error||'unknown'));
     } catch {
       if (msg) msg.textContent = 'Network error sending code.';
     }
-  }
-
-  let state = { progress: step, uploads: [] };
-
-  // Simple signature pad
-  function signaturePad(canvas){
-    const ctx = canvas.getContext('2d');
-    let drawing = false, last = null;
-    function resize(){
-      const scale = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.floor(rect.width * scale);
-      canvas.height = Math.floor(rect.height * scale);
-      ctx.scale(scale, scale);
-      ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#222';
-    }
-    resize();
-    window.addEventListener('resize', resize);
-
-    function rect(){ return canvas.getBoundingClientRect(); }
-    function pos(e){
-      const r = rect();
-      if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
-      return { x: e.clientX - r.left, y: e.clientY - r.top };
-    }
-    function start(e){ drawing = true; last = pos(e); e.preventDefault(); }
-    function move(e){ if (!drawing) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; e.preventDefault(); }
-    function end(){ drawing = false; last = null; }
-    canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); window.addEventListener('mouseup', end);
-    canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); window.addEventListener('touchend', end);
-    return {
-      clear(){ const r = canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); },
-      dataURL(){ return canvas.toDataURL('image/png'); }
-    };
   }
 
   function renderUploads(list){
@@ -362,35 +469,75 @@ export default {
       '<button class="btn" data-del="'+i+'" style="padding:.4em .8em">Remove</button></li>'
     ).join('') + '</ul>';
   }
-
   function bindDeletions(){
     document.querySelectorAll('button[data-del]').forEach(btn=>{
       btn.onclick = async ()=>{
         const idx = parseInt(btn.getAttribute('data-del'),10);
-        const f = state.uploads[idx];
-        if (!f) return;
+        const f = state.uploads[idx]; if (!f) return;
         btn.disabled = true;
         try {
           const r = await fetch('/api/upload/delete', { method:'POST', body: JSON.stringify({ linkid, key: f.key }) });
           const d = await r.json().catch(()=>({ok:false}));
-          if (d.ok) { state.uploads.splice(idx,1); save(state); render(); }
-          else { btn.disabled = false; alert('Remove failed'); }
-        } catch { btn.disabled = false; alert('Network error'); }
+          if (d.ok) { state.uploads.splice(idx,1); save(); render(); }
+          else { btn.disabled=false; alert('Remove failed'); }
+        } catch { btn.disabled=false; alert('Network error'); }
       };
     });
+  }
+
+  function signaturePad(canvas){
+    const ctx = canvas.getContext('2d');
+    let drawing=false, last=null;
+    function resize(){
+      const scale = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * scale);
+      canvas.height = Math.floor(rect.height * scale);
+      ctx.scale(scale, scale);
+      ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#222';
+    }
+    resize(); window.addEventListener('resize', resize);
+    function rect(){ return canvas.getBoundingClientRect(); }
+    function pos(e){ const r = rect(); if (e.touches&&e.touches[0]) return {x:e.touches[0].clientX-r.left,y:e.touches[0].clientY-r.top}; return {x:e.clientX-r.left,y:e.clientY-r.top}; }
+    function start(e){ drawing=true; last=pos(e); e.preventDefault(); }
+    function move(e){ if(!drawing) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; e.preventDefault(); }
+    function end(){ drawing=false; last=null; }
+    canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+    canvas.addEventListener('touchstart',start,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',end);
+    return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); }, dataURL(){ return canvas.toDataURL('image/png'); } };
+  }
+
+  async function fetchProfile(){
+    try {
+      const id = (linkid||'').split('_')[0];
+      const r = await fetch('/api/splynx/profile?id='+encodeURIComponent(id));
+      if (!r.ok) return null;
+      return await r.json();
+    } catch { return null; }
   }
 
   function render(){
     setProgress();
 
-    // STEP 0
+    // STEP 0: Welcome
     if (step === 0) {
+      stepEl.innerHTML = [
+        '<h2>Welcome</h2>',
+        '<p>We\\u2019ll quickly verify you and confirm a few details.</p>',
+        '<button class="btn" id="start">Let\\u2019s begin</button>'
+      ].join('');
+      document.getElementById('start').onclick = ()=>{ step=1; state.progress=step; save(); render(); };
+      return;
+    }
+
+    // STEP 1: OTP (WhatsApp or staff)
+    if (step === 1) {
       stepEl.innerHTML = [
         '<h2>Verify your identity</h2>',
         '<div class="note">Choose a method:</div>',
-        '<div class="row">',
-        '  <a class="btnlink" id="method-wa">WhatsApp OTP</a>',
-        '  <a class="btnlink" id="method-staff">I have a code from Vinet</a>',
+        '<div class="pill-wrap">',
+        '  <span class="pill active" id="p-wa">WhatsApp OTP</span>',
+        '  <span class="pill" id="p-staff">I have a staff code</span>',
         '</div>',
         '<div id="waBox" class="field" style="margin-top:10px;"></div>',
         '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
@@ -409,17 +556,14 @@ export default {
         '<a class="btnlink" id="resend">Resend code</a>'
       ].join('');
       sendOtp();
-      const resend = document.getElementById('resend');
-      if (resend) resend.onclick = (e)=>{ e.preventDefault(); sendOtp(); };
-      const form = document.getElementById('otpForm');
-      if (form) form.onsubmit = async (e)=>{
+      document.getElementById('resend').onclick = (e)=>{ e.preventDefault(); sendOtp(); };
+      document.getElementById('otpForm').onsubmit = async (e)=>{
         e.preventDefault();
-        const otp = form.otp.value.trim();
-        const r = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid, otp, kind:'wa' }) });
+        const otp = e.target.otp.value.trim();
+        const r = await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:'wa'})});
         const d = await r.json().catch(()=>({ok:false}));
-        const msg = document.getElementById('otpmsg');
-        if (d.ok) { step=1; state.progress=step; save(state); render(); }
-        else { if (msg) msg.textContent = 'Invalid code. Try again.'; }
+        if (d.ok) { step=2; state.progress=step; save(); render(); }
+        else { document.getElementById('otpmsg').textContent = 'Invalid code. Try again.'; }
       };
 
       // Staff UI
@@ -434,209 +578,204 @@ export default {
         '</form>',
         '<div id="staffMsg" class="note"></div>'
       ].join('');
-      const staffForm = document.getElementById('staffForm');
-      if (staffForm) staffForm.onsubmit = async (e)=>{
+      document.getElementById('staffForm').onsubmit = async (e)=>{
         e.preventDefault();
-        const otp = staffForm.otp.value.trim();
-        const r = await fetch('/api/otp/verify', { method:'POST', body: JSON.stringify({ linkid, otp, kind:'staff' }) });
+        const otp = e.target.otp.value.trim();
+        const r = await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:'staff'})});
         const d = await r.json().catch(()=>({ok:false}));
-        const msg = document.getElementById('staffMsg');
-        if (d.ok) { step=1; state.progress=step; save(state); render(); }
-        else { if (msg) msg.textContent = 'Invalid or expired staff code.'; }
+        if (d.ok) { step=2; state.progress=step; save(); render(); }
+        else { document.getElementById('staffMsg').textContent = 'Invalid or expired staff code.'; }
       };
 
-      // Switchers
-      document.getElementById('method-wa').onclick = (e)=>{ e.preventDefault(); wa.style.display='block'; staff.style.display='none'; };
-      document.getElementById('method-staff').onclick = (e)=>{ e.preventDefault(); wa.style.display='none'; staff.style.display='block'; };
+      // Switcher
+      const pwa = document.getElementById('p-wa');
+      const pst = document.getElementById('p-staff');
+      pwa.onclick = ()=>{ pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
+      pst.onclick = ()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
       return;
     }
 
-    // STEP 1
-    if (step === 1) {
+    // STEP 2: Preferences + Payment buttons with quick links
+    if (step === 2) {
+      const id = (linkid||'').split('_')[0];
+      const quickEft = '/info/eft';
+      const quickDebit = '/info/debit?id='+encodeURIComponent(id);
+      const pay = state.pay_method || 'eft';
+
       stepEl.innerHTML = [
         '<h2>Contact Preferences</h2>',
-        '<form id="prefs" autocomplete="off">',
-        '  <div class="field">',
-        '    <label>Preferred Language</label>',
-        '    <select name="lang" required>',
-        '      <option value="en">English</option>',
-        '      <option value="af">Afrikaans</option>',
-        '      <option value="both">Both</option>',
-        '    </select>',
-        '  </div>',
-        '  <div class="field">',
-        '    <label>Payment Method</label>',
-        '    <select name="pay_method" required>',
-        '      <option value="eft">EFT</option>',
-        '      <option value="debit">Debit order</option>',
-        '    </select>',
-        '  </div>',
-        '  <div class="field">',
-        '    <label>Secondary Contact (optional)</label>',
-        '    <input name="secondary" placeholder="Name and number (optional)" />',
-        '  </div>',
-        '  <div class="row">',
-        '    <button class="btn" type="submit">Continue</button>',
-        '    <a class="btnlink" id="skip">Skip</a>',
-        '  </div>',
-        '</form>'
+        '<div class="field"><label>Preferred Language</label>',
+        '<select id="lang">',
+        '  <option value="en" '+(state.lang==='en'?'selected':'')+'>English</option>',
+        '  <option value="af" '+(state.lang==='af'?'selected':'')+'>Afrikaans</option>',
+        '  <option value="both" '+(state.lang==='both'?'selected':'')+'>Both</option>',
+        '</select></div>',
+
+        '<div class="field"><label>Payment Method</label>',
+        '<div class="pill-wrap">',
+        '  <span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span>',
+        '  <span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span>',
+        '</div>',
+        '<div class="note" id="pm-note" style="margin-top:.6em"></div>',
+        '</div>',
+
+        '<div class="field"><label>Secondary Contact (optional)</label>',
+        '<input id="secondary" placeholder="Name and number (optional)" value="'+(state.secondary||'')+'" />',
+        '</div>',
+
+        '<div class="row"><a class="btnlink" id="back1">Back</a><button class="btn" id="cont">Continue</button></div>'
       ].join('');
-      const skip = document.getElementById('skip');
-      if (skip) skip.onclick = (e)=>{ e.preventDefault(); step=2; state.progress=step; save(state); render(); };
-      const prefs = document.getElementById('prefs');
-      if (prefs) prefs.onsubmit = (e)=>{
+
+      function setNote(which){
+        const el = document.getElementById('pm-note');
+        if (which === 'debit') el.innerHTML = 'Need a debit order? <a href="'+quickDebit+'" target="_blank">Open debit form</a>';
+        else el.innerHTML = 'Prefer EFT? <a href="'+quickEft+'" target="_blank">View EFT details</a>';
+      }
+      setNote(pay);
+
+      document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; save(); render(); };
+      document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; save(); render(); };
+
+      document.getElementById('back1').onclick = (e)=>{ e.preventDefault(); step=1; state.progress=step; save(); render(); };
+      document.getElementById('cont').onclick = (e)=>{
         e.preventDefault();
-        state.lang = prefs.lang.value;
-        state.secondary = prefs.secondary.value || '';
-        state.pay_method = prefs.pay_method.value;
-        step=2; state.progress=step; save(state); render();
+        state.lang = document.getElementById('lang').value;
+        state.secondary = document.getElementById('secondary').value || '';
+        if (!state.pay_method) state.pay_method = 'eft';
+        step=3; state.progress=step; save(); render();
       };
       return;
     }
 
-    // STEP 2
-    if (step === 2) {
-      stepEl.innerHTML = [
-        '<h2>Confirm Your Details</h2>',
-        '<p class="note">We will fetch and display your details here for confirmation.</p>',
-        '<button class="btn" id="next">Looks good</button>'
-      ].join('');
-      const n = document.getElementById('next');
-      if (n) n.onclick = ()=>{ step=3; state.progress=step; save(state); render(); };
+    // STEP 3: Review/Edit details (fetched, then editable)
+    if (step === 3) {
+      stepEl.innerHTML = '<h2>Confirm your details</h2><div id="profBox" class="note">Loading your profile…</div>';
+      (async ()=>{
+        const prof = await fetchProfile();
+        const p = prof || {};
+        // hydrate with previously edited values
+        const cur = {
+          full_name: state.edits.full_name ?? p.full_name ?? '',
+          email: state.edits.email ?? p.email ?? '',
+          phone: state.edits.phone ?? p.phone ?? '',
+          street: state.edits.street ?? p.street ?? '',
+          city: state.edits.city ?? p.city ?? '',
+          zip: state.edits.zip ?? p.zip ?? ''
+        };
+        document.getElementById('profBox').innerHTML = [
+          '<div class="field"><label>Full name</label><input id="f_full" value="'+(cur.full_name||'')+'" /></div>',
+          '<div class="row">',
+          '  <div class="field"><label>Email</label><input id="f_email" value="'+(cur.email||'')+'" /></div>',
+          '  <div class="field"><label>Phone</label><input id="f_phone" value="'+(cur.phone||'')+'" /></div>',
+          '</div>',
+          '<div class="row">',
+          '  <div class="field"><label>Street</label><input id="f_street" value="'+(cur.street||'')+'" /></div>',
+          '  <div class="field"><label>City</label><input id="f_city" value="'+(cur.city||'')+'" /></div>',
+          '</div>',
+          '<div class="field"><label>ZIP Code</label><input id="f_zip" value="'+(cur.zip||'')+'" /></div>',
+          '<div class="row"><a class="btnlink" id="back2">Back</a><button class="btn" id="cont">Looks good</button></div>',
+          '<div class="note">We\\u2019ll use these updates later to sync with our system.</div>'
+        ].join('');
+        document.getElementById('back2').onclick = (e)=>{ e.preventDefault(); step=2; state.progress=step; save(); render(); };
+        document.getElementById('cont').onclick = (e)=>{
+          e.preventDefault();
+          state.edits = {
+            full_name: document.getElementById('f_full').value.trim(),
+            email: document.getElementById('f_email').value.trim(),
+            phone: document.getElementById('f_phone').value.trim(),
+            street: document.getElementById('f_street').value.trim(),
+            city: document.getElementById('f_city').value.trim(),
+            zip: document.getElementById('f_zip').value.trim()
+          };
+          step=4; state.progress=step; save(); render();
+        };
+      })();
       return;
     }
 
-    // STEP 3 — Upload ID/POA
-    if (step === 3) {
+    // STEP 4: Uploads (same as before)
+    if (step === 4) {
       stepEl.innerHTML = [
         '<h2>Upload your documents</h2>',
         '<div class="note">Allowed: PDF, JPG, PNG. Max 8 MB each.</div>',
         '<form id="upForm" class="field" enctype="multipart/form-data">',
-        '  <div class="field">',
-        '    <label>Identity Document</label>',
-        '    <input type="file" name="idfile" accept=".pdf,image/*" />',
-        '  </div>',
-        '  <div class="field">',
-        '    <label>Proof of Address</label>',
-        '    <input type="file" name="poafile" accept=".pdf,image/*" />',
-        '  </div>',
-        '  <div class="row">',
-        '    <button class="btn" type="submit">Upload</button>',
-        '    <a class="btnlink" id="skip">Skip</a>',
-        '  </div>',
+        '  <div class="field"><label>Identity Document</label><input type="file" name="idfile" accept=".pdf,image/*" /></div>',
+        '  <div class="field"><label>Proof of Address</label><input type="file" name="poafile" accept=".pdf,image/*" /></div>',
+        '  <div class="row"><button class="btn" type="submit">Upload</button><a class="btnlink" id="skip">Skip</a></div>',
         '</form>',
         '<div id="uplMsg" class="note"></div>',
         '<div id="uplList"></div>',
-        '<div class="row" style="margin-top:10px">',
-        '  <a class="btnlink" id="back2">Back</a>',
-        '  <button class="btn" id="cont">Continue</button>',
-        '</div>'
+        '<div class="row" style="margin-top:10px"><a class="btnlink" id="back3">Back</a><button class="btn" id="cont">Continue</button></div>'
       ].join('');
 
       const listEl = document.getElementById('uplList');
       const msg = document.getElementById('uplMsg');
-      function refreshList(){
-        listEl.innerHTML = renderUploads(state.uploads);
-        bindDeletions();
-      }
-      refreshList();
+      function refresh(){ listEl.innerHTML = renderUploads(state.uploads); bindDeletions(); }
+      refresh();
 
-      document.getElementById('back2').onclick = (e)=>{ e.preventDefault(); step=2; state.progress=step; save(state); render(); };
-      document.getElementById('skip').onclick = (e)=>{ e.preventDefault(); step=4; state.progress=step; save(state); render(); };
-      document.getElementById('cont').onclick = (e)=>{ e.preventDefault(); step=4; state.progress=step; save(state); render(); };
+      document.getElementById('back3').onclick = (e)=>{ e.preventDefault(); step=3; state.progress=step; save(); render(); };
+      document.getElementById('skip').onclick = (e)=>{ e.preventDefault(); step=5; state.progress=step; save(); render(); };
+      document.getElementById('cont').onclick = (e)=>{ e.preventDefault(); step=5; state.progress=step; save(); render(); };
 
       document.getElementById('upForm').onsubmit = async (e)=>{
         e.preventDefault();
         const idf = e.target.idfile.files[0];
         const poa = e.target.poafile.files[0];
         if (!idf && !poa) { msg.textContent = 'Choose at least one file.'; return; }
-
-        const uploads = [];
-        async function doOne(file, label){
+        async function up(file,label){
           const fd = new FormData();
-          fd.append('linkid', linkid);
-          fd.append('type', label);
-          fd.append('file', file);
-          const r = await fetch('/api/upload', { method:'POST', body: fd });
+          fd.append('linkid',linkid); fd.append('type',label); fd.append('file',file);
+          const r = await fetch('/api/upload',{method:'POST',body:fd});
           const d = await r.json().catch(()=>({ok:false}));
-          if (!d.ok) throw new Error(d.error || 'Upload failed');
+          if (!d.ok) throw new Error(d.error||'Upload failed');
           return d.file;
         }
-
-        msg.textContent = 'Uploading...';
+        msg.textContent='Uploading...';
         try {
-          if (idf) uploads.push(await doOne(idf, 'id'));
-          if (poa) uploads.push(await doOne(poa, 'poa'));
-          state.uploads = (state.uploads || []).concat(uploads);
-          save(state);
-          msg.textContent = 'Uploaded.';
-          refreshList();
-          e.target.reset();
-        } catch (err) {
-          msg.textContent = err.message || 'Upload failed.';
-        }
+          if (idf) state.uploads.push(await up(idf,'id'));
+          if (poa) state.uploads.push(await up(poa,'poa'));
+          save(); msg.textContent='Uploaded.'; refresh(); e.target.reset();
+        } catch(err){ msg.textContent = err.message||'Upload failed.'; }
       };
       return;
     }
 
-    // STEP 4 — Agreement + signature (terms based on pay_method)
-    if (step === 4) {
+    // STEP 5: Agreements + signature (conditional terms)
+    if (step === 5) {
       stepEl.innerHTML = [
         '<h2>Service Agreement</h2>',
         '<div id="terms" class="termsbox">Loading terms…</div>',
         '<div class="field"><label><input type="checkbox" id="agreeChk"/> I have read and accept the terms</label></div>',
-        '<div class="field">',
-        '  <label>Draw your signature</label>',
-        '  <canvas id="sig" class="signature"></canvas>',
-        '  <div class="row">',
-        '    <a class="btnlink" id="clearSig">Clear</a>',
-        '    <span class="note" id="sigMsg"></span>',
-        '  </div>',
-        '</div>',
-        '<div class="row">',
-        '  <a class="btnlink" id="back3">Back</a>',
-        '  <button class="btn" id="signBtn">Agree & Sign</button>',
-        '</div>'
+        '<div class="field"><label>Draw your signature</label><canvas id="sig" class="signature"></canvas>',
+        '<div class="row"><a class="btnlink" id="clearSig">Clear</a><span class="note" id="sigMsg"></span></div></div>',
+        '<div class="row"><a class="btnlink" id="back4">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
       ].join('');
-
-      (async () => {
-        try {
-          const pay = (state.pay_method || 'eft');
-          const r = await fetch('/api/terms?pay=' + encodeURIComponent(pay));
-          const t = await r.text();
-          document.getElementById('terms').innerHTML = t || 'Terms not available.';
-        } catch { document.getElementById('terms').textContent = 'Failed to load terms.'; }
-      })();
-
-      const canvas = document.getElementById('sig');
-      const pad = signaturePad(canvas);
+      (async()=>{ try{
+        const pay = (state.pay_method||'eft');
+        const r = await fetch('/api/terms?pay='+encodeURIComponent(pay)); const t = await r.text();
+        document.getElementById('terms').innerHTML = t || 'Terms not available.';
+      }catch{ document.getElementById('terms').textContent='Failed to load terms.'; }})();
+      const pad = signaturePad(document.getElementById('sig'));
       document.getElementById('clearSig').onclick = (e)=>{ e.preventDefault(); pad.clear(); };
-
-      document.getElementById('back3').onclick = (e)=>{ e.preventDefault(); step=3; state.progress=step; save(state); render(); };
-
+      document.getElementById('back4').onclick = (e)=>{ e.preventDefault(); step=4; state.progress=step; save(); render(); };
       document.getElementById('signBtn').onclick = async (e)=>{
         e.preventDefault();
         const msg = document.getElementById('sigMsg');
-        const agreed = document.getElementById('agreeChk').checked;
-        if (!agreed) { msg.textContent = 'Please tick the checkbox to accept the terms.'; return; }
-        msg.textContent = 'Uploading signature…';
+        if (!document.getElementById('agreeChk').checked) { msg.textContent='Please tick the checkbox to accept the terms.'; return; }
+        msg.textContent='Uploading signature…';
         try {
           const dataUrl = pad.dataURL();
-          const r = await fetch('/api/sign', { method:'POST', body: JSON.stringify({ linkid, dataUrl }) });
+          const r = await fetch('/api/sign',{method:'POST',body:JSON.stringify({linkid,dataUrl})});
           const d = await r.json().catch(()=>({ok:false}));
-          if (d.ok) { step=5; state.progress=step; save(state); render(); }
-          else { msg.textContent = d.error || 'Failed to save signature.'; }
-        } catch { msg.textContent = 'Network error.'; }
+          if (d.ok) { step=6; state.progress=step; save(); render(); }
+          else { msg.textContent=d.error||'Failed to save signature.'; }
+        } catch { msg.textContent='Network error.'; }
       };
-
       return;
     }
 
-    // DONE
-    stepEl.innerHTML = [
-      '<h2>All set!</h2>',
-      '<p>Thanks — we\\u2019ve recorded your onboarding.</p>'
-    ].join('');
+    // STEP 6: Done
+    stepEl.innerHTML = '<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your onboarding.</p>';
   }
 
   render();
@@ -656,14 +795,8 @@ export default {
     try {
       const r = await fetch('/api/staff/gen', { method:'POST', body: JSON.stringify({ linkid }) });
       const d = await r.json().catch(()=>({ok:false}));
-      if (d.ok) {
-        out.innerHTML = '<div class="success">Staff code: <b>'+d.code+'</b> (valid 15 min)</div>';
-      } else {
-        out.innerHTML = '<div class="err">'+(d.error||'error')+'</div>';
-      }
-    } catch {
-      out.innerHTML = '<div class="err">Request failed</div>';
-    }
+      out.innerHTML = d.ok ? '<div class="success">Staff code: <b>'+d.code+'</b> (valid 15 min)</div>' : '<div class="err">'+(d.error||'error')+'</div>';
+    } catch { out.innerHTML = '<div class="err">Request failed</div>'; }
   };
 })();`;
       return new Response(js, { headers: jsHeaders });
@@ -697,6 +830,19 @@ export default {
       });
     }
 
+    // ------------ API: Splynx profile (merged view) ------------
+    if (path === "/api/splynx/profile" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return json({ error: "Missing id" }, 400);
+      try {
+        const prof = await fetchProfileForDisplay(id);
+        return json(prof);
+      } catch (e) {
+        console.error("profile error", e.message);
+        return json({ error: "Lookup failed" }, 502);
+      }
+    }
+
     // ------------ API: OTP send ------------
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await readJSON(request);
@@ -715,11 +861,11 @@ export default {
       try { 
         await sendWhatsAppTemplate(msisdn, code, "en"); 
         return json({ ok:true }); 
-      } catch (e) {
+      } catch {
         try { 
-          await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
+          await sendWhatsAppTextIfSessionOpen(msisdn, \`Your Vinet verification code is: \${code}\`);
           return json({ ok:true, note:"sent-as-text" }); 
-        } catch (e2) { 
+        } catch { 
           return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); 
         }
       }
@@ -790,15 +936,10 @@ export default {
     if (path === "/api/upload/delete" && method === "POST") {
       const { linkid, key } = await readJSON(request);
       if (!linkid || !key) return json({ ok:false, error:"Missing params" }, 400);
-
-      // delete from R2
       await env.R2_UPLOADS.delete(key).catch(()=>{});
-
-      // remove from session
       const sess = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
       const uploads = (sess.uploads || []).filter(u => u.key !== key);
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
-
       return json({ ok:true });
     }
 
@@ -814,21 +955,18 @@ export default {
       const ip = getIP();
       const ua = getUA();
 
-      // Store PNG in R2
       const sigKey = `agreements/${linkid}/signature.png`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, {
         httpMetadata: { contentType: "image/png" }
       });
 
-      // Store receipt in KV (30 days)
       const receipt = { linkid, signed_at: now, ip, ua, note: "agreement accepted" };
       await env.ONBOARD_KV.put(`agreement/${linkid}`, JSON.stringify(receipt), { expirationTtl: 60*60*24*30 });
 
-      // Mark progress done
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (sess) {
         await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
-          ...sess, progress: 5, agreement_signed: true, agreement_sig_key: sigKey
+          ...sess, progress: 6, agreement_signed: true, agreement_sig_key: sigKey
         }), { expirationTtl: 86400 });
       }
 
