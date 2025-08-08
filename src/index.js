@@ -1046,6 +1046,35 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
       return json({ ok:true, ref:key });
     }
 
+   // R2 file proxy: GET /r2/<key...>
+if (path.startsWith("/r2/") && method === "GET") {
+  const key = decodeURIComponent(path.slice(4)); // everything after "/r2/"
+  if (!key || key.includes("..")) return new Response("Bad key", { status: 400 });
+
+  const obj = await env.R2_UPLOADS.get(key);
+  if (!obj) return new Response("Not found", { status: 404 });
+
+  // Try metadata content-type, else sniff from extension, else octet-stream
+  let ct = obj.httpMetadata?.contentType;
+  if (!ct) {
+    const ext = key.split(".").pop()?.toLowerCase();
+    if (ext === "pdf") ct = "application/pdf";
+    else if (["png","jpg","jpeg","webp"].includes(ext)) ct = `image/${ext === "jpg" ? "jpeg" : ext}`;
+    else if (ext === "txt") ct = "text/plain; charset=utf-8";
+    else ct = "application/octet-stream";
+  }
+
+  return new Response(obj.body, {
+    headers: {
+      "content-type": ct,
+      "cache-control": "private, max-age=0",
+      ...(obj.httpMetadata?.contentDisposition
+        ? { "content-disposition": obj.httpMetadata.contentDisposition }
+        : {}),
+    },
+  });
+}
+    
     // Default 404
     return new Response("Not found", { status: 404 });
   }
