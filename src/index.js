@@ -1,14 +1,3 @@
-Thanks for the quick turnaround. Here’s a **full updated `index.js`** with the fixes applied:
-
-* Staff code endpoint no longer reads a body (fixes “Failed”).
-* WhatsApp OTP **auto-sends** when the OTP step appears; only **Resend** is shown.
-* Broader Splynx phone mapping so OTP finds the mobile number.
-* Admin UI kept as your preferred 2-top / 2-bottom layout.
-* Everything else from the merged build remains (Pending list actions, centered “Print banking details”, Debit signature pad, uploads, instant PDFs, delete cleans R2).
-
-Paste this over your Worker:
-
-```js
 // index.js — Vinet Onboarding (merged A+B, hotfixes applied)
 // - Admin: two-top / two-bottom layout, Pending list with Review + Delete
 // - Client: OTP (auto WhatsApp or staff code) → Payment (EFT / Debit + signature) → Details → Uploads → MSA + signature → Completed
@@ -1153,6 +1142,3 @@ function baseCss() {
   }
   `;
 }
-```
-
-If anything still feels off after redeploy (especially the OTP message), ping me and I’ll tweak it fast.
