@@ -1041,29 +1041,70 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     })();
   }
 
+  // --- Step 4: Uploads (ID & Proof of Address) ---
   function step4(){
+    stepEl.innerHTML = [
+      '<h2>Upload documents</h2>',
+      '<div class="note">Please upload your ID and Proof of Address (max 2 files, 5MB each).</div>',
+      '<div class="field"><input type="file" id="file1" accept=".png,.jpg,.jpeg,.pdf,image/*" /></div>',
+      '<div class="field"><input type="file" id="file2" accept=".png,.jpg,.jpeg,.pdf,image/*" /></div>',
+      '<div id="uMsg" class="note"></div>',
+      '<div class="row"><a class="btn-outline" id="back3">Back</a><button class="btn" id="next">Continue</button></div>'
+    ].join('');
+
+    document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; setProg(); save(); render(); };
+    document.getElementById('next').onclick=async(e)=>{
+      e.preventDefault();
+      const msg = document.getElementById('uMsg');
+      async function up(file, label){
+        if (!file) return null;
+        if (file.size > 5*1024*1024) { msg.textContent = 'Each file must be 5MB or smaller.'; throw new Error('too big'); }
+        const buf = await file.arrayBuffer();
+        const name = (file.name||'file').replace(/[^a-z0-9_.-]/gi,'_');
+        const r = await fetch('/api/onboard/upload?linkid='+encodeURIComponent(linkid)+'&filename='+encodeURIComponent(name)+'&label='+encodeURIComponent(label), {
+          method:'POST', body: buf
+        });
+        const d = await r.json().catch(()=>({ok:false}));
+        if (!d.ok) throw new Error('upload failed');
+        return { key: d.key, name, size: file.size, label };
+      }
+      try {
+        msg.textContent = 'Uploading...';
+        const f1 = document.getElementById('file1').files[0];
+        const f2 = document.getElementById('file2').files[0];
+        const u1 = await up(f1, 'ID Document');
+        const u2 = await up(f2, 'Proof of Address');
+        state.uploads = [u1,u2].filter(Boolean);
+        msg.textContent = 'Uploaded.';
+        step=5; state.progress=step; setProg(); save(); render();
+      } catch (err) { if (msg.textContent==='') msg.textContent='Upload failed.'; }
+    };
+  }
+
+  // --- Step 5: Master Service Agreement (moved from old step4) ---
+  function step5(){
     stepEl.innerHTML=[
       '<h2>Master Service Agreement</h2>',
       '<div id="terms" class="termsbox">Loading terms…</div>',
-      // BIG + REQUIRED checkbox (fix)
       '<div class="field bigchk" style="margin-top:10px;"><label><input type="checkbox" id="agreeChk"/> I confirm the accuracy of the information contained in this Agreement and warrant that I am duly authorised to enter into an agreement with VINET on behalf of the customer/myself.</label></div>',
       '<div class="field"><label>Draw your signature</label><canvas id="sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="clearSig">Clear</a><span class="note" id="sigMsg"></span></div></div>',
-      '<div class="row"><a class="btn-outline" id="back3">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
+      '<div class="row"><a class="btn-outline" id="back4">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
     ].join('');
     (async()=>{ try{ const r=await fetch('/api/terms?kind=service'); const t=await r.text(); document.getElementById('terms').innerHTML=t||'Terms not available.'; }catch{ document.getElementById('terms').textContent='Failed to load terms.'; }})();
     const pad=sigPad(document.getElementById('sig'));
     document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); pad.clear(); };
-    document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; setProg(); save(); render(); };
+    document.getElementById('back4').onclick=(e)=>{ e.preventDefault(); step=4; state.progress=step; setProg(); save(); render(); };
     document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to confirm agreement.'; return; } msg.textContent='Uploading signature…';
-      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=5; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
+      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=6; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
     };
   }
 
-  function step5(){
+  // --- Step 6: Done (moved from old step5) ---
+  function step6(){
     stepEl.innerHTML='<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your information. Our team will be in contact shortly. If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>';
   }
 
-  function render(){ setProg(); [step0,step1,step2,step3,step4,step5][step](); }
+  function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
   render();
 })();
 </script>
