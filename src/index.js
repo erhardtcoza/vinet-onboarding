@@ -935,90 +935,91 @@ h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7
     pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
   }
 
-  function step2(){
-    const pay = state.pay_method || 'eft';
-    stepEl.innerHTML = [
-      '<h2>Payment Method</h2>',
-      '<div class="field"><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
-      '<div id="eftBox" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
-      '<div id="debitBox" class="field" style="display:'+(pay==='debit'?'block':'none')+';"></div>',
-      '<div class="row"><a class="btn-outline" id="back1">Back</a><button class="btn" id="cont">Continue</button></div>'
+function step2(){
+  const pay = state.pay_method || 'eft';
+  stepEl.innerHTML = [
+    '<h2>Payment Method</h2>',
+    '<div class="field"><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
+    '<div id="eftBox" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
+    '<div id="debitBox" class="field" style="display:'+(pay==='debit'?'block':'none')+';"></div>',
+    // equal-width Back/Continue
+    '<div class="row"><a class="btn-outline" id="back1" style="flex:1;text-align:center">Back</a><button class="btn" id="cont" style="flex:1">Continue</button></div>'
+  ].join('');
+
+  function renderEft(){
+    const id = (linkid||'').split('_')[0];
+    const box = document.getElementById('eftBox');
+    box.style.display='block';
+    box.innerHTML = [
+      '<div class="row"><div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"/></div>',
+      '<div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"/></div></div>',
+      '<div class="row"><div class="field"><label>Account Number</label><input readonly value="62757054996"/></div>',
+      '<div class="field"><label>Branch Code</label><input readonly value="250655"/></div></div>',
+      '<div class="field"><label><b>Reference</b></label><input readonly style="font-weight:900" value="'+id+'"/></div>',
+      '<div class="note">Please make sure you use the correct <b>Reference</b> when making EFT payments.</div>',
+      // centered single button, no "View EFT page"
+      '<div style="display:flex;justify-content:center;margin-top:.6em">',
+        '<a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center;min-width:260px">Print banking details</a>',
+      '</div>'
+    ].join('');
+  }
+
+  function renderDebitForm(){
+    const d = state.debit || {};
+    const box = document.getElementById('debitBox');
+    box.style.display = 'block';
+    box.innerHTML = [
+      '<div class="row">',
+        '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
+        '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
+      '</div>',
+      '<div class="row">',
+        '<div class="field"><label>Bank</label><input id="d_bank" value="'+(d.bank_name||'')+'" required /></div>',
+        '<div class="field"><label>Bank Account No</label><input id="d_acc" value="'+(d.account_number||'')+'" required /></div>',
+      '</div>',
+      '<div class="row">',
+        '<div class="field"><label>Bank Account Type</label><select id="d_type"><option value="cheque" '+((d.account_type||'')==='cheque'?'selected':'')+'>Cheque / Current</option><option value="savings" '+((d.account_type||'')==='savings'?'selected':'')+'>Savings</option><option value="transmission" '+((d.account_type||'')==='transmission'?'selected':'')+'>Transmission</option></select></div>',
+        '<div class="field"><label>Debit Order Date</label><select id="d_day">',[1,7,15,25,29,30].map(x=>'<option '+((d.debit_day||'')==x?'selected':'')+' value="'+x+'">'+x+'</option>').join(''),'</select></div>',
+      '</div>',
+      '<div class="termsbox" id="debitTerms">Loading terms...</div>',
+      '<div class="field bigchk" style="margin-top:.8em">',
+        '<label style="display:flex;align-items:center;gap:.55em"><input id="d_agree" type="checkbox"> I agree to the Debit Order terms</label>',
+      '</div>'
     ].join('');
 
-    function renderEft(){
-      const id = (linkid||'').split('_')[0];
-      const box = document.getElementById('eftBox');
-      box.style.display='block';
-      box.innerHTML = [
-        '<div class="row"><div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"/></div>',
-        '<div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"/></div></div>',
-        '<div class="row"><div class="field"><label>Account Number</label><input readonly value="62757054996"/></div>',
-        '<div class="field"><label>Branch Code</label><input readonly value="250655"/></div></div>',
-        '<div class="field"><label><b>Reference</b></label><input readonly style="font-weight:900" value="'+id+'"/></div>',
-        '<div class="note">Please make sure you use the correct <b>Reference</b> when making EFT payments.</div>',
-        '<div class="row" style="margin-top:.6em">',
-          '<a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center">View EFT page</a>',
-          '<a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center">Print banking details</a>',
-        '</div>'
-      ].join('');
-    }
-
-    function renderDebitForm(){
-      const d = state.debit || {};
-      const box = document.getElementById('debitBox');
-      box.style.display = 'block';
-      box.innerHTML = [
-        '<div class="row">',
-          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
-          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
-        '</div>',
-        '<div class="row">',
-          '<div class="field"><label>Bank</label><input id="d_bank" value="'+(d.bank_name||'')+'" required /></div>',
-          '<div class="field"><label>Bank Account No</label><input id="d_acc" value="'+(d.account_number||'')+'" required /></div>',
-        '</div>',
-        '<div class="row">',
-          '<div class="field"><label>Bank Account Type</label><select id="d_type"><option value="cheque" '+((d.account_type||'')==='cheque'?'selected':'')+'>Cheque / Current</option><option value="savings" '+((d.account_type||'')==='savings'?'selected':'')+'>Savings</option><option value="transmission" '+((d.account_type||'')==='transmission'?'selected':'')+'>Transmission</option></select></div>',
-          '<div class="field"><label>Debit Order Date</label><select id="d_day">',[1,7,15,25,29,30].map(x=>'<option '+((d.debit_day||'')==x?'selected':'')+' value="'+x+'">'+x+'</option>').join(''),'</select></div>',
-        '</div>',
-        '<div class="termsbox" id="debitTerms">Loading terms...</div>',
-        '<div class="field bigchk" style="margin-top:.8em">',
-          '<label style="display:flex;align-items:center;gap:.55em"><input id="d_agree" type="checkbox"> I agree to the Debit Order terms</label>',
-        '</div>'
-      ].join('');
-
-      (async()=>{ try{ const r=await fetch('/api/terms?kind=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
-    }
-
-    function hideDebitForm(){ const box=document.getElementById('debitBox'); box.style.display='none'; box.innerHTML=''; }
-    function hideEft(){ const box=document.getElementById('eftBox'); box.style.display='none'; box.innerHTML=''; }
-
-    document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; hideDebitForm(); renderEft(); save(); };
-    document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; hideEft(); renderDebitForm(); save(); };
-
-    if (pay === 'debit') renderDebitForm(); else renderEft();
-
-    document.getElementById('back1').onclick=(e)=>{ e.preventDefault(); step=1; state.progress=step; setProg(); save(); render(); };
-    document.getElementById('cont').onclick=async(e)=>{
-      e.preventDefault();
-      if (state.pay_method === 'debit') {
-        if (!document.getElementById('d_agree').checked) { alert('Please confirm you agree to the Debit Order terms.'); return; }
-        state.debit = {
-          account_holder: document.getElementById('d_holder').value.trim(),
-          id_number:      document.getElementById('d_id').value.trim(),
-          bank_name:      document.getElementById('d_bank').value.trim(),
-          account_number: document.getElementById('d_acc').value.trim(),
-          account_type:   document.getElementById('d_type').value,
-          debit_day:      document.getElementById('d_day').value,
-          agreed:         true
-        };
-        try {
-          const id = (linkid||'').split('_')[0];
-          await fetch('/api/debit/save', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ...state.debit, splynx_id: id }) });
-        } catch {}
-      }
-      step=3; state.progress=step; setProg(); save(); render();
-    };
+    (async()=>{ try{ const r=await fetch('/api/terms?kind=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
   }
+
+  function hideDebitForm(){ const box=document.getElementById('debitBox'); box.style.display='none'; box.innerHTML=''; }
+  function hideEft(){ const box=document.getElementById('eftBox'); box.style.display='none'; box.innerHTML=''; }
+
+  document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; hideDebitForm(); renderEft(); save(); };
+  document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; hideEft(); renderDebitForm(); save(); };
+
+  if (pay === 'debit') renderDebitForm(); else renderEft();
+
+  document.getElementById('back1').onclick=(e)=>{ e.preventDefault(); step=1; state.progress=step; setProg(); save(); render(); };
+  document.getElementById('cont').onclick=async(e)=>{
+    e.preventDefault();
+    if (state.pay_method === 'debit') {
+      if (!document.getElementById('d_agree').checked) { alert('Please confirm you agree to the Debit Order terms.'); return; }
+      state.debit = {
+        account_holder: document.getElementById('d_holder').value.trim(),
+        id_number:      document.getElementById('d_id').value.trim(),
+        bank_name:      document.getElementById('d_bank').value.trim(),
+        account_number: document.getElementById('d_acc').value.trim(),
+        account_type:   document.getElementById('d_type').value,
+        debit_day:      document.getElementById('d_day').value,
+        agreed:         true
+      };
+      try {
+        const id = (linkid||'').split('_')[0];
+        await fetch('/api/debit/save', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ...state.debit, splynx_id: id }) });
+      } catch {}
+    }
+    step=3; state.progress=step; setProg(); save(); render();
+  };
+}
 
   function step3(){
     stepEl.innerHTML='<h2>Please verify your details and change if you see any errors</h2><div id="box" class="note">Loading…</div>';
