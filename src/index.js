@@ -93,7 +93,7 @@ export default {
 
 function html() { return { "content-type": "text/html; charset=utf-8" }; }
 function js() { return { "content-type": "application/javascript; charset=utf-8" }; }
-function j ok(o, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } }); }
+function json(o, s = 200) { return new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } }); }
 function jerr(msg, s = 400) { return j ok({ ok: false, error: msg }, s); }
 
 function ipAllowed(request) {
