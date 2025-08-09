@@ -786,16 +786,108 @@ export default {
     };
   }
 
-  // --- Step 6: Done ---
-  function step6(){
-    stepEl.innerHTML='<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your information. Our team will be in contact shortly. If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>';
+// --- Step 6: Done (with agreement download links) ---
+function step6(){
+  const showDebit = (state && state.pay_method === 'debit'); // only show if debit was selected
+  stepEl.innerHTML = [
+    '<h2>All set!</h2>',
+    '<p>Thanks — we’ve recorded your information. Our team will be in contact shortly. ',
+    'If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>',
+    '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
+    '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
+    '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
+      '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a></li>',
+      (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a></li>' : ''),
+    '</ul>'
+  ].join('');
+}
+
+// Small HTML escaper
+function escapeHtml(s){ return String(s||'').replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
+
+// Serve saved signature (keeps R2 key private)
+if (path.startsWith("/agreements/sig/") && method === "GET") {
+  const linkid = (path.split("/").pop() || "").replace(/\.png$/i,'');
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_sig_key) return new Response("Not found", { status: 404 });
+  const obj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  return new Response(obj.body, { headers: { "content-type": "image/png" } });
+}
+
+// Agreement pages
+if (path.startsWith("/agreements/") && method === "GET") {
+  const [, , type, linkid] = path.split("/");
+  if (!type || !linkid) return new Response("Bad request", { status: 400 });
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
+
+  const e = sess.edits || {};
+  const today = new Date().toLocaleDateString();
+  const name  = escapeHtml(e.full_name||'');
+  const email = escapeHtml(e.email||'');
+  const phone = escapeHtml(e.phone||'');
+  const street= escapeHtml(e.street||'');
+  const city  = escapeHtml(e.city||'');
+  const zip   = escapeHtml(e.zip||'');
+  const passport = escapeHtml(e.passport||'');
+  const debit = sess.debit || null;
+
+  function page(title, body){ return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
+  .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
+  h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
+  table{width:100%;border-collapse:collapse;margin:.6em 0}td,th{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
+  .muted{color:#666;font-size:12px}.sig{margin-top:14px}.sig img{max-height:120px;border:1px dashed #bbb;border-radius:6px;background:#fff}
+  .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+  .logo{height:60px;display:block;margin:0 auto 10px}@media print {.actions{display:none}}
+  </style></head><body><div class="card">
+    <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${escapeHtml(title)}</h1>
+    ${body}
+    <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+    <div class="muted">Generated ${today} • Link ${escapeHtml(linkid)}</div>
+  </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});}
+
+  if (type === "msa") {
+    const body = `
+      <p>This document represents your Master Service Agreement with Vinet Internet Solutions.</p>
+      <table>
+        <tr><th class="b">Customer</th><td>${name}</td></tr>
+        <tr><th class="b">Email</th><td>${email}</td></tr>
+        <tr><th class="b">Phone</th><td>${phone}</td></tr>
+        <tr><th class="b">ID / Passport</th><td>${passport}</td></tr>
+        <tr><th class="b">Address</th><td>${street}, ${city}, ${zip}</td></tr>
+        <tr><th class="b">Date</th><td>${today}</td></tr>
+      </table>
+      <div class="sig"><div class="b">Signature</div>
+        <img src="/agreements/sig/${linkid}.png" alt="signature">
+      </div>`;
+    return page("Master Service Agreement", body);
   }
 
-  function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
-  render();
-})();
-</script></body></html>`;
-    }
+  if (type === "debit") {
+    const hasDebit = !!(debit && debit.account_holder && debit.account_number);
+    const debitHtml = hasDebit ? `
+      <table>
+        <tr><th class="b">Account Holder</th><td>${escapeHtml(debit.account_holder||'')}</td></tr>
+        <tr><th class="b">ID Number</th><td>${escapeHtml(debit.id_number||'')}</td></tr>
+        <tr><th class="b">Bank</th><td>${escapeHtml(debit.bank_name||'')}</td></tr>
+        <tr><th class="b">Account No</th><td>${escapeHtml(debit.account_number||'')}</td></tr>
+        <tr><th class="b">Account Type</th><td>${escapeHtml(debit.account_type||'')}</td></tr>
+        <tr><th class="b">Debit Day</th><td>${escapeHtml(debit.debit_day||'')}</td></tr>
+      </table>` : `<p class="muted">No debit order details on file for this onboarding.</p>`;
+    const body = `
+      <p>This document represents your Debit Order Instruction.</p>
+      ${debitHtml}
+      <div class="sig"><div class="b">Signature</div>
+        <img src="/agreements/sig/${linkid}.png" alt="signature">
+      </div>`;
+    return page("Debit Order Agreement", body);
+  }
+
+  return new Response("Unknown agreement type", { status: 404 });
+}
 
     // Splynx profile endpoint
     if (path === "/api/splynx/profile" && method === "GET") {
