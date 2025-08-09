@@ -64,70 +64,99 @@ function ipToInt(ip) {
   return (((p[0] << 24) >>> 0) + ((p[1] << 16) >>> 0) + ((p[2] << 8) >>> 0) + (p[3] >>> 0)) >>> 0;
 }
 
-/* ==================== Admin page ==================== */
+// ==================== ADMIN PAGE ====================
 async function renderAdmin(env) {
   const html = `
-  <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Vinet Onboarding Admin</title>
-  <style>
-    body { font-family: system-ui, sans-serif; padding:20px; background:#f4f4f4; }
-    h1 { color:#e2001a; text-align:center; }
-    .grid { display:grid; grid-template-columns: repeat(2,1fr); gap:20px; max-width:1100px; margin:0 auto; }
-    .section { background:#fff; padding:20px; border-radius:12px; box-shadow:0 2px 8px #0002; }
-    input { padding:10px; border:1px solid #ddd; border-radius:8px; width:70%; }
-    button { padding:10px 14px; background:#e2001a; color:#fff; border:0; border-radius:8px; cursor:pointer; }
-    .link-output { margin-top:10px; font-weight:600; background:#fafafa; padding:8px; border-radius:8px; word-break:break-all; }
-    .muted { color:#666; font-size:.9em }
-  </style>
-  </head><body>
-    <h1>Vinet Onboarding Admin</h1>
+  <!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vinet Onboarding Admin</title>
+    <style>
+      :root { --red:#e2001a; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#f4f4f4; margin:0; }
+      header { text-align:center; padding:28px 16px; }
+      header h1 { margin:0; color:var(--red); font-size:36px; font-weight:800; line-height:1.1; }
+      .grid { max-width:1100px; margin:0 auto 40px; padding:0 16px;
+              display:grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap:22px; }
+      .card { background:#fff; border-radius:16px; box-shadow:0 6px 18px #0002; padding:22px; }
+      .card h2 { margin:0 0 12px; font-size:26px; line-height:1.15; }
+      .muted { color:#6b7280; margin:4px 0 12px; }
+      input { width:100%; padding:12px 14px; border:1px solid #e5e7eb; border-radius:10px; font-size:16px; }
+      .row { display:flex; gap:10px; align-items:center; margin-top:12px; }
+      button { background:var(--red); color:#fff; border:0; border-radius:12px; padding:10px 16px; font-weight:700; cursor:pointer; }
+      .output { margin-top:12px; background:#fafafa; border:1px dashed #e5e7eb; padding:10px; border-radius:10px; word-break:break-all; }
+      a { color:var(--red); text-decoration:none; }
+    </style>
+  </head>
+  <body>
+    <header><h1>Vinet Onboarding Admin</h1></header>
+
     <div class="grid">
-      <div class="section">
+      <div class="card">
         <h2>1. Generate onboarding link</h2>
         <p class="muted">Enter Splynx customer/lead ID</p>
-        <input id="clientId" placeholder="e.g. 319" />
-        <button onclick="genLink()">Generate</button>
-        <div id="linkResult" class="link-output"></div>
+        <div class="row">
+          <input id="clientId" placeholder="e.g. 319" />
+          <button id="genBtn">Generate</button>
+        </div>
+        <div id="linkResult" class="output" style="display:none"></div>
       </div>
-      <div class="section">
+
+      <div class="card">
         <h2>2. Generate verification code (staff)</h2>
-        <p class="muted">Enter a full onboarding link ID (e.g. 319_ab12cd34)</p>
-        <input id="linkId" placeholder="e.g. 319_ab12cd34" />
-        <button onclick="genStaff()">Generate</button>
-        <div id="staffOut" class="link-output"></div>
+        <p class="muted">Enter a full onboarding link ID (e.g. <code>319_ab12cd34</code>)</p>
+        <div class="row">
+          <input id="linkId" placeholder="e.g. 319_ab12cd34" />
+          <button id="staffBtn">Generate</button>
+        </div>
+        <div id="staffOut" class="output" style="display:none"></div>
       </div>
-      <div class="section">
-        <h2>3. Pending (in-progress)</h2>
-        <p class="muted">Coming soon</p>
+
+      <div class="card">
+        <h2>3. Pending (in‑progress)</h2>
+        <div class="muted">Loading…</div>
       </div>
-      <div class="section">
+
+      <div class="card">
         <h2>4. Completed (awaiting approval)</h2>
-        <p class="muted">Coming soon</p>
+        <div class="muted">Loading…</div>
       </div>
-      <div class="section">
+
+      <div class="card">
         <h2>5. Approved</h2>
-        <p class="muted">Coming soon</p>
+        <div class="muted">Loading…</div>
       </div>
     </div>
+
     <script>
-      async function genLink(){
+      const linkOut = document.getElementById('linkResult');
+      const staffOut = document.getElementById('staffOut');
+
+      document.getElementById('genBtn').onclick = async () => {
         const id = (document.getElementById('clientId').value||'').trim();
         if(!id) return alert('Enter client ID');
         const r = await fetch('/api/genlink?id='+encodeURIComponent(id));
         const d = await r.json().catch(()=>({}));
-        document.getElementById('linkResult').innerHTML = d.url
-          ? '<a href="'+d.url+'" target="_blank">'+d.url+'</a>'
-          : 'Failed to generate link';
-      }
-      async function genStaff(){
+        linkOut.style.display = 'block';
+        linkOut.innerHTML = d.url ? ('<a href="'+d.url+'" target="_blank">'+d.url+'</a>') : 'Failed to generate link';
+      };
+
+      document.getElementById('staffBtn').onclick = async () => {
         const linkid = (document.getElementById('linkId').value||'').trim();
-        if(!linkid || !linkid.includes('_')) return alert('Enter a full link ID, e.g. 319_ab12cd34');
-        const r = await fetch('/api/staff/gen', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid }) });
+        if(!linkid || !linkid.includes('_')) return alert('Enter full onboarding link id (e.g. 319_ab12cd34)');
+        const r = await fetch('/api/staff/gen', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ linkid })
+        });
         const d = await r.json().catch(()=>({}));
-        document.getElementById('staffOut').textContent = d.ok ? ('Staff code: '+d.code+' (valid 15 min)') : (d.error||'Failed');
-      }
+        staffOut.style.display = 'block';
+        staffOut.textContent = d.ok ? ('Staff code: '+d.code+' (valid 15 min)') : (d.error || 'Failed');
+      };
     </script>
-  </body></html>`;
+  </body>
+  </html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
