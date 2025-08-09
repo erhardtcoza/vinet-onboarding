@@ -70,7 +70,7 @@ export default {
       if (path === "/api/splynx/profile" && method === "GET") {
         const id = url.searchParams.get("id");
         if (!id) return jerr("Missing id", 400);
-        try { return j ok(await fetchProfileForDisplay(env, id)); } catch { return jerr("Lookup failed", 502); }
+        try { return json(await fetchProfileForDisplay(env, id)); } catch { return jerr("Lookup failed", 502); }
       }
 
       // ===== Uploads (supporting docs) =====
