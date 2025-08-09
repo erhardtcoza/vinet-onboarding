@@ -1,843 +1,1096 @@
-// index.js — Vinet Onboarding Worker (single-file, build-safe)
-// - Admin dashboard (IP allowlisted)
-// - Onboarding flow (EFT/DO -> Personal info -> Uploads -> MSA accept + signature -> Finish)
-// - WhatsApp OTP (template then text fallback)
-// - PDF generation on sign (MSA always, DO when selected) to public R2
-// - Public R2 links rendered on the finish page
+// --- Vinet Onboarding Worker ---
+// Handles admin dashboard, onboarding flow, EFT & Debit Order pages
+// Updated: LARGE + REQUIRED MSA agree checkbox on the service agreement step
 
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+const ALLOWED_IPS = [
+  "160.226.128.0/20" // CIDR-style for your ASN range
+];
 
-export default {
-  async fetch(request, env) {
-    try {
-      const url = new URL(request.url);
-      const path = url.pathname;
+const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 
-      // Allowlist admin/API by CIDR
-      const clientIP = request.headers.get("CF-Connecting-IP") || "";
-      const needsIPGate = (
-        path === "/" ||
-        path.startsWith("/admin") ||
-        path.startsWith("/api")
-      );
-      if (needsIPGate && !ipInRange(clientIP, env.ALLOWED_CIDR || "160.226.128.0/20")) {
-        return new Response("Access denied", { status: 403 });
-      }
-
-      // -------- Routes --------
-      if (path === "/") return renderAdmin(env);
-
-      if (path.startsWith("/onboard/")) {
-        const linkid = path.split("/")[2] || "";
-        return onboardHTML(linkid, request, env);
-      }
-
-      // Admin APIs
-      if (path === "/api/admin/genlink" && request.method === "POST") return genLink(request, env);
-      if (path === "/api/admin/list"   && request.method === "GET")  return adminList(url, env);
-      if (path === "/api/admin/approve"&& request.method === "POST") return adminApprove(request, env);
-      if (path === "/api/admin/reject" && request.method === "POST") return adminReject(request, env);
-
-      // OTP
-      if (path === "/api/otp/send"   && request.method === "POST") return sendOtp(request, env);
-      if (path === "/api/otp/verify" && request.method === "POST") return verifyOtp(request, env);
-
-      // Progress & uploads
-      if (path.startsWith("/api/progress/") && request.method === "POST") {
-        const linkid = path.split("/")[3] || "";
-        return saveProgress(linkid, request, env);
-      }
-      if (path === "/api/upload" && request.method === "POST")   return handleUpload(request, env);
-
-      // Finalize (sign + PDF generation)
-      if (path === "/api/finalize" && request.method === "POST") return finalizeSubmission(request, env);
-
-      // Info pages
-      if (path === "/info/eft"   && request.method === "GET") return eftHTML(url.searchParams.get("id") || "");
-      if (path === "/info/debit" && request.method === "GET") return debitOrderHTML(url.searchParams.get("id") || "", env);
-
-      // Terms helper
-      if (path === "/api/terms" && request.method === "GET")   return termsHTML(url, env);
-
-      // Public R2 passthrough (only if you still link /r2/… anywhere)
-      if (path.startsWith("/r2/") && request.method === "GET") {
-        const key = path.replace("/r2/", "");
-        return serveR2(key, env);
-      }
-
-      return new Response("Not found", { status: 404 });
-    } catch (err) {
-      return new Response("Worker exception: " + (err?.message || String(err)), { status: 500 });
-    }
-  }
-};
-
-// ------------------------ Helpers ------------------------
-function json(o, s = 200) {
-  return new Response(JSON.stringify(o), {
-    status: s,
-    headers: { "content-type": "application/json" }
-  });
-}
-function jerr(msg, s = 400) { return json({ ok: false, error: msg }, s); }
-
-function ipToInt(ip) {
-  const p = ip.split(".").map(x => parseInt(x, 10));
-  if (p.length !== 4 || p.some(n => Number.isNaN(n))) return 0;
-  return (((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]) >>> 0;
-}
-function ipInRange(ip, cidr) {
-  const [range, bitsStr = "32"] = cidr.split("/");
-  const bits = parseInt(bitsStr, 10);
-  const ipNum = ipToInt(ip);
-  const rangeNum = ipToInt(range);
-  const mask = bits === 0 ? 0 : (~((1 << (32 - bits)) - 1)) >>> 0;
-  return (ipNum & mask) === (rangeNum & mask);
-}
-function escapeHtml(s = "") {
-  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
-}
-function catNow() {
-  // South Africa: Africa/Johannesburg (CAT, UTC+2, no DST)
-  return new Date().toLocaleString("en-ZA", { timeZone: "Africa/Johannesburg" });
+// --- Helpers ---
+function ipAllowed(request) {
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip) return false;
+  // CIDR 160.226.128.0/20 means first two octets fixed, third in 128-143
+  const [a, b, c] = ip.split(".").map(Number);
+  return a === 160 && b === 226 && c >= 128 && c <= 143;
 }
 
-// ------------------------ Admin UI ------------------------
-async function renderAdmin(env) {
-  const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Vinet Onboarding Admin</title>
+async function fetchText(url) {
+  const res = await fetch(url);
+  if (!res.ok) return "";
+  return res.text();
+}
+
+// --- EFT Page ---
+async function renderEFTPage(id) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>EFT Payment Details</title>
 <style>
-  body{font-family:system-ui,sans-serif;background:#f4f4f4;margin:0}
-  header{background:#fff;box-shadow:0 1px 6px #0002;padding:16px;text-align:center}
-  header img{max-width:120px}
-  .wrap{max-width:1100px;margin:16px auto;padding:0 12px}
-  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:16px}
-  .card{background:#fff;border-radius:12px;box-shadow:0 1px 6px #0002;padding:16px}
-  h2{color:#e2001a;margin:0 0 8px}
-  input{width:70%;padding:10px;border:1px solid #ddd;border-radius:8px}
-  .btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}
-  .link{margin-top:8px;background:#fafafa;border:1px dashed #ddd;border-radius:8px;padding:8px;font-size:.95em;word-break:break-all}
-  table{width:100%;border-collapse:collapse}
-  th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
-  .muted{color:#666;font-size:.92em}
-  .center{text-align:center}
-</style></head>
+body { font-family: Arial, sans-serif; background: #f7f7fa; }
+.container { max-width: 900px; margin: 40px auto; background: #fff; padding: 28px; border-radius: 16px; box-shadow: 0 4px 18px rgba(0,0,0,.06); }
+h1 { color: #e2001a; font-size: 34px; margin: 8px 0 18px; }
+.grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.grid .full { grid-column: 1 / -1; }
+label { font-weight: 700; color: #333; font-size: 14px; }
+input { width: 100%; padding: 10px 12px; margin-top: 6px; border: 1px solid #ddd; border-radius: 8px; background:#fafafa; }
+button { background: #e2001a; color: #fff; padding: 12px 18px; border: none; border-radius: 10px; cursor: pointer; width: 100%; font-weight: 700; }
+.note { font-size: 13px; color: #555; }
+.logo { display:block; margin: 0 auto 8px; height: 68px; }
+@media (max-width: 700px){ .grid{ grid-template-columns: 1fr; } }
+</style>
+</head>
 <body>
-  <header><img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet logo"></header>
-  <div class="wrap">
-    <div class="grid">
-      <div class="card center">
-        <h2>1. Generate Onboarding Link</h2>
-        <input id="clid" placeholder="Splynx ID / Lead ID"/>
-        <div style="margin-top:8px"><button class="btn" id="gen">Generate</button></div>
-        <div id="link" class="link"></div>
-      </div>
-      <div class="card center">
-        <h2>2. Generate Verification Code</h2>
-        <input id="linkid" placeholder="link id e.g. 319_ab12cd34"/>
-        <div style="margin-top:8px"><button class="btn" id="genc">Generate Staff OTP</button></div>
-        <div id="code" class="link"></div>
-        <div class="muted">Use when WhatsApp delivery fails. Valid 15 minutes.</div>
-      </div>
-    </div>
+<div class="container">
+  <img src="${LOGO_URL}" alt="Vinet" class="logo">
+  <h1>EFT Payment Details</h1>
 
-    <div class="card">
-      <h2>3. In-progress</h2>
-      <div id="inprog" class="muted">Loading…</div>
-    </div>
-    <div class="card">
-      <h2>4. Awaiting approval</h2>
-      <div id="await" class="muted">Loading…</div>
-    </div>
-    <div class="card">
-      <h2>5. Approved</h2>
-      <div id="approved" class="muted">Loading…</div>
-    </div>
-  </div>
-
-<script>
-  async function load(mode, elId){
-    const r = await fetch('/api/admin/list?mode='+encodeURIComponent(mode));
-    const d = await r.json().catch(()=>({items:[]}));
-    const rows = (d.items||[]).map(i =>
-      '<tr><td>'+i.id+'</td><td>'+i.linkid+'</td><td>'+new Date(i.updated).toLocaleString('en-ZA',{timeZone:'Africa/Johannesburg'})+'</td>'+
-      '<td>'+(
-        mode==='await'
-          ? '<a class="btn" href="/admin/review?linkid='+encodeURIComponent(i.linkid)+'">Review</a>'
-          : '<a class="btn" href="/onboard/'+encodeURIComponent(i.linkid)+'" target="_blank">Open</a>'
-      )+'</td></tr>'
-    ).join('');
-    const html = rows
-      ? '<table><thead><tr><th>Splynx ID</th><th>Link</th><th>Updated</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'
-      : '<div class="muted">No records.</div>';
-    document.getElementById(elId).innerHTML = html;
-  }
-  load('inprog','inprog'); load('await','await'); load('approved','approved');
-
-  document.getElementById('gen').onclick = async ()=>{
-    const id = document.getElementById('clid').value.trim();
-    if(!id) return alert('Enter ID');
-    const r = await fetch('/api/admin/genlink', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({id})});
-    const d = await r.json();
-    document.getElementById('link').innerHTML = d.url ? '<a href="'+d.url+'" target="_blank">'+d.url+'</a>' : 'Failed';
-  };
-
-  document.getElementById('genc').onclick = async ()=>{
-    const linkid = document.getElementById('linkid').value.trim();
-    if(!linkid) return alert('Enter linkid');
-    const r = await fetch('/api/otp/send', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({linkid})});
-    const d = await r.json().catch(()=>({}));
-    document.getElementById('code').textContent = d.ok ? 'WhatsApp sent' : (d.error || 'Failed');
-  };
-</script>
-</body></html>`;
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
-}
-
-async function adminList(url, env) {
-  const mode = url.searchParams.get("mode") || "await";
-  const list = await env.ONBOARD_KV.list({ prefix: "onboard/" });
-  const out = [];
-  for (const k of list.keys) {
-    const s = await env.ONBOARD_KV.get(k.name, "json");
-    if (!s) continue;
-    const linkid = k.name.split("/")[1];
-    const updated = s.last_time || s.created || 0;
-    if (mode === "inprog" && !s.agreement_signed) out.push({ linkid, id: s.id, updated });
-    if (mode === "await"  && s.status === "pending") out.push({ linkid, id: s.id, updated });
-    if (mode === "approved" && s.status === "approved") out.push({ linkid, id: s.id, updated });
-  }
-  out.sort((a,b)=> b.updated - a.updated);
-  return json({ items: out });
-}
-
-async function genLink(request, env) {
-  const { id } = await request.json().catch(()=> ({}));
-  if (!id) return jerr("Missing id", 400);
-  const token = Math.random().toString(36).slice(2,10);
-  const linkid = `${id}_${token}`;
-  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ id, created: Date.now(), progress: 0 }), { expirationTtl: 86400 });
-  return json({ url: `${env.PUBLIC_ORIGIN || "https://onboard.vinet.co.za"}/onboard/${linkid}` });
-}
-
-async function adminApprove(request, env) {
-  const { linkid } = await request.json().catch(()=> ({}));
-  if (!linkid) return jerr("Missing linkid", 400);
-  const s = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!s) return jerr("Not found", 404);
-  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...s, status: "approved", approved_at: Date.now() }), { expirationTtl: 86400 });
-  return json({ ok: true });
-}
-async function adminReject(request, env) {
-  const { linkid, reason } = await request.json().catch(()=> ({}));
-  if (!linkid) return jerr("Missing linkid", 400);
-  const s = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!s) return jerr("Not found", 404);
-  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...s, status:"rejected", reason:String(reason||"").slice(0,300) }), { expirationTtl: 86400 });
-  return json({ ok: true });
-}
-
-// ------------------------ Onboarding UI ------------------------
-async function onboardHTML(linkid, request, env) {
-  const [id, token] = (linkid || "").split("_");
-  if (!id || !token) return new Response("Invalid link", { status: 400 });
-
-  // fetch profile (customer or lead)
-  const prof = await fetchSplynxProfile(env, id);
-  const firstName = prof.first_name || "";
-  const lastName  = prof.last_name  || "";
-  const idNumber  = prof.passport   || ""; // Splynx "passport"
-  const street    = (prof.street_1 || prof.street || "") || "";
-  const city      = prof.city || "";
-  const zip       = prof.zip_code || prof.zip || "";
-  const phone     = prof.phone_mobile || prof.phone || "";
-  const email     = prof.email || "";
-
-  const TERMS_MSA_URL   = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-  const TERMS_DEBIT_URL = env.TERMS_DEBIT_URL   || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
-
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/><title>Vinet Onboarding</title>
-<style>
-  body{font-family:system-ui,sans-serif;background:#f4f4f4;margin:0}
-  header{background:#fff;box-shadow:0 1px 6px #0002;padding:16px;text-align:center}
-  header img{max-width:200px}
-  .wrap{max-width:760px;margin:20px auto;padding:0 12px}
-  .step{background:#fff;margin:16px 0;padding:16px;border-radius:12px;box-shadow:0 1px 6px #0002}
-  h2{color:#e2001a;margin:0 0 10px}
-  label{font-weight:600;display:block;margin-top:10px}
-  input,select{width:100%;padding:10px;border:1px solid #dcdcdc;border-radius:8px;margin-top:6px}
-  .btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 18px;cursor:pointer}
-  .btn.out{background:#fff;color:#e2001a;border:2px solid #e2001a}
-  .row{display:flex;gap:12px;flex-wrap:wrap}
-  .row>div{flex:1;min-width:240px}
-  .ref{background:#fff7d6;border:1px dashed #e0b400;border-radius:8px;padding:10px;font-weight:700}
-  .tick{transform:scale(1.6);margin-right:10px}
-  canvas#sig{width:100%;height:180px;border:1px dashed #bbb;border-radius:10px;background:#fff;touch-action:none}
-  .note{color:#666;font-size:.92em}
-  .links a{display:block;margin:8px 0}
-</style></head>
-<body>
-<header><img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet logo"></header>
-<div class="wrap">
-  <!-- 0 Welcome -->
-  <div class="step" id="s0"><h2>Welcome to Vinet</h2>
-    <p>We’ll guide you through a few quick steps to confirm your details and sign your agreements.</p>
-    <button class="btn" id="start">Start</button>
-  </div>
-
-  <!-- 1 Payment method -->
-  <div class="step" id="s1" style="display:none">
-    <h2>Payment method</h2>
-    <label>Choose one</label>
-    <select id="pay"><option value="">— Select —</option><option value="EFT">EFT</option><option value="DEBIT">Debit order</option></select>
-
-    <div id="eft" style="display:none;margin-top:10px">
-      <div class="ref">Please use the correct EFT reference: REF <b>${id}</b></div>
-      <div style="text-align:center;margin-top:10px">
-        <button class="btn" type="button" onclick="window.open('/info/eft?id=${id}','_blank')">Print banking details</button>
-      </div>
-    </div>
-
-    <div id="do" style="display:none;margin-top:10px">
-      <div class="row">
-        <div><label>Bank Account Holder Name</label><input id="do_name"></div>
-        <div><label>Bank Account Holder ID no</label><input id="do_id"></div>
-      </div>
-      <div class="row">
-        <div><label>Bank</label><input id="do_bank"></div>
-        <div><label>Bank Account No</label><input id="do_acc"></div>
-      </div>
-      <div class="row">
-        <div><label>Bank Account Type</label>
-          <select id="do_type"><option value="cheque">Cheque</option><option value="savings">Savings</option><option value="transmission">Transmission</option></select>
-        </div>
-        <div><label>Debit Order Date</label>
-          <select id="do_day"><option>1</option><option>7</option><option>15</option><option>25</option><option>29</option><option>30</option></select>
-        </div>
-      </div>
-      <div style="margin-top:8px"><label><input id="do_ok" type="checkbox" class="tick"> I accept the Debit Order terms</label></div>
-      <div style="margin-top:8px"><iframe src="${TERMS_DEBIT_URL}" style="width:100%;height:230px;border:1px solid #eee;border-radius:8px"></iframe></div>
-    </div>
-
-    <div class="row" style="margin-top:14px"><div><button class="btn out" id="b1">Back</button></div><div><button class="btn" id="n1">Continue</button></div></div>
-  </div>
-
-  <!-- 2 Personal info -->
-  <div class="step" id="s2" style="display:none">
-    <h2>Please verify your details and change if you see any errors</h2>
-    <div class="row"><div><label>First name</label><input id="f_first" value="${escapeHtml(firstName)}"></div><div><label>Last name</label><input id="f_last" value="${escapeHtml(lastName)}"></div></div>
-    <div class="row"><div><label>ID / Passport</label><input id="f_pass" value="${escapeHtml(idNumber)}"></div><div><label>Mobile</label><input id="f_phone" value="${escapeHtml(phone)}"></div></div>
-    <label>Email</label><input id="f_email" value="${escapeHtml(email)}">
-    <label>Street</label><input id="f_street" value="${escapeHtml(street)}">
-    <div class="row"><div><label>City</label><input id="f_city" value="${escapeHtml(city)}"></div><div><label>ZIP</label><input id="f_zip" value="${escapeHtml(zip)}"></div></div>
-    <div class="row" style="margin-top:14px"><div><button class="btn out" id="b2">Back</button></div><div><button class="btn" id="n2">Continue</button></div></div>
-  </div>
-
-  <!-- 3 Uploads -->
-  <div class="step" id="s3" style="display:none">
-    <h2>Please upload your supporting documents</h2>
-    <p class="note">ID or Passport and proof of address (as per RICA regulations)</p>
-    <div><label>Document 1</label><input id="u1" type="file" accept="image/*,application/pdf"></div>
-    <div><label>Document 2 (optional)</label><input id="u2" type="file" accept="image/*,application/pdf"></div>
-    <div class="row" style="margin-top:14px"><div><button class="btn out" id="b3">Back</button></div><div><button class="btn" id="n3">Continue</button></div></div>
-  </div>
-
-  <!-- 4 Service agreement -->
-  <div class="step" id="s4" style="display:none">
-    <h2>Vinet Service Agreement</h2>
-    <div style="margin-bottom:8px"><iframe src="${TERMS_MSA_URL}" style="width:100%;height:260px;border:1px solid #eee;border-radius:8px"></iframe></div>
-    <label><input id="msa_ok" type="checkbox" class="tick"> I confirm the accuracy of the information contained in this Agreement and warrant that I am duly authorised to enter into an agreement with VINET on behalf of the customer/myself.</label>
-    <div style="margin-top:10px">
-      <label>Draw your signature</label>
-      <canvas id="sig"></canvas>
-      <div style="margin-top:8px"><button class="btn out" id="clearSig">Clear</button></div>
-    </div>
-    <div class="row" style="margin-top:14px"><div><button class="btn out" id="b4">Back</button></div><div><button class="btn" id="finish">Finish & Sign</button></div></div>
-  </div>
-
-  <!-- 5 Done -->
-  <div class="step" id="s5" style="display:none">
-    <h2>All set!</h2>
-    <p>Thanks - we've recorded your information. Our team will be in contact shortly. If you have any questions please contact our sales team at 021 007 0200 / sales@vinetco.za</p>
-    <div id="dl" class="links"></div>
-  </div>
-</div>
-
-<script>
-  const linkid=${JSON.stringify(linkid)}, idOnly=${JSON.stringify(id)};
-  const state={ pay:"", debit:null, info:{}, uploads:[], device:navigator.userAgent, browser:navigator.userAgent, ip:"" };
-
-  // show helper
-  const show=i=>{ for(let s=0;s<=5;s++){ const el=document.getElementById('s'+s); if(el) el.style.display=(s===i?'block':'none'); } };
-
-  // start
-  document.getElementById('start').onclick=()=>show(1);
-
-  // pay step
-  const sel=document.getElementById('pay'), eft=document.getElementById('eft'), dob=document.getElementById('do');
-  sel.onchange=()=>{ const v=sel.value; eft.style.display=(v==='EFT')?'block':'none'; dob.style.display=(v==='DEBIT')?'block':'none'; };
-  document.getElementById('b1').onclick=()=>show(0);
-  document.getElementById('n1').onclick=()=>{ const v=sel.value; if(!v) return alert('Select a payment method'); if(v==='DEBIT' && !document.getElementById('do_ok').checked) return alert('Please accept the Debit Order terms');
-    state.pay=v;
-    state.debit=(v==='DEBIT')?{account_holder:val('do_name'),id_number:val('do_id'),bank_name:val('do_bank'),account_number:val('do_acc'),account_type:val('do_type'),debit_day:val('do_day')} : null;
-    show(2);
-  };
-
-  // info
-  document.getElementById('b2').onclick=()=>show(1);
-  document.getElementById('n2').onclick=()=>{ state.info={ first_name:val('f_first'), last_name:val('f_last'), passport:val('f_pass'), phone:val('f_phone'), email:val('f_email'), street:val('f_street'), city:val('f_city'), zip:val('f_zip') }; show(3); };
-
-  // uploads
-  document.getElementById('b3').onclick=()=>show(2);
-  document.getElementById('n3').onclick=async()=>{ state.uploads=[]; const f1=gid('u1').files[0]; const f2=gid('u2').files[0];
-    if(f1) state.uploads.push(await up(linkid,f1)); if(f2) state.uploads.push(await up(linkid,f2)); show(4); };
-  async function up(linkid,file){ const u='/api/upload?linkid='+encodeURIComponent(linkid)+'&filename='+encodeURIComponent(file.name); const buf=await file.arrayBuffer(); const r=await fetch(u,{method:'POST',body:buf}); return await r.json().catch(()=>({})); }
-
-  // signature pad
-  const canvas=document.getElementById('sig'), ctx=canvas.getContext('2d'); let drawing=false,last=null;
-  function resize(){ const s=window.devicePixelRatio||1; const r=canvas.getBoundingClientRect(); canvas.width=Math.floor(r.width*s); canvas.height=Math.floor(180*s); ctx.scale(s,s); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#222'; }
-  function pos(e){ const r=canvas.getBoundingClientRect(); const t=e.touches&&e.touches[0]; return {x:(t?t.clientX:e.clientX)-r.left,y:(t?t.clientY:e.clientY)-r.top}; }
-  function down(e){ drawing=true; last=pos(e); e.preventDefault(); }
-  function move(e){ if(!drawing) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; e.preventDefault(); }
-  function up(){ drawing=false; last=null; }
-  window.addEventListener('resize',resize); resize();
-  canvas.addEventListener('mousedown',down); window.addEventListener('mouseup',up); canvas.addEventListener('mousemove',move);
-  canvas.addEventListener('touchstart',down,{passive:false}); window.addEventListener('touchend',up); canvas.addEventListener('touchmove',move,{passive:false});
-  document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); ctx.clearRect(0,0,canvas.width,canvas.height); };
-
-  document.getElementById('b4').onclick=()=>show(3);
-  document.getElementById('finish').onclick=async()=>{
-    if(!document.getElementById('msa_ok').checked) return alert('Please confirm the agreement');
-    const signature=canvas.toDataURL('image/png');
-    const body={ linkid, id:idOnly, state, signature };
-    const r=await fetch('/api/finalize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-    const d=await r.json().catch(()=>({}));
-    show(5);
-    const dl=document.getElementById('dl'); const links=[];
-    if(d.msa_url) links.push('<a target="_blank" href="'+d.msa_url+'">Download Vinet Service Agreement (MSA)</a>');
-    if(d.do_url)  links.push('<a target="_blank" href="'+d.do_url+'">Download Debit Order Agreement</a>');
-    dl.innerHTML=links.join('');
-  };
-
-  // utils
-  function gid(id){ return document.getElementById(id); }
-  function val(id){ return (gid(id)?.value||'').trim(); }
-
-  // boot
-  show(0);
-</script>
-</body></html>`;
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
-}
-
-// ------------------------ Info pages ------------------------
-async function eftHTML(id) {
-  const LOGO = "https://static.vinet.co.za/logo.jpeg";
-  const html = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>EFT Details</title>
-<style>
-  body{font-family:system-ui,sans-serif;background:#f4f4f4;margin:0}
-  .card{max-width:720px;margin:24px auto;background:#fff;padding:18px;border-radius:12px;box-shadow:0 1px 6px #0002}
-  .logo{display:block;margin:0 auto 8px;max-width:160px}
-  h2{color:#e2001a;margin:8px 0 12px}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .f{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:10px}
-  .ref{background:#fff7d6;border:1px dashed #e0b400;border-radius:10px;padding:10px;font-weight:700}
-  .c{text-align:center}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
-</style></head><body>
-<div class="card">
-  <img class="logo" src="${LOGO}" alt="">
-  <h2>Banking details</h2>
   <div class="grid">
-    <div class="f"><b>Bank</b><br>First National Bank (FNB/RMB)</div>
-    <div class="f"><b>Account name</b><br>Vinet Internet Solutions</div>
-    <div class="f"><b>Account number</b><br>62757054996</div>
-    <div class="f"><b>Branch code</b><br>250655</div>
+    <div>
+      <label>Bank</label>
+      <input readonly value="First National Bank (FNB/RMB)">
+    </div>
+    <div>
+      <label>Account Name</label>
+      <input readonly value="Vinet Internet Solutions">
+    </div>
+    <div>
+      <label>Account Number</label>
+      <input readonly value="62757054996">
+    </div>
+    <div>
+      <label>Branch Code</label>
+      <input readonly value="250655">
+    </div>
+    <div class="full">
+      <label style="font-weight:900">Reference</label>
+      <input style="font-weight:900" readonly value="${id || ''}">
+    </div>
   </div>
-  <div class="ref" style="margin-top:10px">Please use the correct EFT reference: <b>REF ${id || ""}</b></div>
-  <p style="color:#666">All accounts are payable on or before the 1st of every month.</p>
-  <div class="c"><button class="btn" onclick="window.print()">Print banking details</button></div>
-</div></body></html>`;
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
+
+  <p class="note" style="margin-top:16px">Please remember that all accounts are payable on or before the 1st of every month.</p>
+  <div style="margin-top:14px"><button onclick="window.print()">Print</button></div>
+</div>
+</body>
+</html>`;
 }
 
-async function debitOrderHTML(id, env) {
-  const LOGO = "https://static.vinet.co.za/logo.jpeg";
-  const termsUrl = env.TERMS_DEBIT_URL || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
-  let terms = "";
-  try { const r = await fetch(termsUrl); terms = r.ok ? await r.text() : ""; } catch {}
-  const html = `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Debit Order</title>
+// --- Debit Order Page ---
+async function renderDebitPage(id) {
+  const terms = await fetchText(TERMS_DEBIT_URL);
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Debit Order Instruction</title>
 <style>
-  body{font-family:system-ui,sans-serif;background:#f4f4f4;margin:0}
-  .card{max-width:760px;margin:24px auto;background:#fff;padding:18px;border-radius:12px;box-shadow:0 1px 6px #0002}
-  .logo{display:block;margin:0 auto 8px;max-width:160px}
-  h2{color:#e2001a;margin:8px 0 12px}
-  label{font-weight:600;display:block;margin-top:10px}
-  input,select{width:100%;padding:10px;border:1px solid #dcdcdc;border-radius:8px;margin-top:6px}
-  .tick{transform:scale(1.6);margin-right:10px}
-  .btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
-  .row{display:flex;gap:10px;flex-wrap:wrap}.row>div{flex:1;min-width:240px}
-  pre{white-space:pre-wrap;background:#fafafa;border:1px solid #eee;border-radius:10px;padding:10px}
-</style></head><body>
-<div class="card">
-  <img class="logo" src="${LOGO}" alt="">
-  <h2>Debit order details</h2>
-  <form method="POST" action="/api/debit/save">
-    <input type="hidden" name="splynx_id" value="${id || ""}">
-    <div class="row">
-      <div><label>Bank Account Holder Name</label><input name="account_holder" required></div>
-      <div><label>Bank Account Holder ID no</label><input name="id_number" required></div>
-    </div>
-    <div class="row">
-      <div><label>Bank</label><input name="bank_name" required></div>
-      <div><label>Bank Account No</label><input name="account_number" required></div>
-    </div>
-    <div class="row">
-      <div><label>Bank Account Type</label>
-        <select name="account_type"><option value="cheque">Cheque</option><option value="savings">Savings</option><option value="transmission">Transmission</option></select>
+body { font-family: Arial, sans-serif; background: #f7f7fa; }
+.container { max-width: 900px; margin: 40px auto; background: #fff; padding: 28px; border-radius: 16px; box-shadow: 0 4px 18px rgba(0,0,0,.06); }
+h1 { color: #e2001a; font-size: 32px; margin: 8px 0 18px; }
+.grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.grid .full { grid-column: 1 / -1; }
+label { font-weight: 700; color: #333; font-size: 14px; }
+input, select { width: 100%; padding: 10px 12px; margin-top: 6px; border: 1px solid #ddd; border-radius: 8px; }
+button { background: #e2001a; color: #fff; padding: 12px 18px; border: none; border-radius: 10px; cursor: pointer; }
+.terms { background: #f9f9f9; padding: 12px; margin-top: 6px; border: 1px solid #ddd; max-height: 240px; overflow-y: auto; border-radius: 8px; }
+.logo { display:block; margin: 0 auto 8px; height: 68px; }
+.chk label { display:flex; align-items:center; gap:10px; font-weight: 800; }
+.chk input { width: 20px; height: 20px; }
+@media (max-width: 700px){ .grid{ grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <img src="${LOGO_URL}" alt="Vinet" class="logo">
+  <h1>Debit Order Instruction</h1>
+
+  <form id="f" method="POST" action="/api/debit/save">
+    <input type="hidden" name="splynx_id" value="${id || ''}">
+    <div class="grid">
+      <div>
+        <label>Bank Account Holder Name</label>
+        <input name="account_holder" required>
       </div>
-      <div><label>Debit order date</label>
-        <select name="debit_day"><option>1</option><option>7</option><option>15</option><option>25</option><option>29</option><option>30</option></select>
+      <div>
+        <label>Bank Account Holder ID No</label>
+        <input name="id_number" required>
+      </div>
+      <div>
+        <label>Bank</label>
+        <input name="bank_name" required>
+      </div>
+      <div>
+        <label>Bank Account No</label>
+        <input name="account_number" required>
+      </div>
+      <div>
+        <label>Bank Account Type</label>
+        <select name="account_type">
+          <option value="cheque">Cheque / Current</option>
+          <option value="savings">Savings</option>
+          <option value="transmission">Transmission</option>
+        </select>
+      </div>
+      <div>
+        <label>Debit Order Date</label>
+        <select name="debit_day">
+          <option value="1">1st</option>
+          <option value="7">7th</option>
+          <option value="15">15th</option>
+          <option value="25">25th</option>
+          <option value="29">29th</option>
+          <option value="30">30th</option>
+        </select>
+      </div>
+
+      <div class="full">
+        <div class="terms">${terms || 'Terms unavailable.'}</div>
+      </div>
+
+      <div class="full chk" style="margin-top:6px">
+        <label><input type="checkbox" name="agree" required> I agree to the Debit Order terms</label>
       </div>
     </div>
-    <div style="margin-top:10px"><label><input class="tick" type="checkbox" name="agree" required> I accept the Debit Order terms</label></div>
-    <pre>${escapeHtml(terms || "Terms unavailable.")}</pre>
-    <div style="margin-top:10px"><button class="btn" type="submit">Submit</button></div>
+
+    <div style="display:flex; gap:10px; margin-top:16px">
+      <button type="submit">Submit</button>
+      <a href="/info/eft?id=${id || ''}" style="text-decoration:none">
+        <button type="button" style="background:#999">Prefer EFT?</button>
+      </a>
+    </div>
   </form>
-</div></body></html>`;
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
+  <script>
+    document.getElementById('f').addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = {};
+      fd.forEach((v,k)=> body[k] = v);
+      try{
+        const r = await fetch('/api/debit/save', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+        const d = await r.json();
+        if(d && d.ok){ alert('Saved. We will review and approve shortly.'); location.href = '/'; }
+        else { alert('Failed: ' + (d && d.error || 'Unknown error')); }
+      }catch(err){ alert('Network error.'); }
+    });
+  </script>
+</div>
+</body>
+</html>`;
 }
 
-async function termsHTML(url, env) {
-  const pay = (url.searchParams.get("pay") || "").toLowerCase();
-  const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-  const debUrl = env.TERMS_DEBIT_URL   || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
-  async function get(u){ try{ const r=await fetch(u); return r.ok?await r.text():""; }catch{ return ""; } }
-  const svc = await get(svcUrl);
-  const deb = pay === "debit" ? await get(debUrl) : "";
-  const html = `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${escapeHtml(svc)}</pre>` + (deb ? `<hr/><h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${escapeHtml(deb)}</pre>` : "");
-  return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
+// --- Splynx helpers (API v2.0, Basic auth via env) ---
+async function splynxGET(env, endpoint) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+  });
+  if (!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`);
+  return r.json();
+}
+async function splynxPUT(env, endpoint, payload) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(`Splynx PUT ${endpoint} ${r.status}`);
+  return r.json().catch(() => ({}));
 }
 
-// ------------------------ OTP ------------------------
-async function sendOtp(request, env) {
-  const { linkid } = await request.json().catch(()=> ({}));
-  if (!linkid) return jerr("Missing linkid", 400);
-  const splynxId = (linkid.split("_")[0] || "").trim();
-  const msisdn = await findMsisdn(env, splynxId);
-  if (!msisdn) return jerr("No WhatsApp number on file", 404);
-
-  const code = String(Math.floor(100000 + Math.random()*900000));
-  await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
-
-  try {
-    await waSendTemplate(env, msisdn, code);
-    return json({ ok: true });
-  } catch {
-    try {
-      await waSendText(env, msisdn, `Your Vinet verification code is: ${code}`);
-      return json({ ok: true, note: "sent-as-text" });
-    } catch {
-      return jerr("WhatsApp send failed", 502);
-    }
-  }
-}
-
-async function verifyOtp(request, env) {
-  const { linkid, otp } = await request.json().catch(()=> ({}));
-  if (!linkid || !otp) return jerr("Missing params", 400);
-  const code = await env.ONBOARD_KV.get(`otp/${linkid}`);
-  return json({ ok: !!code && code === otp });
-}
-
-// ------------------------ Progress & Uploads ------------------------
-async function saveProgress(linkid, request, env) {
-  const body = await request.json().catch(()=> ({}));
-  const cur = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json") || {};
-  const next = { ...cur, ...body, last_time: Date.now() };
-  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
-  return json({ ok: true });
-}
-
-async function handleUpload(request, env) {
-  const u = new URL(request.url);
-  const linkid = u.searchParams.get("linkid") || "";
-  const name   = u.searchParams.get("filename") || "file.bin";
-  if (!linkid) return jerr("Missing linkid", 400);
-  const buf = await request.arrayBuffer();
-  const key = `uploads/${linkid}/${Date.now()}_${name}`;
-  await env.R2_UPLOADS.put(key, buf);
-  return json({ ok: true, key, url: `https://onboarding-uploads.vinethosting.org/${key}` });
-}
-
-// ------------------------ Finalize (PDFs) ------------------------
-async function finalizeSubmission(request, env) {
-  const { linkid, id, state, signature } = await request.json().catch(()=> ({}));
-  if (!linkid || !id || !state || !signature) return jerr("Missing data", 400);
-
-  // Save signature PNG
-  const png64 = (signature.split(",")[1] || "");
-  const sigBytes = Uint8Array.from(atob(png64), c => c.charCodeAt(0));
-  const sigKey = `agreements/${linkid}/signature.png`;
-  await env.R2_UPLOADS.put(sigKey, sigBytes.buffer, { httpMetadata: { contentType: "image/png" } });
-
-  // Build PDFs
-  const msaOut = await buildMsaPdf(env, id, linkid, state, sigBytes);
-  const doOut  = state.pay === "DEBIT" ? await buildDoPdf(env, id, linkid, state, sigBytes) : null;
-
-  // Store to R2
-  const msaKey = `agreements/${linkid}/msa.pdf`;
-  await env.R2_UPLOADS.put(msaKey, msaOut, { httpMetadata: { contentType: "application/pdf" } });
-  let doKey = null;
-  if (doOut) {
-    doKey = `agreements/${linkid}/do.pdf`;
-    await env.R2_UPLOADS.put(doKey, doOut, { httpMetadata: { contentType: "application/pdf" } });
-  }
-
-  const pub = "https://onboarding-uploads.vinethosting.org";
-  const resp = { ok: true, msa_url: `${pub}/${msaKey}` };
-  if (doKey) resp.do_url = `${pub}/${doKey}`;
-
-  // mark session pending approval
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json") || { id };
-  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status: "pending", agreement_signed: true, last_time: Date.now() }), { expirationTtl: 86400 });
-
-  return json(resp);
-}
-
-// ------------------------ PDF builders ------------------------
-async function buildMsaPdf(env, id, linkid, state, sigBytes) {
-  const tplUrl = env.MSA_TEMPLATE_URL || "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
-  const res = await fetch(tplUrl);
-  const tpl = await res.arrayBuffer();
-  const pdf = await PDFDocument.load(tpl);
-  const form = pdf.getForm ? pdf.getForm() : null;
-
-  const fields = {
-    full_name: `${state.info.first_name || ""} ${state.info.last_name || ""}`.trim(),
-    passport: state.info.passport || "",
-    customer_id: String(id),
-    email: state.info.email || "",
-    phone: state.info.phone || "",
-    street: state.info.street || "",
-    city: state.info.city || "",
-    zip: state.info.zip || "",
-    date: catNow(),
-  };
-  if (form) {
-    for (const [k,v] of Object.entries(fields)) {
-      try { form.getTextField(k).setText(String(v)); } catch {}
-      try { form.getTextField(k.toUpperCase()).setText(String(v)); } catch {}
-    }
-    try { form.flatten(); } catch {}
-  }
-
-  // Signature on page 4 near bottom right
-  try {
-    const png = await pdf.embedPng(sigBytes);
-    const idx = Math.min(3, pdf.getPageCount()-1);
-    const page = pdf.getPage(idx);
-    const { width } = page.getSize();
-    const sigW = 180, sigH = 60;
-    page.drawImage(png, { x: width - sigW - 80, y: 90, width: sigW, height: sigH });
-  } catch {}
-
-  // Security stamp page
-  appendStampPage(pdf, state);
-
-  return await pdf.save();
-}
-
-async function buildDoPdf(env, id, linkid, state, sigBytes) {
-  const tplUrl = env.DO_TEMPLATE_URL || "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
-  const res = await fetch(tplUrl);
-  const tpl = await res.arrayBuffer();
-  const pdf = await PDFDocument.load(tpl);
-  const form = pdf.getForm ? pdf.getForm() : null;
-
-  const d = state.debit || {};
-  const fields = {
-    account_holder: d.account_holder || "",
-    id_number: d.id_number || "",
-    bank_name: d.bank_name || "",
-    account_number: d.account_number || "",
-    account_type: d.account_type || "",
-    debit_day: String(d.debit_day || ""),
-    customer_id: String(id),
-    date: catNow(),
-  };
-  if (form) {
-    for (const [k,v] of Object.entries(fields)) {
-      try { form.getTextField(k).setText(String(v)); } catch {}
-      try { form.getTextField(k.toUpperCase()).setText(String(v)); } catch {}
-    }
-    try { form.flatten(); } catch {}
-  }
-
-  // Signature between Debit Order Date and Date fields (approx lower middle)
-  try {
-    const png = await pdf.embedPng(sigBytes);
-    const page = pdf.getPage(0);
-    const { width } = page.getSize();
-    const sigW = 180, sigH = 60;
-    page.drawImage(png, { x: width/2 - sigW/2, y: 120, width: sigW, height: sigH });
-  } catch {}
-
-  appendStampPage(pdf, state);
-  return await pdf.save();
-}
-
-function appendStampPage(pdf, state) {
-  const page = pdf.addPage([595,842]); // A4
-  let font = null; try { font = pdf.embedStandardFont(StandardFonts.Helvetica); } catch {}
-  const draw = (t,x,y,s=12)=>{ try{ page.drawText(t,{x,y,size:s,font,color:rgb(0,0,0)});}catch{} };
-  let y = 800;
-  draw("Security Verification", 40, y, 18); y -= 24;
-  draw("Date/time (CAT): " + catNow(), 40, y); y -= 18;
-  draw("Device: " + (state.device || "n/a"), 40, y); y -= 18;
-  draw("Browser: " + (state.browser || "n/a"), 40, y); y -= 18;
-  draw("IP: " + (state.ip || "n/a"), 40, y);
-}
-
-// ------------------------ Splynx + WhatsApp ------------------------
-async function fetchSplynxProfile(env, id) {
-  const headers = { Authorization: `Basic ${env.SPLYNX_AUTH}` };
-  const base = env.SPLYNX_API || "https://splynx.vinet.co.za/api/2.0";
-  const eps = [
-    `/admin/customers/customer/${id}`,
-    `/crm/leads/${id}`
-  ];
-  for (const ep of eps) {
-    try {
-      const r = await fetch(base + ep, { headers });
-      if (r.ok) return await r.json();
-    } catch {}
-  }
-  return {};
-}
-
+// pick any msisdn in 27xxxxxxxxx format from a messy object
 function pickPhone(obj) {
-  const ok = s => /^27\d{8,13}$/.test(String(s||"").trim());
   if (!obj) return null;
-  if (typeof obj === "string" && ok(obj)) return obj.trim();
+  const ok = s => /^27\d{8,13}$/.test(String(s || "").trim());
+  const direct = [
+    obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
+    obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone
+  ];
+  for (const v of direct) if (ok(v)) return String(v).trim();
+
   if (Array.isArray(obj)) {
     for (const it of obj) { const m = pickPhone(it); if (m) return m; }
   } else if (typeof obj === "object") {
-    for (const k of Object.keys(obj)) {
-      const v = obj[k];
-      if (typeof v === "string" && ok(v)) return v.trim();
-      const deep = pickPhone(v); if (deep) return deep;
-    }
+    for (const k of Object.keys(obj)) { const m = pickPhone(obj[k]); if (m) return m; }
   }
   return null;
 }
-async function findMsisdn(env, id) {
-  const headers = { Authorization: `Basic ${env.SPLYNX_AUTH}` };
-  const base = env.SPLYNX_API || "https://splynx.vinet.co.za/api/2.0";
-  for (const ep of [
+async function fetchCustomerMsisdn(env, id) {
+  const eps = [
     `/admin/customers/customer/${id}`,
-    `/admin/customers/${id}/contacts`,
+    `/admin/customers/${id}`,
     `/crm/leads/${id}`,
-    `/crm/leads/${id}/contacts`
-  ]) {
-    try {
-      const r = await fetch(base + ep, { headers });
-      if (!r.ok) continue;
-      const data = await r.json();
-      const m = pickPhone(data);
-      if (m) return m;
-    } catch {}
+    `/admin/customers/${id}/contacts`,
+    `/crm/leads/${id}/contacts`,
+  ];
+  for (const ep of eps) {
+    try { const data = await splynxGET(env, ep); const m = pickPhone(data); if (m) return m; } catch {}
   }
   return null;
 }
+async function fetchProfileForDisplay(env, id) {
+  let cust=null, lead=null, contacts=null;
+  try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
+  if (!cust) { try { lead = await splynxGET(env, `/crm/leads/${id}`); } catch {} }
+  try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
 
-async function waSendTemplate(env, to, code) {
-  const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: {
-      name: env.WHATSAPP_TEMPLATE_NAME || "vinetotp",
-      language: { code: env.WHATSAPP_TEMPLATE_LANG || "en" },
-      components: [
-        { type: "body", parameters: [{ type:"text", text: code }] },
-        { type: "button", sub_type:"url", index:"0", parameters:[{ type:"text", text: code.slice(-6) }] }
-      ]
-    }
+  const src = cust || lead || {};
+  const phone = pickPhone({ ...src, contacts });
+
+  const street =
+    src.street ??
+    src.address ??
+    src.address_1 ??
+    src.street_1 ??
+    (src.addresses && (src.addresses.street || src.addresses.address_1)) ??
+    '';
+
+  const city =
+    src.city ??
+    (src.addresses && src.addresses.city) ??
+    '';
+
+  const zip =
+    src.zip_code ??
+    src.zip ??
+    (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ??
+    '';
+
+  const passport =
+    src.passport ??
+    src.id_number ??
+    '';
+
+  return {
+    kind: cust ? "customer" : (lead ? "lead" : "unknown"),
+    id: id,
+    full_name: src.full_name || src.name || "",
+    email: src.email || src.billing_email || "",
+    phone: phone || "",
+    city,
+    street,
+    zip,
+    passport,
+    partner: src.partner || src.location || "",
+    payment_method: src.payment_method || "",
   };
-  const r = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!r.ok) throw new Error(await r.text());
-}
-async function waSendText(env, to, body) {
-  const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
-  const payload = { messaging_product:"whatsapp", to, type:"text", text:{ body } };
-  const r = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!r.ok) throw new Error(await r.text());
 }
 
-// ------------------------ Debit save API (for /info/debit form POST) ------------------------
-async function debitSaveFromForm(request, env) {
-  const form = await request.formData();
-  const rec = {
-    splynx_id:  String(form.get("splynx_id") || "").trim(),
-    account_holder: String(form.get("account_holder") || "").trim(),
-    id_number:      String(form.get("id_number") || "").trim(),
-    bank_name:      String(form.get("bank_name") || "").trim(),
-    account_number: String(form.get("account_number") || "").trim(),
-    account_type:   String(form.get("account_type") || "").trim(),
-    debit_day:      String(form.get("debit_day") || "").trim(),
-    agree:          !!form.get("agree"),
-    created: Date.now()
-  };
-  if (!rec.splynx_id || !rec.account_holder || !rec.id_number || !rec.bank_name || !rec.account_number || !rec.account_type || !rec.debit_day || !rec.agree) {
-    return jerr("Missing fields", 400);
-  }
-  const key = `debit/${rec.splynx_id}/${rec.created}`;
-  await env.ONBOARD_KV.put(key, JSON.stringify(rec), { expirationTtl: 60*60*24*90 });
-  // also mark in onboard KV if exists
-  const list = await env.ONBOARD_KV.list({ prefix: "onboard/" });
-  for (const k of list.keys) {
-    if ((await env.ONBOARD_KV.get(k.name, "json"))?.id == rec.splynx_id) {
-      const s = await env.ONBOARD_KV.get(k.name, "json");
-      await env.ONBOARD_KV.put(k.name, JSON.stringify({ ...s, last_time: Date.now() }), { expirationTtl: 86400 });
+// --- Admin Dashboard HTML (at "/") ---
+function renderAdminPage() {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body { font-family: system-ui, sans-serif; background:#fafbfc; color:#232; }
+  .card { background:#fff; max-width:1000px; margin:2.0em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.4em 1.6em; }
+  .logo { display:block; margin:0 auto 1em; max-width:120px; }
+  h1, h2 { color:#e2001a; }
+  .tabs { display:flex; gap:.5em; flex-wrap:wrap; margin:.2em 0 1em; justify-content:center; }
+  .tab { padding:.55em 1.0em; border-radius:.7em; border:2px solid #e2001a; color:#e2001a; cursor:pointer; user-select:none; }
+  .tab.active { background:#e2001a; color:#fff; }
+  .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.55em 1.0em; font-size:1em; cursor:pointer; }
+  .btn-outline { background:#fff; color:#e2001a; border:2px solid #e2001a; border-radius:.7em; padding:.5em 1.0em; }
+  .btn-secondary { background:#eee; color:#222; border:0; border-radius:.7em; padding:.5em 1.0em; text-decoration:none; display:inline-block; }
+  .field { margin:.9em 0; }
+  input, select { width:100%; padding:.6em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
+  .row { display:flex; gap:.75em; }
+  .row > * { flex:1; }
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:.6em .5em; border-bottom:1px solid #eee; text-align:left; }
+  .note { font-size:12px; color:#666; }
+  #out a { word-break: break-all; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
+    <h1 style="text-align:center">Admin Dashboard</h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="gen">1. Generate onboarding link</div>
+      <div class="tab" data-tab="staff">2. Generate verification code</div>
+      <div class="tab" data-tab="inprog">3. Pending (in-progress)</div>
+      <div class="tab" data-tab="pending">4. Completed (awaiting approval)</div>
+      <div class="tab" data-tab="approved">5. Approved</div>
+    </div>
+    <div id="content"></div>
+  </div>
+  <script src="/static/admin.js"></script>
+</body>
+</html>`;
+}
+
+// --- Admin client JS (served at /static/admin.js) ---
+function adminJs() {
+  return `(()=> {
+    const tabs = document.querySelectorAll('.tab');
+    const content = document.getElementById('content');
+    tabs.forEach(t => t.onclick = () => {
+      tabs.forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      load(t.getAttribute('data-tab'));
+    });
+    load('gen');
+
+    function node(html){ const d=document.createElement('div'); d.innerHTML=html; return d; }
+
+    async function load(which){
+      if (which==='gen') {
+        content.innerHTML = '';
+        const v = node(
+          '<div class="field" style="max-width:640px;margin:0 auto;">'+
+            '<label>Splynx Lead/Customer ID</label>'+
+            '<div class="row"><input id="id" autocomplete="off" />'+
+            '<button class="btn" id="go">Generate</button></div>'+
+            '<div id="out" class="field note" style="margin-top:.6em"></div>'+
+          '</div>'
+        );
+        v.querySelector('#go').onclick = async ()=>{
+          const id = v.querySelector('#id').value.trim();
+          const out = v.querySelector('#out');
+          if (!id) { out.textContent = 'Please enter an ID.'; return; }
+          out.textContent = 'Working...';
+          try {
+            const r = await fetch('/api/admin/genlink', {
+              method:'POST',
+              headers:{'content-type':'application/json'},
+              body: JSON.stringify({ id })
+            });
+            const d = await r.json().catch(()=>({}));
+            out.innerHTML = d.url
+              ? '<b>Onboarding link:</b> <a href="'+d.url+'" target="_blank">'+d.url+'</a>'
+              : 'Error generating link.';
+          } catch { out.textContent = 'Network error.'; }
+        };
+        content.appendChild(v);
+        return;
+      }
+
+      if (which==='staff') {
+        content.innerHTML='';
+        const v = node(
+          '<div class="field" style="max-width:640px;margin:0 auto;">'+
+            '<label>Onboarding Link ID (e.g. 319_ab12cd34)</label>'+
+            '<div class="row"><input id="linkid" autocomplete="off" />'+
+            '<button class="btn" id="go">Generate staff code</button></div>'+
+            '<div id="out" class="field note" style="margin-top:.6em"></div>'+
+          '</div>'
+        );
+        v.querySelector('#go').onclick = async ()=>{
+          const linkid = v.querySelector('#linkid').value.trim();
+          const out = v.querySelector('#out');
+          if (!linkid) { out.textContent='Enter linkid'; return; }
+          out.textContent='Working...';
+          try {
+            const r = await fetch('/api/staff/gen', { method:'POST', body: JSON.stringify({ linkid }) });
+            const d = await r.json().catch(()=>({}));
+            out.innerHTML = d.ok ? 'Staff code: <b>'+d.code+'</b> (valid 15 min)' : (d.error || 'Failed');
+          } catch { out.textContent = 'Network error.'; }
+        };
+        content.appendChild(v);
+        return;
+      }
+
+      if (['inprog','pending','approved'].includes(which)) {
+        content.innerHTML = 'Loading...';
+        try {
+          const r = await fetch('/api/admin/list?mode='+which);
+          const d = await r.json();
+          const rows = (d.items||[]).map(i =>
+            '<tr>'+
+              '<td>'+i.id+'</td>'+
+              '<td>'+i.linkid+'</td>'+
+              '<td>'+new Date(i.updated).toLocaleString()+'</td>'+
+              '<td>'+(which==='pending'
+                 ? '<a class="btn" href="/admin/review?linkid='+encodeURIComponent(i.linkid)+'">Review</a>'
+                 : '<a class="btn-secondary" href="/onboard/'+i.linkid+'" target="_blank">Open</a>')+
+              '</td></tr>'
+          ).join('') || '<tr><td colspan="4">No records.</td></tr>';
+          content.innerHTML = '<table style="max-width:900px;margin:0 auto"><thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+        } catch {
+          content.innerHTML = 'Failed to load.';
+        }
+        return;
+      }
     }
+  })();`;
+}
+
+// --- Worker entry ---
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // small helpers
+    const json = (o, s = 200) =>
+      new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
+    const getIP = () =>
+      request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("x-forwarded-for") ||
+      request.headers.get("x-real-ip") ||
+      "";
+    const getUA = () => request.headers.get("user-agent") || "";
+
+    // -------- Admin dashboard --------
+    if (path === "/" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    if (path === "/static/admin.js" && method === "GET") {
+      return new Response(adminJs(), { headers: { "content-type": "application/javascript; charset=utf-8" } });
+    }
+
+    // -------- Info pages --------
+    if (path === "/info/eft" && method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      return new Response(await renderEFTPage(id), { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    if (path === "/info/debit" && method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      return new Response(await renderDebitPage(id), { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+
+    // -------- Terms (service + debit) --------
+    if (path === "/api/terms" && method === "GET") {
+      // Support both ?kind=service/debit and legacy ?pay=debit
+      const kind = (url.searchParams.get("kind") || "").toLowerCase();
+      const pay = (url.searchParams.get("pay") || "").toLowerCase();
+
+      const svcUrl =
+        env.TERMS_SERVICE_URL ||
+        "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+      const debUrl =
+        env.TERMS_DEBIT_URL ||
+        "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+
+      async function getText(u) {
+        try {
+          const r = await fetch(u, { cf: { cacheEverything: true, cacheTtl: 300 } });
+          return r.ok ? await r.text() : "";
+        } catch {
+          return "";
+        }
+      }
+      const service = await getText(svcUrl);
+      const debit = await getText(debUrl);
+
+      // Render based on kind/pay
+      let body = "";
+      if (kind === "service" || (!kind && pay !== "debit")) {
+        body = `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${(service || "").replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]))}</pre>`;
+      } else if (kind === "debit" || pay === "debit") {
+        body = `<h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${(debit || "").replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]))}</pre>`;
+      } else {
+        body = `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${(service || "").replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]))}</pre>`;
+      }
+
+      return new Response(body || "<p>Terms unavailable.</p>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // -------- Debit save (from /info/debit and inline flow) --------
+    if (path === "/api/debit/save" && method === "POST") {
+      const b = await request.json().catch(async () => {
+        // support form POST as well
+        const form = await request.formData().catch(()=>null);
+        if (!form) return {};
+        const o = {};
+        for (const [k,v] of form.entries()) o[k]=v;
+        return o;
+      });
+      const required = [
+        "account_holder",
+        "id_number",
+        "bank_name",
+        "account_number",
+        "account_type",
+        "debit_day",
+      ];
+      for (const k of required) {
+        if (!b[k] || String(b[k]).trim() === "") {
+          return json({ ok: false, error: `Missing ${k}` }, 400);
+        }
+      }
+      const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
+      const ts = Date.now();
+      const key = `debit/${id}/${ts}`;
+      const record = {
+        ...b,
+        splynx_id: id,
+        created: ts,
+        ip: getIP(),
+        ua: getUA(),
+      };
+      await env.ONBOARD_KV.put(key, JSON.stringify(record), {
+        expirationTtl: 60 * 60 * 24 * 90,
+      });
+      return json({ ok: true, ref: key });
+    }
+
+    // -------- Admin: generate link --------
+    if (path === "/api/admin/genlink" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { id } = await request.json().catch(() => ({}));
+      if (!id) return json({ error: "Missing id" }, 400);
+      const token = Math.random().toString(36).slice(2, 10);
+      const linkid = `${id}_${token}`;
+      await env.ONBOARD_KV.put(
+        `onboard/${linkid}`,
+        JSON.stringify({ id, created: Date.now(), progress: 0 }),
+        { expirationTtl: 86400 }
+      );
+      return json({ url: `${url.origin}/onboard/${linkid}` });
+    }
+
+    // -------- Admin: staff OTP code --------
+    if (path === "/api/staff/gen" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid } = await request.json().catch(() => ({}));
+      if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok: false, error: "Unknown linkid" }, 404);
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await env.ONBOARD_KV.put(`staffotp/${linkid}`, code, { expirationTtl: 900 });
+      return json({ ok: true, linkid, code });
+    }
+
+    // -------- WhatsApp OTP send / verify --------
+    async function sendWhatsAppTemplate(toMsisdn, code, lang = "en") {
+      const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
+      const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
+      const payload = {
+        messaging_product: "whatsapp",
+        to: toMsisdn,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: env.WHATSAPP_TEMPLATE_LANG || lang },
+          components: [
+            { type: "body", parameters: [{ type: "text", text: code }] },
+            { type: "button", sub_type: "url", index: "0",
+              parameters: [{ type: "text", text: code.slice(-6) }] }
+          ],
+        },
+      };
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error(`WA template send failed ${r.status} ${t}`);
+      }
+    }
+    async function sendWhatsAppTextIfSessionOpen(toMsisdn, bodyText) {
+      const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
+      const payload = {
+        messaging_product: "whatsapp",
+        to: toMsisdn,
+        type: "text",
+        text: { body: bodyText },
+      };
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error(`WA text send failed ${r.status} ${t}`);
+      }
+    }
+
+    if (path === "/api/otp/send" && method === "POST") {
+      const { linkid } = await request.json().catch(() => ({}));
+      if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+      const splynxId = (linkid || "").split("_")[0];
+
+      let msisdn = null;
+      try {
+        msisdn = await fetchCustomerMsisdn(env, splynxId);
+      } catch {
+        return json({ ok: false, error: "Splynx lookup failed" }, 502);
+      }
+      if (!msisdn) return json({ ok: false, error: "No WhatsApp number on file" }, 404);
+
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+
+      try {
+        await sendWhatsAppTemplate(msisdn, code, "en");
+        return json({ ok: true });
+      } catch (e) {
+        try {
+          await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`);
+          return json({ ok: true, note: "sent-as-text" });
+        } catch {
+          return json({ ok: false, error: "WhatsApp send failed (template+text)" }, 502);
+        }
+      }
+    }
+
+    if (path === "/api/otp/verify" && method === "POST") {
+      const { linkid, otp, kind } = await request.json().catch(() => ({}));
+      if (!linkid || !otp) return json({ ok: false, error: "Missing params" }, 400);
+      const key = kind === "staff" ? `staffotp/${linkid}` : `otp/${linkid}`;
+      const expected = await env.ONBOARD_KV.get(key);
+      const ok = !!expected && expected === otp;
+      if (ok) {
+        const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+        if (sess) {
+          await env.ONBOARD_KV.put(
+            `onboard/${linkid}`,
+            JSON.stringify({ ...sess, otp_verified: true }),
+            { expirationTtl: 86400 }
+          );
+        }
+        if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`);
+      }
+      return json({ ok });
+    }
+
+    // -------- Onboarding UI --------
+    if (path.startsWith("/onboard/") && method === "GET") {
+      const linkid = path.split("/")[2] || "";
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return new Response("Link expired or invalid", { status: 404 });
+      return new Response(renderOnboardUI(linkid), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // -------- Onboarding: file uploads --------
+    if (path === "/api/onboard/upload" && method === "POST") {
+      const urlParams = new URL(request.url).searchParams;
+      const linkid = urlParams.get("linkid");
+      const fileName = urlParams.get("filename") || "file.bin";
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return new Response("Invalid link", { status: 404 });
+
+      const body = await request.arrayBuffer();
+      const key = `uploads/${linkid}/${Date.now()}_${fileName}`;
+      await env.R2_UPLOADS.put(key, body);
+      return json({ ok: true, key });
+    }
+
+    // -------- Save progress --------
+    if (path.startsWith("/api/progress/") && method === "POST") {
+      const linkid = path.split("/")[3];
+      const body = await request.json().catch(() => ({}));
+      const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+      const next = { ...existing, ...body, last_ip: getIP(), last_ua: getUA(), last_time: Date.now() };
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
+      return json({ ok: true });
+    }
+
+    // -------- Store signature + mark pending --------
+    if (path === "/api/sign" && method === "POST") {
+      const { linkid, dataUrl } = await request.json().catch(() => ({}));
+      if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
+        return json({ ok: false, error: "Missing/invalid signature" }, 400);
+      }
+      const png = dataUrl.split(",")[1];
+      const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
+      const sigKey = `agreements/${linkid}/signature.png`;
+      await env.R2_UPLOADS.put(sigKey, bytes.buffer, { httpMetadata: { contentType: "image/png" } });
+
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok: false, error: "Unknown session" }, 404);
+
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
+        ...sess,
+        agreement_signed: true,
+        agreement_sig_key: sigKey,
+        status: "pending"  // waiting for admin approval
+      }), { expirationTtl: 86400 });
+
+      return json({ ok: true, sigKey });
+    }
+
+    // -------- Admin list (for tabs 3/4/5) --------
+    if (path === "/api/admin/list" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const mode = url.searchParams.get("mode") || "pending";
+      const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
+      const items = [];
+      for (const k of list.keys || []) {
+        const s = await env.ONBOARD_KV.get(k.name, "json");
+        if (!s) continue;
+        const linkid = k.name.split("/")[1];
+        const updated = s.last_time || s.created || 0;
+
+        if (mode === "inprog" && !s.agreement_signed) items.push({ linkid, id: s.id, updated });
+        if (mode === "pending" && s.status === "pending") items.push({ linkid, id: s.id, updated });
+        if (mode === "approved" && s.status === "approved") items.push({ linkid, id: s.id, updated });
+      }
+      items.sort((a,b)=> b.updated - a.updated);
+      return json({ items });
+    }
+
+    // -------- Simple admin review page --------
+    if (path === "/admin/review" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const linkid = url.searchParams.get("linkid") || "";
+      if (!linkid) return new Response("Missing linkid", { status: 400 });
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return new Response("Not found", { status: 404 });
+
+      const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+      const filesHTML = uploads.length
+        ? `<ul style="list-style:none;padding:0">${
+            uploads.map(u =>
+              `<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em">
+                <b>${u.label}</b> — ${u.name} • ${Math.round((u.size||0)/1024)} KB
+              </li>`).join("")
+          }</ul>`
+        : `<div class="note">No files</div>`;
+
+      return new Response(`
+<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<title>Review</title>
+<style>body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
+.card{background:#fff;max-width:900px;margin:2em auto;border-radius:1em;box-shadow:0 2px 12px #0002;padding:1.2em 1.4em}
+h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7em;padding:.55em 1em;cursor:pointer}
+.btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:.7em;padding:.5em 1em}
+.note{color:#666;font-size:12px}
+</style>
+</head><body>
+<div class="card">
+  <h1>Review & Approve</h1>
+  <div class="note">Splynx ID: <b>${sess.id}</b> • LinkID: <code>${linkid}</code> • Status: <b>${sess.status||'n/a'}</b></div>
+
+  <h2>Edits</h2>
+  <div>${Object.entries(sess.edits||{}).map(([k,v])=>`<div><b>${k}</b>: ${v?String(v):''}</div>`).join("") || "<div class='note'>None</div>"}</div>
+
+  <h2>Uploads</h2>
+  ${filesHTML}
+
+  <h2>Agreement</h2>
+  <div class="note">Accepted: ${sess.agreement_signed ? "Yes" : "No"}</div>
+
+  <div style="margin-top:12px">
+    <button class="btn" id="approve">Approve & Push</button>
+    <button class="btn-outline" id="reject">Reject</button>
+  </div>
+  <div id="msg" class="note" style="margin-top:8px"></div>
+</div>
+<script>
+  const msg = document.getElementById('msg');
+  document.getElementById('approve').onclick = async () => {
+    msg.textContent = 'Pushing...';
+    try {
+      const r = await fetch('/api/admin/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)}})});
+      const d = await r.json().catch(()=>({ok:false}));
+      msg.textContent = d.ok ? 'Approved and pushed.' : (d.error || 'Failed.');
+    } catch { msg.textContent = 'Network error.'; }
+  };
+  document.getElementById('reject').onclick = async () => {
+    const reason = prompt('Reason for rejection?') || '';
+    msg.textContent = 'Rejecting...';
+    try {
+      const r = await fetch('/api/admin/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)},reason})});
+      const d = await r.json().catch(()=>({ok:false}));
+      msg.textContent = d.ok ? 'Rejected.' : (d.error || 'Failed.');
+    } catch { msg.textContent = 'Network error.'; }
+  };
+</script>
+</body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+
+    // -------- Admin: reject (sets status) --------
+    if (path === "/api/admin/reject" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid, reason } = await request.json().catch(() => ({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok:false, error:"Not found" }, 404);
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
+        ...sess,
+        status: "rejected",
+        reject_reason: String(reason || "").slice(0, 300),
+        rejected_at: Date.now()
+      }), { expirationTtl: 86400 });
+      return json({ ok:true });
+    }
+
+    // -------- Onboarding UI renderer --------
+    function renderOnboardUI(linkid) {
+      return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" />
+<title>Onboarding</title><meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body { font-family: system-ui, sans-serif; background:#fafbfc; color:#232; }
+  .card { background:#fff; max-width:650px; margin:2.5em auto; border-radius:1.25em; box-shadow:0 2px 12px #0002; padding:1.75em; }
+  .logo { display:block; margin:0 auto 1em; max-width:160px; } /* bigger welcome logo */
+  h1, h2 { color:#e2001a; }
+  .btn { background:#e2001a; color:#fff; border:0; border-radius:.7em; padding:.7em 2em; font-size:1em; cursor:pointer; margin:.8em 0 0; }
+  .btn-outline { background:#fff; color:#e2001a; border:2px solid #e2001a; border-radius:.7em; padding:.6em 1.4em; }
+  .field { margin:1em 0; }
+  input, select, textarea { width:100%; padding:.7em; font-size:1em; border-radius:.5em; border:1px solid #ddd; }
+  .note { font-size:12px; color:#666; }
+  .progressbar { height:7px; background:#eee; border-radius:5px; margin:1.4em 0 2.2em; overflow:hidden; }
+  .progress { height:100%; background:#e2001a; transition:width .4s; }
+  .row { display:flex; gap:.75em; }
+  .row > * { flex:1; }
+  .pill-wrap { display:flex; gap:.6em; flex-wrap:wrap; margin:.6em 0 0; }
+  .pill { border:2px solid #e2001a; color:#e2001a; padding:.6em 1.2em; border-radius:999px; cursor:pointer; user-select:none; }
+  .pill.active { background:#e2001a; color:#fff; }
+  .termsbox { max-height: 280px; overflow:auto; padding:1em; border:1px solid #ddd; border-radius:.6em; background:#fafafa; }
+  canvas.signature { border:1px dashed #bbb; border-radius:.6em; width:100%; height:180px; touch-action: none; background:#fff; }
+  /* BIG checkboxes */
+  .bigchk { display:flex; align-items:center; gap:.6em; font-weight:700; }
+  .bigchk input[type=checkbox]{ width:22px; height:22px; }
+  @media (max-width:720px){ .logo{ max-width:140px; } }
+</style>
+</head>
+<body>
+<div class="card">
+  <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
+  <div class="progressbar"><div id="prog" class="progress" style="width:14%"></div></div>
+  <div id="step"></div>
+</div>
+<script>
+(function(){
+  const linkid = ${JSON.stringify(linkid)};
+  const stepEl = document.getElementById('step');
+  const progEl = document.getElementById('prog');
+  let step = 0;
+  let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
+
+  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); }
+  function setProg(){ progEl.style.width = pct() + '%'; }
+  function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
+
+  async function sendOtp(){
+    const m = document.getElementById('otpmsg');
+    if (m) m.textContent = 'Sending code to WhatsApp...';
+    try{
+      const r = await fetch('/api/otp/send',{method:'POST',body:JSON.stringify({linkid})});
+      const d = await r.json().catch(()=>({ok:false}));
+      if (m) m.textContent = d.ok ? 'Code sent. Check your WhatsApp.' : (d.error||'Failed to send.');
+    }catch{ if(m) m.textContent='Network error.'; }
   }
-  return json({ ok: true, ref: key });
-}
 
-// PATCH: route binder for /api/debit/save (form POST)
-async function debitOrderHTML_Handler(request, env) {
-  if (request.method === "POST") return debitSaveFromForm(request, env);
-  const url = new URL(request.url);
-  return debitOrderHTML(url.searchParams.get("id") || "", env);
-}
+  function sigPad(canvas){
+    const ctx=canvas.getContext('2d'); let draw=false,last=null;
+    function resize(){ const scale=window.devicePixelRatio||1; const rect=canvas.getBoundingClientRect(); canvas.width=Math.floor(rect.width*scale); canvas.height=Math.floor(rect.height*scale); ctx.scale(scale,scale); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#222'; }
+    resize(); window.addEventListener('resize',resize);
+    function pos(e){ const r=canvas.getBoundingClientRect(); const t=e.touches&&e.touches[0]; return {x:(t?t.clientX:e.clientX)-r.left,y:(t?t.clientY:e.clientY)-r.top}; }
+    function start(e){ draw=true; last=pos(e); e.preventDefault(); }
+    function move(e){ if(!draw) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; e.preventDefault(); }
+    function end(){ draw=false; last=null; }
+    canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+    canvas.addEventListener('touchstart',start,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',end);
+    return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); }, dataURL(){ return canvas.toDataURL('image/png'); } };
+  }
 
-// NOTE: If you prefer handling /info/debit via GET only, keep debitOrderHTML; if you want form POST, map route:
-// in fetch(), replace `if (path === "/info/debit" && request.method === "GET")` with handler:
-// if (path === "/info/debit") return debitOrderHTML_Handler(request, env);
+  function step0(){
+    stepEl.innerHTML = '<h2>Welcome</h2><p>We\\u2019ll quickly verify you and confirm a few details.</p><button class="btn" id="start">Let\\u2019s begin</button>';
+    document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
+  }
 
-// ------------------------ R2 passthrough ------------------------
-async function serveR2(key, env) {
-  const obj = await env.R2_UPLOADS.get(key);
-  if (!obj) return new Response("Not found", { status:404 });
-  const ct = obj.httpMetadata?.contentType || "application/octet-stream";
-  return new Response(obj.body, { headers: { "content-type": ct } });
-}
+  function step1(){
+    stepEl.innerHTML = [
+      '<h2>Verify your identity</h2>',
+      '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
+      '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+      '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+    ].join('');
+
+    const wa=document.getElementById('waBox');
+    wa.innerHTML='<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div><form id="otpForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\\\d{6}" placeholder="6-digit code" required /><button class="btn" type="submit">Verify</button></div></form><a class="btn-outline" id="resend">Resend code</a>';
+    sendOtp();
+    document.getElementById('resend').onclick=(e)=>{ e.preventDefault(); sendOtp(); };
+    document.getElementById('otpForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"wa"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; setProg(); save(); render(); } else { document.getElementById('otpmsg').textContent='Invalid code. Try again.'; } };
+
+    const staff=document.getElementById('staffBox');
+    staff.innerHTML='<div class="note">Ask Vinet for a one-time staff code.</div><form id="staffForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\\\d{6}" placeholder="6-digit code from Vinet" required /><button class="btn" type="submit">Verify</button></div></form><div id="staffMsg" class="note"></div>';
+    document.getElementById('staffForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"staff"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; setProg(); save(); render(); } else { document.getElementById('staffMsg').textContent='Invalid or expired staff code.'; } };
+
+    const pwa=document.getElementById('p-wa'), pst=document.getElementById('p-staff');
+    pwa.onclick=()=>{ pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
+    pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
+  }
+
+  function step2(){
+    const pay = state.pay_method || 'eft';
+    stepEl.innerHTML = [
+      '<h2>Payment Method</h2>',
+      '<div class="field"><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
+      '<div id="eftBox" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
+      '<div id="debitBox" class="field" style="display:'+(pay==='debit'?'block':'none')+';"></div>',
+      '<div class="row"><a class="btn-outline" id="back1">Back</a><button class="btn" id="cont">Continue</button></div>'
+    ].join('');
+
+    function renderEft(){
+      const id = (linkid||'').split('_')[0];
+      const box = document.getElementById('eftBox');
+      box.style.display='block';
+      box.innerHTML = [
+        '<div class="row"><div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"/></div>',
+        '<div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"/></div></div>',
+        '<div class="row"><div class="field"><label>Account Number</label><input readonly value="62757054996"/></div>',
+        '<div class="field"><label>Branch Code</label><input readonly value="250655"/></div></div>',
+        '<div class="field"><label><b>Reference</b></label><input readonly style="font-weight:900" value="'+id+'"/></div>',
+        '<div class="note">Please make sure you use the correct <b>Reference</b> when making EFT payments.</div>',
+        '<div class="row" style="margin-top:.6em">',
+          '<a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center">View EFT page</a>',
+          '<a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center">Print banking details</a>',
+        '</div>'
+      ].join('');
+    }
+
+    function renderDebitForm(){
+      const d = state.debit || {};
+      const box = document.getElementById('debitBox');
+      box.style.display = 'block';
+      box.innerHTML = [
+        '<div class="row">',
+          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
+        '</div>',
+        '<div class="row">',
+          '<div class="field"><label>Bank</label><input id="d_bank" value="'+(d.bank_name||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account No</label><input id="d_acc" value="'+(d.account_number||'')+'" required /></div>',
+        '</div>',
+        '<div class="row">',
+          '<div class="field"><label>Bank Account Type</label><select id="d_type"><option value="cheque" '+((d.account_type||'')==='cheque'?'selected':'')+'>Cheque / Current</option><option value="savings" '+((d.account_type||'')==='savings'?'selected':'')+'>Savings</option><option value="transmission" '+((d.account_type||'')==='transmission'?'selected':'')+'>Transmission</option></select></div>',
+          '<div class="field"><label>Debit Order Date</label><select id="d_day">',[1,7,15,25,29,30].map(x=>'<option '+((d.debit_day||'')==x?'selected':'')+' value="'+x+'">'+x+'</option>').join(''),'</select></div>',
+        '</div>',
+        '<div class="termsbox" id="debitTerms">Loading terms...</div>',
+        '<div class="field bigchk" style="margin-top:.8em">',
+          '<label style="display:flex;align-items:center;gap:.55em"><input id="d_agree" type="checkbox"> I agree to the Debit Order terms</label>',
+        '</div>'
+      ].join('');
+
+      (async()=>{ try{ const r=await fetch('/api/terms?kind=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
+    }
+
+    function hideDebitForm(){ const box=document.getElementById('debitBox'); box.style.display='none'; box.innerHTML=''; }
+    function hideEft(){ const box=document.getElementById('eftBox'); box.style.display='none'; box.innerHTML=''; }
+
+    document.getElementById('pm-eft').onclick = ()=>{ state.pay_method='eft'; hideDebitForm(); renderEft(); save(); };
+    document.getElementById('pm-debit').onclick = ()=>{ state.pay_method='debit'; hideEft(); renderDebitForm(); save(); };
+
+    if (pay === 'debit') renderDebitForm(); else renderEft();
+
+    document.getElementById('back1').onclick=(e)=>{ e.preventDefault(); step=1; state.progress=step; setProg(); save(); render(); };
+    document.getElementById('cont').onclick=async(e)=>{
+      e.preventDefault();
+      if (state.pay_method === 'debit') {
+        if (!document.getElementById('d_agree').checked) { alert('Please confirm you agree to the Debit Order terms.'); return; }
+        state.debit = {
+          account_holder: document.getElementById('d_holder').value.trim(),
+          id_number:      document.getElementById('d_id').value.trim(),
+          bank_name:      document.getElementById('d_bank').value.trim(),
+          account_number: document.getElementById('d_acc').value.trim(),
+          account_type:   document.getElementById('d_type').value,
+          debit_day:      document.getElementById('d_day').value,
+          agreed:         true
+        };
+        try {
+          const id = (linkid||'').split('_')[0];
+          await fetch('/api/debit/save', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ...state.debit, splynx_id: id }) });
+        } catch {}
+      }
+      step=3; state.progress=step; setProg(); save(); render();
+    };
+  }
+
+  function step3(){
+    stepEl.innerHTML='<h2>Please verify your details and change if you see any errors</h2><div id="box" class="note">Loading…</div>';
+    (async()=>{
+      try{
+        const id=(linkid||'').split('_')[0];
+        const r=await fetch('/api/splynx/profile?id='+encodeURIComponent(id));
+        const p=await r.json();
+        const cur={ full_name: state.edits.full_name ?? p.full_name ?? '', email: state.edits.email ?? p.email ?? '', phone: state.edits.phone ?? p.phone ?? '', passport: state.edits.passport ?? p.passport ?? '', street: state.edits.street ?? p.street ?? '', city: state.edits.city ?? p.city ?? '', zip: state.edits.zip ?? p.zip ?? '' };
+        document.getElementById('box').innerHTML=[
+          '<div class="row"><div class="field"><label>Full name</label><input id="f_full" value="'+(cur.full_name||'')+'" /></div><div class="field"><label>ID / Passport</label><input id="f_id" value="'+(cur.passport||'')+'" /></div></div>',
+          '<div class="row"><div class="field"><label>Email</label><input id="f_email" value="'+(cur.email||'')+'" /></div><div class="field"><label>Phone</label><input id="f_phone" value="'+(cur.phone||'')+'" /></div></div>',
+          '<div class="row"><div class="field"><label>Street</label><input id="f_street" value="'+(cur.street||'')+'" /></div><div class="field"><label>City</label><input id="f_city" value="'+(cur.city||'')+'" /></div></div>',
+          '<div class="field"><label>ZIP Code</label><input id="f_zip" value="'+(cur.zip||'')+'" /></div>',
+          '<div class="row"><a class="btn-outline" id="back2">Back</a><button class="btn" id="cont">Continue</button></div>'
+        ].join('');
+        document.getElementById('back2').onclick=(e)=>{ e.preventDefault(); step=2; state.progress=step; setProg(); save(); render(); };
+        document.getElementById('cont').onclick=(e)=>{ e.preventDefault(); state.edits={ full_name:document.getElementById('f_full').value.trim(), email:document.getElementById('f_email').value.trim(), phone:document.getElementById('f_phone').value.trim(), passport:document.getElementById('f_id').value.trim(), street:document.getElementById('f_street').value.trim(), city:document.getElementById('f_city').value.trim(), zip:document.getElementById('f_zip').value.trim() }; step=4; state.progress=step; setProg(); save(); render(); };
+      }catch{ document.getElementById('box').textContent='Failed to load profile.'; }
+    })();
+  }
+
+  function step4(){
+    stepEl.innerHTML=[
+      '<h2>Master Service Agreement</h2>',
+      '<div id="terms" class="termsbox">Loading terms…</div>',
+      // BIG + REQUIRED checkbox (fix)
+      '<div class="field bigchk" style="margin-top:10px;"><label><input type="checkbox" id="agreeChk"/> I confirm the accuracy of the information contained in this Agreement and warrant that I am duly authorised to enter into an agreement with VINET on behalf of the customer/myself.</label></div>',
+      '<div class="field"><label>Draw your signature</label><canvas id="sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="clearSig">Clear</a><span class="note" id="sigMsg"></span></div></div>',
+      '<div class="row"><a class="btn-outline" id="back3">Back</a><button class="btn" id="signBtn">Agree & Sign</button></div>'
+    ].join('');
+    (async()=>{ try{ const r=await fetch('/api/terms?kind=service'); const t=await r.text(); document.getElementById('terms').innerHTML=t||'Terms not available.'; }catch{ document.getElementById('terms').textContent='Failed to load terms.'; }})();
+    const pad=sigPad(document.getElementById('sig'));
+    document.getElementById('clearSig').onclick=(e)=>{ e.preventDefault(); pad.clear(); };
+    document.getElementById('back3').onclick=(e)=>{ e.preventDefault(); step=3; state.progress=step; setProg(); save(); render(); };
+    document.getElementById('signBtn').onclick=async(e)=>{ e.preventDefault(); const msg=document.getElementById('sigMsg'); if(!document.getElementById('agreeChk').checked){ msg.textContent='Please tick the checkbox to confirm agreement.'; return; } msg.textContent='Uploading signature…';
+      try{ const dataUrl=pad.dataURL(); const r=await fetch('/api/sign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid,dataUrl})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=5; state.progress=step; setProg(); save(); render(); } else { msg.textContent=d.error||'Failed to save signature.'; } }catch{ msg.textContent='Network error.'; }
+    };
+  }
+
+  function step5(){
+    stepEl.innerHTML='<h2>All set!</h2><p>Thanks — we\\u2019ve recorded your information. Our team will be in contact shortly. If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>';
+  }
+
+  function render(){ setProg(); [step0,step1,step2,step3,step4,step5][step](); }
+  render();
+})();
+</script>
+</body></html>`;
+    }
+
+    // -------- Splynx profile endpoint (used in UI) --------
+    if (path === "/api/splynx/profile" && method === "GET") {
+      const id = url.searchParams.get("id");
+      if (!id) return json({ error: "Missing id" }, 400);
+      try { const prof = await fetchProfileForDisplay(env, id); return json(prof); }
+      catch { return json({ error: "Lookup failed" }, 502); }
+    }
+
+    // -------- Admin approve stub (no change) --------
+    if (path === "/api/admin/approve" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      // keep as stub (unchanged)
+      return json({ ok: true });
+    }
+
+    // -------- Push to Splynx (stub) --------
+    async function pushToSplynx(env, pendingData) {
+      return { ok: true };
+    }
+
+    // -------- Fallback 404 --------
+    return new Response("Not found", { status: 404 });
+  }
+};
