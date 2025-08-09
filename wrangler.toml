@@ -37,8 +37,8 @@ EFT_REFERENCE    = "SPLYNX-ID"
 EFT_NOTES        = "Please remember that all accounts are payable on or before the 1st of every month."
 
 # If you want PDFs generated (upload blank/fillable PDFs to R2 and set keys)
-SERVICE_PDF_KEY = "pdf-templates/service-agreement-fillable.pdf"
-DEBIT_PDF_KEY   = "pdf-templates/debit-order-fillable.pdf"
+TEMPLATE_MSA_URL (default: https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf)
+TEMPLATE_DO_URL (default: https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf)
 
 # Optional email via MailChannels (from domain must be verified in MC DNS)
 MAIL_FROM    = "Vinet Onboarding <no-reply@vinet.co.za>"
