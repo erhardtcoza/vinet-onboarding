@@ -1,44 +1,22 @@
 // --- Vinet Onboarding Worker ---
 // Admin dashboard, onboarding flow, EFT & Debit Order pages
 // This build:
-//  • Prefill Debit Order: holder name + ID from Personal Info (or Splynx if not filled yet)
-//  • Uses ADMIN_IPS (single IPs or CIDR) from wrangler for admin access
-//  • OTP (WhatsApp + staff), Uploads, Agreement signature, HTML “PDF-like” pages (unchanged)
+//  • Debit Order step: signature canvas + required checkbox
+//  • Robust ID/Passport extraction from Splynx (customers)
+//  • Uploads step (ID + Proof of Address)
+//  • OTP (WhatsApp + staff code) as in working copy
+//  • Final page with downloadable agreements (MSA + Debit)
+//  • Separate endpoints for MSA and Debit signatures
 
+const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 
-// ---------- Admin IPs ----------
-function ipToInt(ip) {
-  const p = ip.split(".").map(n => parseInt(n, 10));
-  if (p.length !== 4 || p.some(x => Number.isNaN(x))) return null;
-  return ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3];
-}
-function cidrMatch(ip, cidr) {
-  const [net, bitsStr] = cidr.split("/");
-  const bits = parseInt(bitsStr, 10);
-  if (!net || Number.isNaN(bits) || bits < 0 || bits > 32) return false;
-  const ipInt = ipToInt(ip);
-  const netInt = ipToInt(net);
-  if (ipInt == null || netInt == null) return false;
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-  return (ipInt & mask) === (netInt & mask);
-}
-function ipAllowed(request, env) {
-  const ip = request.headers.get("CF-Connecting-IP") || "";
-  const conf = (env && env.ADMIN_IPS ? String(env.ADMIN_IPS) : "").trim();
-  const list = conf
-    ? conf.split(",").map(s => s.trim()).filter(Boolean)
-    : ["160.226.128.0/20"]; // fallback to your ASN slice
-
-  for (const entry of list) {
-    if (!entry) continue;
-    if (entry.includes("/")) {
-      if (cidrMatch(ip, entry)) return true;
-    } else {
-      if (ip === entry) return true;
-    }
-  }
-  return false;
+// ---------- Helpers ----------
+function ipAllowed(request) {
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip) return false;
+  const [a, b, c] = ip.split(".").map(Number);
+  return a === 160 && b === 226 && c >= 128 && c <= 143;
 }
 
 async function fetchText(url) {
@@ -286,7 +264,7 @@ export default {
 
     // ----- Admin UI -----
     if (path === "/" && method === "GET") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (path === "/static/admin.js" && method === "GET") {
@@ -349,7 +327,7 @@ export default {
 
     // ----- Admin: generate link -----
     if (path === "/api/admin/genlink" && method === "POST") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { id } = await request.json().catch(() => ({}));
       if (!id) return json({ error:"Missing id" }, 400);
       const token = Math.random().toString(36).slice(2,10);
@@ -360,7 +338,7 @@ export default {
 
     // ----- Admin: staff OTP -----
     if (path === "/api/staff/gen" && method === "POST") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(() => ({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -479,7 +457,7 @@ export default {
 
     // ----- Admin list -----
     if (path === "/api/admin/list" && method === "GET") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const mode = url.searchParams.get("mode") || "pending";
       const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
       const items = [];
@@ -498,7 +476,7 @@ export default {
 
     // ----- Admin review -----
     if (path === "/admin/review" && method === "GET") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
       if (!linkid) return new Response("Missing linkid", { status: 400 });
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -527,7 +505,7 @@ export default {
     }
 
     if (path === "/api/admin/reject" && method === "POST") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid, reason } = await request.json().catch(() => ({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -536,7 +514,7 @@ export default {
       return json({ ok:true });
     }
 
-    // ---------- Agreements (serve signatures + printable HTML) ----------
+    // ---------- Agreements (files) ----------
     const escapeHtml = (s) => String(s||'').replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m]));
 
     // Serve MSA signature PNG
@@ -643,7 +621,7 @@ export default {
 
     // ----- Admin approve stub -----
     if (path === "/api/admin/approve" && method === "POST") {
-      if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       return json({ ok: true });
     }
 
@@ -771,15 +749,12 @@ function renderOnboardUI(linkid) {
     let dPad = null; // debit signature pad
     function renderDebitForm(){
       const d = state.debit || {};
-      const holderPref = d.account_holder || (state.edits && state.edits.full_name) || '';
-      const idPref = d.id_number || (state.edits && state.edits.passport) || '';
-
       const box = document.getElementById('debitBox');
       box.style.display = 'block';
       box.innerHTML = [
         '<div class="row">',
-          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(holderPref||'')+'" required /></div>',
-          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(idPref||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
         '</div>',
         '<div class="row">',
           '<div class="field"><label>Bank</label><input id="d_bank" value="'+(d.bank_name||'')+'" required /></div>',
@@ -793,17 +768,6 @@ function renderOnboardUI(linkid) {
         '<div class="field bigchk" style="margin-top:.8em"><label style="display:flex;align-items:center;gap:.55em"><input id="d_agree" type="checkbox"> I agree to the Debit Order terms</label></div>',
         '<div class="field"><label>Draw your signature for Debit Order</label><canvas id="d_sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="d_clear">Clear</a><span class="note" id="d_msg"></span></div></div>'
       ].join('');
-
-      // If user visited Debit before Step 3, try a one-shot Splynx prefill
-      (async()=>{
-        try{
-          const id=(linkid||'').split('_')[0];
-          const r=await fetch('/api/splynx/profile?id='+encodeURIComponent(id));
-          const p=await r.json().catch(()=>null);
-          if (p && p.full_name && !document.getElementById('d_holder').value) document.getElementById('d_holder').value = p.full_name;
-          if (p && p.passport && !document.getElementById('d_id').value) document.getElementById('d_id').value = p.passport;
-        }catch{}
-      })();
 
       (async()=>{ try{ const r=await fetch('/api/terms?kind=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
 
