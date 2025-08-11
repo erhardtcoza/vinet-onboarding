@@ -988,16 +988,12 @@ function renderOnboardUI(linkid) {
       '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
       '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
       '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
-        '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement — Preview</a></li>',
-        (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement — Preview</a></li>' : ''),
-        '<li><a href="/agreements/template/msa/'+linkid+'" target="_blank">Master Service Agreement (Template PDF)</a></li>',
-    (showDebit ? '<li><a href="/agreements/template/debit/'+linkid+'" target="_blank">Debit Order Agreement (Template PDF)</a></li>' : ''),
-    '</ul>'
-target="_blank">Master Service Agreement (Template PDF)</a></li>',
-        (showDebit ? '<li><a href="/agreements/template/debit/'+linkid+'" target="_blank">Debit Order Agreement (Template PDF)</a></li>' : '')
-      '</ul>'
+        '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a></li>',
+        (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a></li>' : ''),
+        '</ul>'   // <-- keep this as a separate item (note the comma on the previous line)
     ].join('');
   }
+}
 
   function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
   render();
