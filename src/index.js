@@ -991,6 +991,9 @@ function renderOnboardUI(linkid) {
         '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement — Preview</a></li>',
         (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement — Preview</a></li>' : ''),
         '<li><a href="/agreements/template/msa/'+linkid+'" target="_blank">Master Service Agreement (Template PDF)</a></li>',
+    (showDebit ? '<li><a href="/agreements/template/debit/'+linkid+'" target="_blank">Debit Order Agreement (Template PDF)</a></li>' : ''),
+    '</ul>'
+target="_blank">Master Service Agreement (Template PDF)</a></li>',
         (showDebit ? '<li><a href="/agreements/template/debit/'+linkid+'" target="_blank">Debit Order Agreement (Template PDF)</a></li>' : '')
       '</ul>'
     ].join('');
