@@ -150,7 +150,7 @@ async function fetchCustomerMsisdn(env, id) {
 async function fetchProfileForDisplay(env, id) {
   let cust = null, lead = null, contacts = null, custInfo = null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (!cust) { try { lead = await splynxGET(env, `/crm/leads/${id}`); } catch {} }
+  if (!cust) { try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {} }
   try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
   try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
 
