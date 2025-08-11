@@ -13,6 +13,37 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
+// ---- PDF template field defaults (rough starting points; tune with the editor) ----
+const DEFAULT_FIELDS = {
+  msa: [
+    { name: "full_name",    page: 0, x: 120, y: 640, w: 300, h: 16, fontSize: 12, align: "left", label: "Full name" },
+    { name: "email",        page: 0, x: 120, y: 620, w: 300, h: 16, fontSize: 12, align: "left", label: "Email" },
+    { name: "phone",        page: 0, x: 120, y: 600, w: 200, h: 16, fontSize: 12, align: "left", label: "Phone" },
+    { name: "passport",     page: 0, x: 120, y: 580, w: 220, h: 16, fontSize: 12, align: "left", label: "ID / Passport" },
+    { name: "street",       page: 0, x: 120, y: 560, w: 360, h: 16, fontSize: 12, align: "left", label: "Street" },
+    { name: "city_zip",     page: 0, x: 120, y: 540, w: 260, h: 16, fontSize: 12, align: "left", label: "City + ZIP" },
+    { name: "sig",          page: 0, x: 120, y: 300, w: 260, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
+    { name: "sig_date",     page: 0, x: 420, y: 300, w: 100, h: 16, fontSize: 12, align: "left", label: "Date" },
+  ],
+  debit: [
+    { name: "account_holder", page: 0, x: 160, y: 640, w: 300, h: 16, fontSize: 12, align: "left", label: "Account holder" },
+    { name: "id_number",      page: 0, x: 160, y: 620, w: 220, h: 16, fontSize: 12, align: "left", label: "ID number" },
+    { name: "bank_name",      page: 0, x: 160, y: 600, w: 200, h: 16, fontSize: 12, align: "left", label: "Bank" },
+    { name: "account_number", page: 0, x: 160, y: 580, w: 220, h: 16, fontSize: 12, align: "left", label: "Account no" },
+    { name: "account_type",   page: 0, x: 160, y: 560, w: 160, h: 16, fontSize: 12, align: "left", label: "Type" },
+    { name: "debit_day",      page: 0, x: 160, y: 540, w: 80,  h: 16, fontSize: 12, align: "left", label: "Debit day" },
+    { name: "sig",            page: 0, x: 120, y: 300, w: 260, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
+    { name: "sig_date",       page: 0, x: 420, y: 300, w: 100, h: 16, fontSize: 12, align: "left", label: "Date" },
+  ],
+};
+
+function kvFieldsKey(type) {
+  return `tpl_fields/${type}`;
+}
+
+function templateUrlFor(env, type) {
+  return type === "msa" ? (env.SERVICE_PDF_KEY || "") : (env.DEBIT_PDF_KEY || "");
+}
 const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
 const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 
@@ -63,6 +94,26 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
 }
 
 // ---------- Splynx helpers ----------
+
+// GET current field boxes (from KV or defaults)
+if (path === "/api/agreement/fields" && method === "GET") {
+  const type = (url.searchParams.get("type") || "").toLowerCase();
+  if (!["msa","debit"].includes(type)) return new Response("Bad type", { status: 400 });
+  const stored = await env.ONBOARD_KV.get(kvFieldsKey(type), "json");
+  const fields = Array.isArray(stored) ? stored : DEFAULT_FIELDS[type];
+  return new Response(JSON.stringify({ ok: true, type, fields }), { headers: { "content-type": "application/json" } });
+}
+
+// SAVE field boxes to KV
+if (path === "/api/agreement/fields" && method === "POST") {
+  const body = await request.json().catch(()=> ({}));
+  const type = String(body.type || "").toLowerCase();
+  const fields = Array.isArray(body.fields) ? body.fields : null;
+  if (!["msa","debit"].includes(type) || !fields) return new Response(JSON.stringify({ ok:false, error:"Bad payload" }), { status: 400, headers:{ "content-type":"application/json" }});
+  await env.ONBOARD_KV.put(kvFieldsKey(type), JSON.stringify(fields));
+  return new Response(JSON.stringify({ ok:true }), { headers: { "content-type": "application/json" }});
+}
+
 async function splynxGET(env, endpoint) {
   const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
     headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
@@ -212,6 +263,7 @@ function adminJs() {
     });
     load('gen');
     const node = html => { const d=document.createElement('div'); d.innerHTML=html; return d; };
+
 
     async function load(which){
       if (which==='gen') {
@@ -560,6 +612,199 @@ export default {
     }
 
     // Agreement pages (legacy HTML printable -> kept for compatibility)
+    if (path === "/agreements/tuner" && method === "GET") {
+  const type = (url.searchParams.get("type") || "msa").toLowerCase();
+  const linkid = url.searchParams.get("linkid") || "";
+  if (!["msa","debit"].includes(type)) return new Response("Unknown type", { status: 400 });
+
+  const tplUrl = templateUrlFor(env, type);
+  if (!tplUrl) return new Response("Template URL not configured", { status: 500 });
+
+  const html = `<!doctype html><html><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Template Tuner (${type.toUpperCase()})</title>
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;background:#f6f7fb;margin:0;color:#222}
+    .bar{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid #eee;padding:10px 12px;display:flex;gap:8px;align-items:center}
+    .bar .tag{background:#eef;border:1px solid #dde;padding:4px 8px;border-radius:8px}
+    .wrap{max-width:940px;margin:16px auto;padding:0 12px}
+    .stage{position:relative;margin:12px auto;display:inline-block;box-shadow:0 4px 16px #0002;background:#fff}
+    canvas#pdf{display:block}
+    .box{position:absolute;border:2px solid #e2001a;background:rgba(226,0,26,.08);border-radius:6px;cursor:move;user-select:none}
+    .box .lbl{position:absolute;top:-18px;left:0;font-size:12px;background:#e2001a;color:#fff;border-radius:4px;padding:2px 6px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    button,.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+    .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a}
+    input[type=range]{width:220px}
+    pre{background:#f9f9fb;border:1px solid #eee;padding:10px;border-radius:8px;overflow:auto;max-height:220px}
+  </style>
+  </head><body>
+  <div class="bar">
+    <span class="tag">Type: <b>${type.toUpperCase()}</b></span>
+    <span class="tag">Link: <code>${linkid || "-"}</code></span>
+    <label>Zoom <input id="zoom" type="range" min="50" max="200" value="110"> <span id="zoomv">110%</span></label>
+    <button id="save">Save to KV</button>
+    <button class="btn-outline" id="copy">Copy JSON</button>
+    <a class="btn-outline" id="preview" target="_blank" href="/agreements/pdf/${type}/${linkid || (type + '_demo')}?bbox=1">Open PDF Preview (bbox)</a>
+  </div>
+
+  <div class="wrap">
+    <div id="msg"></div>
+    <div id="stage" class="stage"><canvas id="pdf"></canvas></div>
+    <h3>Current JSON</h3>
+    <pre id="dump"></pre>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+  <script>
+  (async function() {
+    // config injected server-side
+    const TYPE = ${JSON.stringify(type)};
+    const TPL_URL = ${JSON.stringify(tplUrl)};
+    const LINKID = ${JSON.stringify(linkid || "")};
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+    const stage = document.getElementById('stage');
+    const canvas = document.getElementById('pdf');
+    const ctx = canvas.getContext('2d');
+    const dump = document.getElementById('dump');
+    const zoomInput = document.getElementById('zoom');
+    const zoomVal   = document.getElementById('zoomv');
+    const msg = document.getElementById('msg');
+
+    // Fetch fields (from KV or defaults)
+    let fields = [];
+    try {
+      const r = await fetch('/api/agreement/fields?type=' + encodeURIComponent(TYPE));
+      const d = await r.json();
+      fields = Array.isArray(d.fields) ? d.fields : [];
+    } catch(e) {
+      fields = [];
+    }
+
+    // Load template PDF and render page 1
+    let pdfDoc = await pdfjsLib.getDocument(TPL_URL).promise;
+    let page = await pdfDoc.getPage(1);
+
+    function render() {
+      const pct = parseInt(zoomInput.value, 10)/100;
+      zoomVal.textContent = Math.round(pct*100) + '%';
+      const vp = page.getViewport({ scale: pct });
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      stage.style.width = canvas.width + 'px';
+      stage.style.height = canvas.height + 'px';
+
+      const renderTask = page.render({ canvasContext: ctx, viewport: vp });
+      renderTask.promise.then(()=> {
+        drawBoxes(vp);
+      });
+    }
+
+    function drawBoxes(viewport) {
+      // clear old boxes
+      [...stage.querySelectorAll('.box')].forEach(el => el.remove());
+      const H = viewport.height, S = viewport.scale;
+
+      // PDF points -> CSS pixels
+      const toPx = (pt) => pt * S;
+      const fromPx = (px) => px / S;
+
+      fields.forEach((f, i) => {
+        const left = toPx(f.x);
+        const top  = H - toPx(f.y) - toPx(f.h);
+        const w    = toPx(f.w);
+        const h    = toPx(f.h);
+
+        const el = document.createElement('div');
+        el.className = 'box';
+        el.style.left = left + 'px';
+        el.style.top = top + 'px';
+        el.style.width = w + 'px';
+        el.style.height = h + 'px';
+        el.dataset.idx = i;
+
+        const lbl = document.createElement('div');
+        lbl.className = 'lbl';
+        lbl.textContent = f.label || f.name || ('field ' + (i+1));
+        el.appendChild(lbl);
+
+        // Drag
+        let dragging = false, sx=0, sy=0, startLeft=0, startTop=0;
+        const start = (e) => {
+          dragging = true;
+          const t = e.touches ? e.touches[0] : e;
+          sx = t.clientX; sy = t.clientY;
+          startLeft = el.offsetLeft; startTop = el.offsetTop;
+          e.preventDefault();
+        };
+        const move = (e) => {
+          if (!dragging) return;
+          const t = e.touches ? e.touches[0] : e;
+          const dx = t.clientX - sx;
+          const dy = t.clientY - sy;
+          const nl = Math.max(0, Math.min(startLeft + dx, canvas.width - el.offsetWidth));
+          const nt = Math.max(0, Math.min(startTop + dy, canvas.height - el.offsetHeight));
+          el.style.left = nl + 'px';
+          el.style.top = nt + 'px';
+          // update PDF coords live
+          const newXpt = fromPx(nl);
+          const newYpt = fromPx(H - nt - el.offsetHeight);
+          fields[i].x = +newXpt.toFixed(2);
+          fields[i].y = +newYpt.toFixed(2);
+          dumpJSON();
+        };
+        const end = () => { dragging = false; };
+
+        el.addEventListener('mousedown', start);
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', end);
+        el.addEventListener('touchstart', start, { passive:false });
+        window.addEventListener('touchmove', move, { passive:false });
+        window.addEventListener('touchend', end);
+
+        stage.appendChild(el);
+      });
+
+      dumpJSON();
+    }
+
+    function dumpJSON(){
+      dump.textContent = JSON.stringify(fields, null, 2);
+    }
+
+    zoomInput.addEventListener('input', render);
+
+    document.getElementById('save').onclick = async () => {
+      msg.textContent = 'Saving…';
+      try {
+        const r = await fetch('/api/agreement/fields', {
+          method:'POST',
+          headers:{ 'content-type':'application/json' },
+          body: JSON.stringify({ type: TYPE, fields })
+        });
+        const d = await r.json().catch(()=>({}));
+        msg.textContent = d.ok ? 'Saved.' : (d.error || 'Failed to save');
+        setTimeout(()=> msg.textContent = '', 2000);
+      } catch(e) {
+        msg.textContent = 'Network error.';
+      }
+    };
+
+    document.getElementById('copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(JSON.stringify(fields, null, 2)); } catch {}
+    };
+
+    render();
+  })();
+  </script>
+  </body></html>`;
+
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+    
     if (path.startsWith("/agreements/") && method === "GET") {
       const [, , type, linkid] = path.split("/");
       if (!type || !linkid) return new Response("Bad request", { status: 400 });
