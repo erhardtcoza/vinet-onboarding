@@ -6,45 +6,52 @@
 //  • Uploads step (ID + Proof of Address)
 //  • OTP (WhatsApp + staff code) as in working copy
 //  • Final page with downloadable agreements (PDF stamping from templates)
-//  • Separate endpoints for MSA and Debit signatures
+//  • Field-box tuner at /agreements/tuner (drag red boxes, save to KV)
+//  • PDF stamping reads field boxes from KV (fallback to defaults)
 //  • /agreements/pdf/{msa|debit}/{linkid}[?bbox=1] to render stamped PDFs
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
-// ---- PDF template field defaults (rough starting points; tune with the editor) ----
+
+// ---- PDF template URLs (env overrides these) ----
+const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
+const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
+
+// ---- Default field boxes (starting points; refine in tuner & save to KV) ----
 const DEFAULT_FIELDS = {
   msa: [
-    { name: "full_name",    page: 1, x: 120, y: 185, w: 200, h: 16, fontSize: 12, align: "left", label: "Full name" },
-    { name: "passport",     page: 1, x: 120, y: 215, w: 200, h: 16, fontSize: 12, align: "left", label: "ID / Passport" },
-    { name: "sig",          page: 4, x: 400, y: 670, w: 260, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
-    { name: "sig_date",     page: 4, x: 335, y: 700, w: 100, h: 16, fontSize: 12, align: "left", label: "Date" },
+    { name: "full_name", page: 0, x: 120, y: 640, w: 300, h: 16, fontSize: 12, align: "left", label: "Full name" },
+    { name: "email",     page: 0, x: 120, y: 620, w: 300, h: 16, fontSize: 12, align: "left", label: "Email" },
+    { name: "phone",     page: 0, x: 120, y: 600, w: 200, h: 16, fontSize: 12, align: "left", label: "Phone" },
+    { name: "passport",  page: 0, x: 120, y: 580, w: 220, h: 16, fontSize: 12, align: "left", label: "ID / Passport" },
+    { name: "street",    page: 0, x: 120, y: 560, w: 360, h: 16, fontSize: 12, align: "left", label: "Street" },
+    { name: "city_zip",  page: 0, x: 120, y: 540, w: 260, h: 16, fontSize: 12, align: "left", label: "City + ZIP" },
+    { name: "sig",       page: 0, x: 120, y: 300, w: 260, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
+    { name: "sig_date",  page: 0, x: 420, y: 300, w: 100, h: 16, fontSize: 12, align: "left", label: "Date" },
   ],
   debit: [
-    { name: "account_holder", page: 1, x: 58, y: 138, w: 200, h: 16, fontSize: 12, align: "left", label: "Account holder" },
-    { name: "id_number",      page: 1, x: 58, y: 197, w: 220, h: 16, fontSize: 12, align: "left", label: "ID number" },
-    { name: "bank_name",      page: 1, x: 58, y: 244, w: 200, h: 16, fontSize: 12, align: "left", label: "Bank" },
-    { name: "account_number", page: 1, x: 58, y: 299, w: 220, h: 16, fontSize: 12, align: "left", label: "Account no" },
-    { name: "account_type",   page: 1, x: 58, y: 393, w: 160, h: 16, fontSize: 12, align: "left", label: "Type" },
-    { name: "debit_day",      page: 1, x: 100, y: 478, w: 80,  h: 16, fontSize: 12, align: "left", label: "Debit day" },
-    { name: "sig",            page: 1, x: 100, y: 437, w: 150, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
+    { name: "account_holder", page: 0, x: 160, y: 640, w: 300, h: 16, fontSize: 12, align: "left", label: "Account holder" },
+    { name: "id_number",      page: 0, x: 160, y: 620, w: 220, h: 16, fontSize: 12, align: "left", label: "ID number" },
+    { name: "bank_name",      page: 0, x: 160, y: 600, w: 200, h: 16, fontSize: 12, align: "left", label: "Bank" },
+    { name: "account_number", page: 0, x: 160, y: 580, w: 220, h: 16, fontSize: 12, align: "left", label: "Account no" },
+    { name: "account_type",   page: 0, x: 160, y: 560, w: 160, h: 16, fontSize: 12, align: "left", label: "Type" },
+    { name: "debit_day",      page: 0, x: 160, y: 540, w:  80, h: 16, fontSize: 12, align: "left", label: "Debit day" },
+    { name: "sig",            page: 0, x: 120, y: 300, w: 260, h: 40, fontSize: 12, align: "left", label: "Signature (image box)" },
     { name: "sig_date",       page: 0, x: 420, y: 300, w: 100, h: 16, fontSize: 12, align: "left", label: "Date" },
   ],
 };
 
-function kvFieldsKey(type) {
-  return `tpl_fields/${type}`;
-}
-
+// ---- Helpers for field storage ----
+function kvFieldsKey(type) { return `tpl_fields/${type}`; }
 function templateUrlFor(env, type) {
-  return type === "msa" ? (env.SERVICE_PDF_KEY || "") : (env.DEBIT_PDF_KEY || "");
+  return type === "msa"
+    ? (env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF)
+    : (env.DEBIT_PDF_KEY   || DEFAULT_DEBIT_PDF);
 }
-const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
-const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 
-
-// ---------- Helpers ----------
+// ---------- Generic helpers ----------
 function ipAllowed(request) {
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return false;
@@ -90,26 +97,6 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
 }
 
 // ---------- Splynx helpers ----------
-
-// GET current field boxes (from KV or defaults)
-if (path === "/api/agreement/fields" && method === "GET") {
-  const type = (url.searchParams.get("type") || "").toLowerCase();
-  if (!["msa","debit"].includes(type)) return new Response("Bad type", { status: 400 });
-  const stored = await env.ONBOARD_KV.get(kvFieldsKey(type), "json");
-  const fields = Array.isArray(stored) ? stored : DEFAULT_FIELDS[type];
-  return new Response(JSON.stringify({ ok: true, type, fields }), { headers: { "content-type": "application/json" } });
-}
-
-// SAVE field boxes to KV
-if (path === "/api/agreement/fields" && method === "POST") {
-  const body = await request.json().catch(()=> ({}));
-  const type = String(body.type || "").toLowerCase();
-  const fields = Array.isArray(body.fields) ? body.fields : null;
-  if (!["msa","debit"].includes(type) || !fields) return new Response(JSON.stringify({ ok:false, error:"Bad payload" }), { status: 400, headers:{ "content-type":"application/json" }});
-  await env.ONBOARD_KV.put(kvFieldsKey(type), JSON.stringify(fields));
-  return new Response(JSON.stringify({ ok:true }), { headers: { "content-type": "application/json" }});
-}
-
 async function splynxGET(env, endpoint) {
   const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
     headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
@@ -259,7 +246,6 @@ function adminJs() {
     });
     load('gen');
     const node = html => { const d=document.createElement('div'); d.innerHTML=html; return d; };
-
 
     async function load(which){
       if (which==='gen') {
@@ -591,6 +577,34 @@ export default {
       return new Response(obj.body, { headers: { "content-type": "image/png" } });
     }
 
+    // ----- Agreement field boxes API (used by tuner) -----
+    if (path === "/api/agreement/fields" && method === "GET") {
+      const type = (url.searchParams.get("type") || "").toLowerCase();
+      if (!["msa","debit"].includes(type)) {
+        return new Response("Bad type", { status: 400 });
+      }
+      const stored = await env.ONBOARD_KV.get(kvFieldsKey(type), "json");
+      const fields = Array.isArray(stored) ? stored : DEFAULT_FIELDS[type];
+      return new Response(JSON.stringify({ ok: true, type, fields }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (path === "/api/agreement/fields" && method === "POST") {
+      const body = await request.json().catch(()=> ({}));
+      const type = String(body.type || "").toLowerCase();
+      const fields = Array.isArray(body.fields) ? body.fields : null;
+      if (!["msa","debit"].includes(type) || !fields) {
+        return new Response(JSON.stringify({ ok:false, error:"Bad payload" }), {
+          status: 400, headers:{ "content-type":"application/json" }
+        });
+      }
+      await env.ONBOARD_KV.put(kvFieldsKey(type), JSON.stringify(fields));
+      return new Response(JSON.stringify({ ok:true }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
     // ---------- PDF stamping endpoints ----------
     if (path.startsWith("/agreements/pdf/") && method === "GET") {
       const parts = path.split("/");
@@ -599,24 +613,24 @@ export default {
       const showBBox = url.searchParams.get("bbox") === "1";
       if (!linkid) return new Response("Missing linkid", { status: 400 });
       try {
-        if (type === "msa") return await renderMsaPdf(env, linkid, showBBox);
+        if (type === "msa")  return await renderMsaPdf(env, linkid, showBBox);
         if (type === "debit") return await renderDebitPdf(env, linkid, showBBox);
         return new Response("Unknown type", { status: 404 });
       } catch (e) {
-        return new Response("PDF render failed", { status: 500 });
+        return new Response("PDF render failed: " + (e?.message || String(e)), { status: 500 });
       }
     }
 
-    // Agreement pages (legacy HTML printable -> kept for compatibility)
+    // ----- Field-box tuner (drag red boxes over page 1; save to KV) -----
     if (path === "/agreements/tuner" && method === "GET") {
-  const type = (url.searchParams.get("type") || "msa").toLowerCase();
-  const linkid = url.searchParams.get("linkid") || "";
-  if (!["msa","debit"].includes(type)) return new Response("Unknown type", { status: 400 });
+      const type = (url.searchParams.get("type") || "msa").toLowerCase();
+      const linkid = url.searchParams.get("linkid") || "";
+      if (!["msa","debit"].includes(type)) return new Response("Unknown type", { status: 400 });
 
-  const tplUrl = templateUrlFor(env, type);
-  if (!tplUrl) return new Response("Template URL not configured", { status: 500 });
+      const tplUrl = templateUrlFor(env, type);
+      if (!tplUrl) return new Response("Template URL not configured", { status: 500 });
 
-  const html = `<!doctype html><html><head><meta charset="utf-8">
+      const html = `<!doctype html><html><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Template Tuner (${type.toUpperCase()})</title>
   <style>
@@ -655,7 +669,6 @@ export default {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
   <script>
   (async function() {
-    // config injected server-side
     const TYPE = ${JSON.stringify(type)};
     const TPL_URL = ${JSON.stringify(tplUrl)};
     const LINKID = ${JSON.stringify(linkid || "")};
@@ -670,17 +683,13 @@ export default {
     const zoomVal   = document.getElementById('zoomv');
     const msg = document.getElementById('msg');
 
-    // Fetch fields (from KV or defaults)
     let fields = [];
     try {
       const r = await fetch('/api/agreement/fields?type=' + encodeURIComponent(TYPE));
       const d = await r.json();
       fields = Array.isArray(d.fields) ? d.fields : [];
-    } catch(e) {
-      fields = [];
-    }
+    } catch(e) { fields = []; }
 
-    // Load template PDF and render page 1
     let pdfDoc = await pdfjsLib.getDocument(TPL_URL).promise;
     let page = await pdfDoc.getPage(1);
 
@@ -700,11 +709,8 @@ export default {
     }
 
     function drawBoxes(viewport) {
-      // clear old boxes
       [...stage.querySelectorAll('.box')].forEach(el => el.remove());
       const H = viewport.height, S = viewport.scale;
-
-      // PDF points -> CSS pixels
       const toPx = (pt) => pt * S;
       const fromPx = (px) => px / S;
 
@@ -727,7 +733,6 @@ export default {
         lbl.textContent = f.label || f.name || ('field ' + (i+1));
         el.appendChild(lbl);
 
-        // Drag
         let dragging = false, sx=0, sy=0, startLeft=0, startTop=0;
         const start = (e) => {
           dragging = true;
@@ -745,7 +750,6 @@ export default {
           const nt = Math.max(0, Math.min(startTop + dy, canvas.height - el.offsetHeight));
           el.style.left = nl + 'px';
           el.style.top = nt + 'px';
-          // update PDF coords live
           const newXpt = fromPx(nl);
           const newYpt = fromPx(H - nt - el.offsetHeight);
           fields[i].x = +newXpt.toFixed(2);
@@ -797,10 +801,10 @@ export default {
   })();
   </script>
   </body></html>`;
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
 
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-}
-    
+    // ----- Legacy printable HTML agreements (kept for compatibility) -----
     if (path.startsWith("/agreements/") && method === "GET") {
       const [, , type, linkid] = path.split("/");
       if (!type || !linkid) return new Response("Bad request", { status: 400 });
@@ -913,91 +917,86 @@ async function fetchR2Bytes(env, key) {
   return new Uint8Array(ab);
 }
 
+// field helpers
+async function getTemplateFields(env, type) {
+  const stored = await env.ONBOARD_KV.get(kvFieldsKey(type), "json");
+  const arr = Array.isArray(stored) ? stored : DEFAULT_FIELDS[type] || [];
+  return Array.isArray(arr) ? arr : [];
+}
+function byName(arr) {
+  const map = Object.create(null);
+  for (const f of arr) if (f && f.name) map[f.name] = f;
+  return map;
+}
+
 function drawText(page, text, x, y, opts) {
   const { font, size = 10, color = rgb(0,0,0), maxWidth = null, lineHeight = 1.2 } = opts || {};
   if (!text) return;
   const words = String(text).split(/\s+/);
   let line = "";
   let cursorY = y;
-  const wrapAndDraw = (t) => page.drawText(t, { x, y: cursorY, size, font, color });
-  if (!maxWidth) { wrapAndDraw(String(text)); return; }
+  const draw = (t) => page.drawText(t, { x, y: cursorY, size, font, color });
+  if (!maxWidth) { draw(String(text)); return; }
   for (const w of words) {
     const tryLine = line ? line + " " + w : w;
     const width = font.widthOfTextAtSize(tryLine, size);
     if (width <= maxWidth) { line = tryLine; continue; }
-    if (line) wrapAndDraw(line);
+    if (line) draw(line);
     line = w;
     cursorY -= size * lineHeight;
   }
-  if (line) wrapAndDraw(line);
+  if (line) draw(line);
 }
 function drawBBox(page, x, y, w, h) {
   page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(1,0,0), borderWidth: 0.5, color: rgb(1,0,0), opacity: 0.05 });
 }
 
-// --- Field maps (GUESS values; open with ?bbox=1 and tweak) ---
-// PDF user space: origin bottom-left, A4 ~ 595 x 842 pt
-const MSA_FIELDS = {
-  // page: 0-index
-  full_name: { page: 0, x: mm(30), y: mm(240), size: 11, w: mm(120) },
-  email:     { page: 0, x: mm(30), y: mm(232), size: 11, w: mm(120) },
-  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
-  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
-  address:   { page: 0, x: mm(30), y: mm(208), size: 11, w: mm(150) },
-  date:      { page: 0, x: mm(150),y: mm(200), size: 11, w: mm(40) },
-  signature: { page: 0, x: mm(30), y: mm(188), w: mm(60), h: mm(20) }, // image box
-};
-
-const DEBIT_FIELDS = {
-  account_holder: { page: 0, x: mm(30), y: mm(235), size: 11, w: mm(120) },
-  id_number:      { page: 0, x: mm(30), y: mm(227), size: 11, w: mm(120) },
-  bank_name:      { page: 0, x: mm(30), y: mm(219), size: 11, w: mm(120) },
-  account_number: { page: 0, x: mm(30), y: mm(211), size: 11, w: mm(120) },
-  account_type:   { page: 0, x: mm(30), y: mm(203), size: 11, w: mm(80) },
-  debit_day:      { page: 0, x: mm(120),y: mm(203), size: 11, w: mm(30) },
-  date:           { page: 0, x: mm(150),y: mm(195), size: 11, w: mm(40) },
-  signature:      { page: 0, x: mm(30), y: mm(183), w: mm(60), h: mm(20) }, // image box
-};
-
 async function renderMsaPdf(env, linkid, bbox=false) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
   if (!sess || !sess.agreement_signed) return new Response("Not signed", { status: 404 });
   const e = sess.edits || {};
-  const address = [e.street, e.city, e.zip].filter(Boolean).join(", ");
   const dateStr = new Date().toLocaleDateString();
 
-const tplUrl = env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF;
-const tplBytes = await fetchBytesFromUrl(tplUrl);
+  const tplUrl = templateUrlFor(env, "msa");
+  const tplBytes = await fetchBytesFromUrl(tplUrl);
   const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
+  const fieldsArr = await getTemplateFields(env, "msa");
+  const F = byName(fieldsArr);
+
   const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = MSA_FIELDS[key]; if (!f) return;
+
+  const drawField = (name, value) => {
+    const f = F[name]; if (!f) return;
     const p = pages[f.page || 0];
-    if (key === "signature") return; // image later
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+    const size = f.fontSize || 11;
+    if (name === "sig") return; // handled later
+    if (bbox && f.w) drawBBox(p, f.x, f.y - size*0.2, f.w, size*1.4);
+    drawText(p, String(value || ""), f.x, f.y, { font, size, maxWidth: f.w || null });
   };
 
-  draw("full_name", e.full_name || "");
-  draw("email", e.email || "");
-  draw("phone", e.phone || "");
-  draw("passport", e.passport || "");
-  draw("address", address);
-  draw("date", dateStr);
+  // map edits to fields
+  drawField("full_name", e.full_name || "");
+  drawField("email", e.email || "");
+  drawField("phone", e.phone || "");
+  drawField("passport", e.passport || "");
+  drawField("street", e.street || "");
+  const cityZip = [e.city, e.zip].filter(Boolean).join(" ");
+  drawField("city_zip", cityZip);
+  drawField("sig_date", dateStr);
 
   // signature image
-  if (sess.agreement_sig_key) {
+  if (sess.agreement_sig_key && F.sig) {
     const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
     if (sigBytes) {
       const png = await pdf.embedPng(sigBytes);
-      const f = MSA_FIELDS.signature;
+      const f = F.sig;
       const p = pages[f.page || 0];
       const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
+      let w = f.w || width, h = (height/width)*w;
+      if (f.h && h > f.h) { h = f.h; w = (width/height)*h; }
+      if (bbox && f.w && f.h) drawBBox(p, f.x, f.y, f.w, f.h);
       p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
     }
   }
@@ -1014,38 +1013,43 @@ async function renderDebitPdf(env, linkid, bbox=false) {
   const d = sess.debit || {};
   const dateStr = new Date().toLocaleDateString();
 
-const tplUrl = env.DEBIT_PDF_KEY || DEFAULT_DEBIT_PDF;
-const tplBytes = await fetchBytesFromUrl(tplUrl);
+  const tplUrl = templateUrlFor(env, "debit");
+  const tplBytes = await fetchBytesFromUrl(tplUrl);
   const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
+  const fieldsArr = await getTemplateFields(env, "debit");
+  const F = byName(fieldsArr);
+
   const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = DEBIT_FIELDS[key]; if (!f) return;
+
+  const drawField = (name, value) => {
+    const f = F[name]; if (!f) return;
     const p = pages[f.page || 0];
-    if (key === "signature") return; // image later
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+    const size = f.fontSize || 11;
+    if (name === "sig") return;
+    if (bbox && f.w) drawBBox(p, f.x, f.y - size*0.2, f.w, size*1.4);
+    drawText(p, String(value || ""), f.x, f.y, { font, size, maxWidth: f.w || null });
   };
 
-  draw("account_holder", d.account_holder || "");
-  draw("id_number", d.id_number || "");
-  draw("bank_name", d.bank_name || "");
-  draw("account_number", d.account_number || "");
-  draw("account_type", d.account_type || "");
-  draw("debit_day", d.debit_day || "");
-  draw("date", dateStr);
+  drawField("account_holder", d.account_holder || "");
+  drawField("id_number", d.id_number || "");
+  drawField("bank_name", d.bank_name || "");
+  drawField("account_number", d.account_number || "");
+  drawField("account_type", d.account_type || "");
+  drawField("debit_day", d.debit_day || "");
+  drawField("sig_date", dateStr);
 
-  if (sess.debit_sig_key) {
+  if (sess.debit_sig_key && F.sig) {
     const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
     if (sigBytes) {
       const png = await pdf.embedPng(sigBytes);
-      const f = DEBIT_FIELDS.signature;
+      const f = F.sig;
       const p = pages[f.page || 0];
       const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
+      let w = f.w || width, h = (height/width)*w;
+      if (f.h && h > f.h) { h = f.h; w = (width/height)*h; }
+      if (bbox && f.w && f.h) drawBBox(p, f.x, f.y, f.w, f.h);
       p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
     }
   }
