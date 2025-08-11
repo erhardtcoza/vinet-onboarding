@@ -2,11 +2,14 @@
 // Admin dashboard, onboarding flow, EFT & Debit Order pages
 // This build:
 //  • Debit Order step: signature canvas + required checkbox
-//  • Robust ID/Passport extraction from Splynx (customers)
+//  • Robust ID/Passport extraction from Splynx (customers & leads)
 //  • Uploads step (ID + Proof of Address)
 //  • OTP (WhatsApp + staff code) as in working copy
-//  • Final page with downloadable agreements (MSA + Debit)
+//  • Final page with downloadable agreements (PDF stamping from templates)
 //  • Separate endpoints for MSA and Debit signatures
+//  • /agreements/pdf/{msa|debit}/{linkid}[?bbox=1] to render stamped PDFs
+
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
@@ -79,40 +82,16 @@ async function splynxPUT(env, endpoint, payload) {
 function pickPhone(obj) {
   if (!obj) return null;
   const ok = s => /^27\d{8,13}$/.test(String(s || "").trim());
-
-  // If it's already a string, try it
-  if (typeof obj === "string") return ok(obj) ? String(obj).trim() : null;
-
-  // Arrays: scan each element
+  const direct = [
+    obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
+    obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone
+  ];
+  for (const v of direct) if (ok(v)) return String(v).trim();
   if (Array.isArray(obj)) {
-    for (const it of obj) {
-      const m = pickPhone(it);
-      if (m) return m;
-    }
-    return null;
+    for (const it of obj) { const m = pickPhone(it); if (m) return m; }
+  } else if (typeof obj === "object") {
+    for (const k of Object.keys(obj)) { const m = pickPhone(obj[k]); if (m) return m; }
   }
-
-  // Objects
-  if (typeof obj === "object") {
-    // Common direct fields
-    const direct = [
-      obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
-      obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone,
-      // extra variants often seen on leads
-      obj.contact_number_2nd, obj.contact_number_3rd, obj.alt_phone, obj.alt_mobile
-    ];
-    for (const v of direct) if (ok(v)) return String(v).trim();
-
-    // Fallback: check every property; accept any string that matches
-    for (const [_, v] of Object.entries(obj)) {
-      if (typeof v === "string" && ok(v)) return String(v).trim();
-      if (v && typeof v === "object") {
-        const m = pickPhone(v);
-        if (m) return m;
-      }
-    }
-  }
-
   return null;
 }
 function pickFrom(obj, keyNames) {
@@ -138,7 +117,7 @@ async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
-    `/admin/crm/leads/${id}`,
+    `/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
     `/crm/leads/${id}/contacts`,
   ];
@@ -150,7 +129,7 @@ async function fetchCustomerMsisdn(env, id) {
 async function fetchProfileForDisplay(env, id) {
   let cust = null, lead = null, contacts = null, custInfo = null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (!cust) { try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {} }
+  if (!cust) { try { lead = await splynxGET(env, `/crm/leads/${id}`); } catch {} }
   try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
   try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
 
@@ -561,21 +540,29 @@ export default {
       return new Response(obj.body, { headers: { "content-type": "image/png" } });
     }
 
-       // Agreement pages (HTML printable -> browser "Save as PDF")
+    // ---------- PDF stamping endpoints ----------
+    if (path.startsWith("/agreements/pdf/") && method === "GET") {
+      const parts = path.split("/");
+      const type = parts[3];
+      const linkid = parts[4] || "";
+      const showBBox = url.searchParams.get("bbox") === "1";
+      if (!linkid) return new Response("Missing linkid", { status: 400 });
+      try {
+        if (type === "msa") return await renderMsaPdf(env, linkid, showBBox);
+        if (type === "debit") return await renderDebitPdf(env, linkid, showBBox);
+        return new Response("Unknown type", { status: 404 });
+      } catch (e) {
+        return new Response("PDF render failed", { status: 500 });
+      }
+    }
+
+    // Agreement pages (legacy HTML printable -> kept for compatibility)
     if (path.startsWith("/agreements/") && method === "GET") {
       const [, , type, linkid] = path.split("/");
       if (!type || !linkid) return new Response("Bad request", { status: 400 });
 
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
-
-      // --- Load and escape the terms so they are embedded in the printable doc
-      const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-      const debUrl = env.TERMS_DEBIT_URL   || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
-      async function getText(u){ try{ const r=await fetch(u,{cf:{cacheEverything:true,cacheTtl:300}}); return r.ok?await r.text():""; }catch{return "";} }
-      const termsService = (await getText(svcUrl)) || "";
-      const termsDebit   = (await getText(debUrl)) || "";
-      const toHtml = (s) => escapeHtml(String(s||"")).replace(/\r?\n/g, "<br/>");
 
       const e = sess.edits || {};
       const today = new Date().toLocaleDateString();
@@ -588,26 +575,20 @@ export default {
       const passport = escapeHtml(e.passport||'');
       const debit = sess.debit || null;
 
-      function page(title, body){ 
-        return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
-        <style>
-          body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
-          .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
-          h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
-          table{width:100%;border-collapse:collapse;margin:.6em 0}td,th{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
-          .muted{color:#666;font-size:12px}.sig{margin-top:14px}.sig img{max-height:120px;border:1px dashed #bbb;border-radius:6px;background:#fff}
-          .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
-          .logo{height:60px;display:block;margin:0 auto 10px}
-          .terms{font-size:12px;line-height:1.4;color:#222;border-top:1px solid #eee;padding-top:12px;margin-top:10px}
-          .pagebreak{height:0; page-break-before:always;}
-          @media print {.actions{display:none} .card{box-shadow:none;margin:0;border-radius:0}}
-        </style></head><body><div class="card">
-          <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${escapeHtml(title)}</h1>
-          ${body}
-          <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
-          <div class="muted">Generated ${today} • Link ${escapeHtml(linkid)}</div>
-        </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});
-      }
+      function page(title, body){ return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
+        body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
+        .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
+        h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
+        table{width:100%;border-collapse:collapse;margin:.6em 0}td,th{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
+        .muted{color:#666;font-size:12px}.sig{margin-top:14px}.sig img{max-height:120px;border:1px dashed #bbb;border-radius:6px;background:#fff}
+        .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+        .logo{height:60px;display:block;margin:0 auto 10px}@media print {.actions{display:none}}
+      </style></head><body><div class="card">
+        <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${escapeHtml(title)}</h1>
+        ${body}
+        <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+        <div class="muted">Generated ${today} • Link ${escapeHtml(linkid)}</div>
+      </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});}
 
       if (type === "msa") {
         const body = `
@@ -622,10 +603,7 @@ export default {
           </table>
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig/${linkid}.png" alt="signature">
-          </div>
-          <div class="pagebreak"></div>
-          <h2>Terms &amp; Conditions</h2>
-          <div class="terms">${toHtml(termsService)}</div>`;
+          </div>`;
         return page("Master Service Agreement", body);
       }
 
@@ -645,16 +623,12 @@ export default {
           ${debitHtml}
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig-debit/${linkid}.png" alt="signature">
-          </div>
-          <div class="pagebreak"></div>
-          <h2>Debit Order Terms</h2>
-          <div class="terms">${toHtml(termsDebit)}</div>`;
+          </div>`;
         return page("Debit Order Agreement", body);
       }
 
       return new Response("Unknown agreement type", { status: 404 });
     }
-
 
     // ----- Splynx profile -----
     if (path === "/api/splynx/profile" && method === "GET") {
@@ -673,6 +647,163 @@ export default {
     return new Response("Not found", { status: 404 });
   }
 };
+
+// ---------- PDF helpers & renderers ----------
+const mm = (v) => v * 2.83464567; // mm -> PDF points
+
+async function fetchBytesFromUrl(urlStr) {
+  const r = await fetch(urlStr, { cf: { cacheEverything: true, cacheTtl: 600 } });
+  if (!r.ok) throw new Error(`fetch ${urlStr} ${r.status}`);
+  const ab = await r.arrayBuffer();
+  return new Uint8Array(ab);
+}
+async function fetchR2Bytes(env, key) {
+  const obj = await env.R2_UPLOADS.get(key);
+  if (!obj) return null;
+  const ab = await obj.arrayBuffer();
+  return new Uint8Array(ab);
+}
+
+function drawText(page, text, x, y, opts) {
+  const { font, size = 10, color = rgb(0,0,0), maxWidth = null, lineHeight = 1.2 } = opts || {};
+  if (!text) return;
+  const words = String(text).split(/\s+/);
+  let line = "";
+  let cursorY = y;
+  const wrapAndDraw = (t) => page.drawText(t, { x, y: cursorY, size, font, color });
+  if (!maxWidth) { wrapAndDraw(String(text)); return; }
+  for (const w of words) {
+    const tryLine = line ? line + " " + w : w;
+    const width = font.widthOfTextAtSize(tryLine, size);
+    if (width <= maxWidth) { line = tryLine; continue; }
+    if (line) wrapAndDraw(line);
+    line = w;
+    cursorY -= size * lineHeight;
+  }
+  if (line) wrapAndDraw(line);
+}
+function drawBBox(page, x, y, w, h) {
+  page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(1,0,0), borderWidth: 0.5, color: rgb(1,0,0), opacity: 0.05 });
+}
+
+// --- Field maps (GUESS values; open with ?bbox=1 and tweak) ---
+// PDF user space: origin bottom-left, A4 ~ 595 x 842 pt
+const MSA_FIELDS = {
+  // page: 0-index
+  full_name: { page: 0, x: mm(30), y: mm(240), size: 11, w: mm(120) },
+  email:     { page: 0, x: mm(30), y: mm(232), size: 11, w: mm(120) },
+  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
+  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
+  address:   { page: 0, x: mm(30), y: mm(208), size: 11, w: mm(150) },
+  date:      { page: 0, x: mm(150),y: mm(200), size: 11, w: mm(40) },
+  signature: { page: 0, x: mm(30), y: mm(188), w: mm(60), h: mm(20) }, // image box
+};
+
+const DEBIT_FIELDS = {
+  account_holder: { page: 0, x: mm(30), y: mm(235), size: 11, w: mm(120) },
+  id_number:      { page: 0, x: mm(30), y: mm(227), size: 11, w: mm(120) },
+  bank_name:      { page: 0, x: mm(30), y: mm(219), size: 11, w: mm(120) },
+  account_number: { page: 0, x: mm(30), y: mm(211), size: 11, w: mm(120) },
+  account_type:   { page: 0, x: mm(30), y: mm(203), size: 11, w: mm(80) },
+  debit_day:      { page: 0, x: mm(120),y: mm(203), size: 11, w: mm(30) },
+  date:           { page: 0, x: mm(150),y: mm(195), size: 11, w: mm(40) },
+  signature:      { page: 0, x: mm(30), y: mm(183), w: mm(60), h: mm(20) }, // image box
+};
+
+async function renderMsaPdf(env, linkid, bbox=false) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_signed) return new Response("Not signed", { status: 404 });
+  const e = sess.edits || {};
+  const address = [e.street, e.city, e.zip].filter(Boolean).join(", ");
+  const dateStr = new Date().toLocaleDateString();
+
+  const tplBytes = await fetchBytesFromUrl(env.SERVICE_PDF_KEY);
+  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+
+  const pages = pdf.getPages();
+  const draw = (key, val) => {
+    const f = MSA_FIELDS[key]; if (!f) return;
+    const p = pages[f.page || 0];
+    if (key === "signature") return; // image later
+    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
+    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+  };
+
+  draw("full_name", e.full_name || "");
+  draw("email", e.email || "");
+  draw("phone", e.phone || "");
+  draw("passport", e.passport || "");
+  draw("address", address);
+  draw("date", dateStr);
+
+  // signature image
+  if (sess.agreement_sig_key) {
+    const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
+    if (sigBytes) {
+      const png = await pdf.embedPng(sigBytes);
+      const f = MSA_FIELDS.signature;
+      const p = pages[f.page || 0];
+      const { width, height } = png.scale(1);
+      let w = f.w, h = (height/width)*w;
+      if (h > f.h) { h = f.h; w = (width/height)*h; }
+      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
+      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
+    }
+  }
+
+  const bytes = await pdf.save();
+  return new Response(bytes, {
+    headers: { "content-type": "application/pdf", "cache-control": "no-store" }
+  });
+}
+
+async function renderDebitPdf(env, linkid, bbox=false) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return new Response("Not found", { status: 404 });
+  const d = sess.debit || {};
+  const dateStr = new Date().toLocaleDateString();
+
+  const tplBytes = await fetchBytesFromUrl(env.DEBIT_PDF_KEY);
+  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+
+  const pages = pdf.getPages();
+  const draw = (key, val) => {
+    const f = DEBIT_FIELDS[key]; if (!f) return;
+    const p = pages[f.page || 0];
+    if (key === "signature") return; // image later
+    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
+    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+  };
+
+  draw("account_holder", d.account_holder || "");
+  draw("id_number", d.id_number || "");
+  draw("bank_name", d.bank_name || "");
+  draw("account_number", d.account_number || "");
+  draw("account_type", d.account_type || "");
+  draw("debit_day", d.debit_day || "");
+  draw("date", dateStr);
+
+  if (sess.debit_sig_key) {
+    const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
+    if (sigBytes) {
+      const png = await pdf.embedPng(sigBytes);
+      const f = DEBIT_FIELDS.signature;
+      const p = pages[f.page || 0];
+      const { width, height } = png.scale(1);
+      let w = f.w, h = (height/width)*w;
+      if (h > f.h) { h = f.h; w = (width/height)*h; }
+      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
+      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
+    }
+  }
+
+  const bytes = await pdf.save();
+  return new Response(bytes, {
+    headers: { "content-type": "application/pdf", "cache-control": "no-store" }
+  });
+}
 
 // ---------- Onboarding HTML renderer ----------
 function renderOnboardUI(linkid) {
@@ -697,16 +828,6 @@ function renderOnboardUI(linkid) {
   canvas.signature{border:1px dashed #bbb;border-radius:.6em;width:100%;height:180px;touch-action:none;background:#fff}
   .bigchk{display:flex;align-items:center;gap:.6em;font-weight:700}
   .bigchk input[type=checkbox]{width:22px;height:22px}
-    /* --- Final screen polish --- */
-  .accent { height:8px; background:#e2001a; border-radius:4px; width:60%; max-width:540px; margin:10px auto 18px; }
-  .final p { margin:.35em 0 .65em; }
-  .final ul { margin:.25em 0 0 1em; }
-  .doclist { list-style:none; margin:.4em 0 0 0; padding:0; }
-  .doclist .doc-item { display:flex; align-items:center; gap:.5em; margin:.45em 0; }
-  .doclist .doc-ico { display:inline-flex; width:18px; height:18px; opacity:.9; }
-  .doclist .doc-ico svg { width:18px; height:18px; }
-  .doclist a { text-decoration:none; }
-  .doclist a:hover { text-decoration:underline; }
 </style></head><body>
 <div class="card">
   <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
@@ -941,42 +1062,21 @@ function renderOnboardUI(linkid) {
     };
   }
 
-    // --- Step 6: Done (with agreement download links) ---
+  // --- Step 6: Done (with agreement download links) ---
   function step6(){
     const showDebit = (state && state.pay_method === 'debit');
-
-    // simple document icon (inline SVG, no external assets)
-    const docIcon =
-      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
-        '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 3.5L18.5 8H14V3.5zM8 12h8v1.5H8V12zm0 3h8v1.5H8V15zM8 9h4v1.5H8V9z"/>' +
-      '</svg>';
-
     stepEl.innerHTML = [
-      '<div class="final">',
-        '<h2 style="color:#e2001a;margin:0 0 .2em">All set!</h2>',
-        '<div class="accent"></div>',
-        '<p>Thanks – we’ve recorded your information. Our team will be in contact shortly.</p>',
-        '<p>If you have any questions, please contact our sales team:</p>',
-        '<ul>',
-          '<li><b>Phone:</b> <a href="tel:+27210070200">021 007 0200</a></li>',
-          '<li><b>Email:</b> <a href="mailto:sales@vinet.co.za">sales@vinet.co.za</a></li>',
-        '</ul>',
-        '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
-        '<div class="field"><b>Your agreements</b> <span class="note">(links will work once approved)</span></div>',
-        '<ul class="doclist">',
-          '<li class="doc-item"><span class="doc-ico">', docIcon, '</span>',
-            '<a href="/agreements/msa/', linkid, '" target="_blank">Master Service Agreement (PDF)</a>',
-          '</li>',
-          (showDebit
-            ? '<li class="doc-item"><span class="doc-ico">' + docIcon + '</span>' +
-              '<a href="/agreements/debit/' + linkid + '" target="_blank">Debit Order Agreement (PDF)</a>' +
-              '</li>'
-            : ''),
-        '</ul>',
-      '</div>'
+      '<h2>All set!</h2>',
+      '<p>Thanks — we’ve recorded your information. Our team will be in contact shortly. ',
+      'If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>',
+      '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
+      '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
+      '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
+        '<li><a href="/agreements/pdf/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a> — <a href="/agreements/pdf/msa/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>',
+        (showDebit ? '<li><a href="/agreements/pdf/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a> — <a href="/agreements/pdf/debit/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>' : ''),
+      '</ul>'
     ].join('');
   }
-
 
   function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
   render();
