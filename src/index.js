@@ -1,43 +1,44 @@
 // --- Vinet Onboarding Worker ---
 // Admin dashboard, onboarding flow, EFT & Debit Order pages
 // This build:
-//  • Debit Order step: prefill holder name + ID from Personal Info (or Splynx fallback)
+//  • Debit Order step: signature canvas + required checkbox
 //  • Robust ID/Passport extraction from Splynx (customers)
 //  • Uploads step (ID + Proof of Address)
 //  • OTP (WhatsApp + staff code) as in working copy
-//  • Final page with downloadable agreements (HTML summary) + links to official templates (MSA + Debit)
+//  • Final page with downloadable agreements (MSA + Debit)
 //  • Separate endpoints for MSA and Debit signatures
-//  • Admin IPs read from env.ADMIN_IPS (supports single IPs and CIDR); fallback to 160.226.128.0/20
+//  • Logging/diagnostics for Splynx lookups & OTP
+//  • ADMIN_IPS support (single IPs and CIDRs)
+//  • Debit Order: auto-prefill Account Holder + ID/Passport
 
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 
-// ---------- Admin IPs ----------
-function ipToInt(ip) {
-  const p = (ip || "").split(".").map(n => parseInt(n, 10));
-  if (p.length !== 4 || p.some(x => Number.isNaN(x))) return null;
-  return ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3];
+// ---------- Helpers ----------
+function parseIPv4(ip) {
+  const parts = String(ip || "").trim().split(".");
+  if (parts.length !== 4) return null;
+  const n = parts.map((p) => {
+    const v = Number(p);
+    return Number.isInteger(v) && v >= 0 && v <= 255 ? v : null;
+  });
+  if (n.some((v) => v === null)) return null;
+  return (n[0] << 24) | (n[1] << 16) | (n[2] << 8) | n[3];
 }
-function cidrMatch(ip, cidr) {
-  const [net, bitsStr] = (cidr || "").split("/");
-  const bits = parseInt(bitsStr, 10);
-  if (!net || Number.isNaN(bits) || bits < 0 || bits > 32) return false;
-  const ipInt = ipToInt(ip);
-  const netInt = ipToInt(net);
-  if (ipInt == null || netInt == null) return false;
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-  return (ipInt & mask) === (netInt & mask);
+function ipInCidr(ip, cidr) {
+  const [base, pfx] = cidr.split("/");
+  const addr = parseIPv4(ip);
+  const baseAddr = parseIPv4(base);
+  const maskBits = Number(pfx);
+  if (addr === null || baseAddr === null || !Number.isInteger(maskBits) || maskBits < 0 || maskBits > 32) return false;
+  const mask = maskBits === 0 ? 0 : (~0 << (32 - maskBits)) >>> 0;
+  return (addr & mask) === (baseAddr & mask);
 }
 function ipAllowed(request, env) {
   const ip = request.headers.get("CF-Connecting-IP") || "";
-  const conf = (env && env.ADMIN_IPS ? String(env.ADMIN_IPS) : "").trim();
-  const list = conf
-    ? conf.split(",").map(s => s.trim()).filter(Boolean)
-    : ["160.226.128.0/20"]; // fallback
-
-  for (const entry of list) {
-    if (!entry) continue;
+  const conf = (env.ADMIN_IPS || "160.226.128.0/20").split(",").map(s => s.trim()).filter(Boolean);
+  for (const entry of conf) {
     if (entry.includes("/")) {
-      if (cidrMatch(ip, entry)) return true;
+      if (ipInCidr(ip, entry)) return true;
     } else {
       if (ip === entry) return true;
     }
@@ -70,17 +71,22 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   <img src="${LOGO_URL}" class="logo" alt="Vinet">
   <h1>EFT Payment Details</h1>
   <div class="grid">
-    <div><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"></div>
-    <div><label>Account Name</label><input readonly value="Vinet Internet Solutions"></div>
-    <div><label>Account Number</label><input readonly value="62757054996"></div>
-    <div><label>Branch Code</label><input readonly value="250655"></div>
+    <div><label>Bank</label><input readonly value="${escapeHtmlInline(EFT_BANK_NAME())}"></div>
+    <div><label>Account Name</label><input readonly value="${escapeHtmlInline(EFT_ACCOUNT_NAME())}"></div>
+    <div><label>Account Number</label><input readonly value="${escapeHtmlInline(EFT_ACCOUNT_NO())}"></div>
+    <div><label>Branch Code</label><input readonly value="${escapeHtmlInline(EFT_BRANCH_CODE())}"></div>
     <div class="full"><label style="font-weight:900">Reference</label><input style="font-weight:900" readonly value="${id||""}"></div>
   </div>
-  <p class="note" style="margin-top:16px">Please remember that all accounts are payable on or before the 1st of every month.</p>
+  <p class="note" style="margin-top:16px">${escapeHtmlInline(EFT_NOTES())}</p>
   <div style="margin-top:14px"><button onclick="window.print()">Print</button></div>
 </div>
 </body></html>`;
 }
+function EFT_BANK_NAME(){ return globalThis.__EFT_BANK_NAME__ || "First National Bank (FNB/RMB)"; }
+function EFT_ACCOUNT_NAME(){ return globalThis.__EFT_ACCOUNT_NAME__ || "Vinet Internet Solutions"; }
+function EFT_ACCOUNT_NO(){ return globalThis.__EFT_ACCOUNT_NO__ || "62757054996"; }
+function EFT_BRANCH_CODE(){ return globalThis.__EFT_BRANCH_CODE__ || "250655"; }
+function EFT_NOTES(){ return globalThis.__EFT_NOTES__ || "Please remember that all accounts are payable on or before the 1st of every month."; }
 
 // ---------- Splynx helpers ----------
 async function splynxGET(env, endpoint) {
@@ -103,48 +109,41 @@ async function splynxPUT(env, endpoint, payload) {
   return r.json().catch(() => ({}));
 }
 
-// Normalize ZA numbers to 27XXXXXXXXX; accept +27, 27, or local 0XXXXXXXXX
-function normalizeMsisdn(v) {
-  let s = String(v || "").trim();
-  if (!s) return null;
-  s = s.replace(/[^\d]/g, "");
-  if (!s) return null;
-  if (s.startsWith("27")) {
-    // Keep first 11 digits (27 + 9)
-    if (s.length >= 11) return s.slice(0, 11);
-    return null;
-  }
-  if (s.startsWith("0") && s.length >= 10) {
-    return "27" + s.slice(1, 10);
-  }
-  // Sometimes only 9 digits provided (drop leading 0)
-  if (s.length === 9) return "27" + s;
-  return null;
-}
-
+// More forgiving phone extractor with normalization and deep-walk
 function pickPhone(obj) {
-  if (!obj) return null;
+  const norm = v => {
+    let s = String(v ?? "").trim();
+    if (!s) return null;
+    s = s.replace(/[^\d+]/g, "");
+    if (s.startsWith("+")) s = s.slice(1);
+    if (s.startsWith("27") && s.length >= 11) return s.slice(0, 11);
+    if (s.startsWith("0") && s.length >= 10) return "27" + s.slice(1, 10);
+    if (/^\d{9}$/.test(s)) return "27" + s;
+    return null;
+  };
+
+  if (obj == null) return null;
+  if (typeof obj === "string" || typeof obj === "number") return norm(obj);
+
   const direct = [
     obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
     obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone
   ];
-  for (const v of direct) {
-    const m = normalizeMsisdn(v);
-    if (m) return m;
-  }
+  for (const v of direct) { const m = norm(v); if (m) return m; }
+
   if (Array.isArray(obj)) {
-    for (const it of obj) {
-      const m = pickPhone(it);
-      if (m) return m;
-    }
-  } else if (typeof obj === "object") {
+    for (const it of obj) { const m = pickPhone(it); if (m) return m; }
+    return null;
+  }
+  if (typeof obj === "object") {
     for (const k of Object.keys(obj)) {
-      const m = pickPhone(obj[k]);
-      if (m) return m;
+      const m = pickPhone(obj[k]); if (m) return m;
     }
   }
   return null;
 }
+
+// generic tolerant nested picker
 function pickFrom(obj, keyNames) {
   if (!obj) return null;
   const wanted = keyNames.map(k => String(k).toLowerCase());
@@ -164,6 +163,7 @@ function pickFrom(obj, keyNames) {
   }
   return null;
 }
+
 async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
@@ -177,6 +177,7 @@ async function fetchCustomerMsisdn(env, id) {
   }
   return null;
 }
+
 async function fetchProfileForDisplay(env, id) {
   let cust = null, lead = null, contacts = null, custInfo = null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
@@ -308,6 +309,13 @@ function adminJs() {
 // ---------- Worker entry ----------
 export default {
   async fetch(request, env) {
+    // stash EFT details into globals for renderEFTPage
+    globalThis.__EFT_BANK_NAME__ = env.EFT_BANK_NAME || globalThis.__EFT_BANK_NAME__;
+    globalThis.__EFT_ACCOUNT_NAME__ = env.EFT_ACCOUNT_NAME || globalThis.__EFT_ACCOUNT_NAME__;
+    globalThis.__EFT_ACCOUNT_NO__ = env.EFT_ACCOUNT_NO || globalThis.__EFT_ACCOUNT_NO__;
+    globalThis.__EFT_BRANCH_CODE__ = env.EFT_BRANCH_CODE || globalThis.__EFT_BRANCH_CODE__;
+    globalThis.__EFT_NOTES__ = env.EFT_NOTES || globalThis.__EFT_NOTES__;
+
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -345,24 +353,6 @@ export default {
       if (kind === "debit" || pay === "debit") body = `<h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${debit}</pre>`;
       else body = `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${service}</pre>`;
       return new Response(body || "<p>Terms unavailable.</p>", { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
-
-    // ----- Proxy templates (serve your PDFs immediately) -----
-    if (path === "/templates/msa" && method === "GET") {
-      const src = env.TEMPLATE_MSA_URL || "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
-      const r = await fetch(src, { cf:{ cacheEverything:true, cacheTtl: 600 } });
-      if (!r.ok) return new Response("Template not found", { status: 502 });
-      return new Response(await r.arrayBuffer(), {
-        headers: { "content-type":"application/pdf", "content-disposition":"inline; filename=Vinet_MSA.pdf" }
-      });
-    }
-    if (path === "/templates/debit" && method === "GET") {
-      const src = env.TEMPLATE_DO_URL || "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
-      const r = await fetch(src, { cf:{ cacheEverything:true, cacheTtl: 600 } });
-      if (!r.ok) return new Response("Template not found", { status: 502 });
-      return new Response(await r.arrayBuffer(), {
-        headers: { "content-type":"application/pdf", "content-disposition":"inline; filename=Vinet_Debit_Order.pdf" }
-      });
     }
 
     // ----- Debit save -----
@@ -442,7 +432,7 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA template send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=> ""); throw new Error(`WA template send failed ${r.status} ${t}`); }
     }
     async function sendWhatsAppTextIfSessionOpen(toMsisdn, bodyText) {
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -452,22 +442,57 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA text send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=> ""); throw new Error(`WA text send failed ${r.status} ${t}`); }
     }
+
+    // >>> DIAGNOSTIC VERSION <<<
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await request.json().catch(() => ({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
       const splynxId = (linkid || "").split("_")[0];
-      let msisdn = null;
-      try { msisdn = await fetchCustomerMsisdn(env, splynxId); } catch { return json({ ok:false, error:"Splynx lookup failed" }, 502); }
-      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
+
+      let msisdn = null, hit = null;
+      const tried = [];
+      const tryEP = async (ep) => {
+        try {
+          const data = await splynxGET(env, ep);
+          const m = pickPhone(data);
+          tried.push({ ep, ok: true, sample_keys: Object.keys(data || {}).slice(0, 8), found: !!m });
+          if (m) { msisdn = m; hit = ep; }
+        } catch (e) {
+          tried.push({ ep, ok: false, err: String(e) });
+        }
+      };
+
+      for (const ep of [
+        `/admin/customers/customer/${splynxId}`,
+        `/admin/customers/${splynxId}`,
+        `/crm/leads/${splynxId}`,
+        `/admin/customers/${splynxId}/contacts`,
+        `/crm/leads/${splynxId}/contacts`,
+      ]) {
+        await tryEP(ep);
+        if (msisdn) break;
+      }
+
+      console.log("otp/send lookup", {
+        splynxId,
+        hit,
+        msisdn_masked: msisdn ? (msisdn.slice(0,3) + "*****" + msisdn.slice(-2)) : null,
+        tried
+      });
+
+      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file", tried }, 404);
+
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
       await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+
       try { await sendWhatsAppTemplate(msisdn, code, "en"); return json({ ok:true }); }
       catch(e){ try { await sendWhatsAppTextIfSessionOpen(msisdn, `Your Vinet verification code is: ${code}`); return json({ ok:true, note:"sent-as-text" }); }
         catch { return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); } }
     }
+
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await request.json().catch(() => ({}));
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
@@ -656,8 +681,7 @@ export default {
           </table>
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig/${linkid}.png" alt="signature">
-          </div>
-          <p class="muted" style="margin-top:10px">Official template PDF: <a href="/templates/msa" target="_blank">download</a></p>`;
+          </div>`;
         return page("Master Service Agreement", body);
       }
 
@@ -677,20 +701,72 @@ export default {
           ${debitHtml}
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig-debit/${linkid}.png" alt="signature">
-          </div>
-          <p class="muted" style="margin-top:10px">Official template PDF: <a href="/templates/debit" target="_blank">download</a></p>`;
+          </div>`;
         return page("Debit Order Agreement", body);
       }
 
       return new Response("Unknown agreement type", { status: 404 });
     }
 
-    // ----- Splynx profile -----
+    // ----- Splynx profile (debuggable) -----
     if (path === "/api/splynx/profile" && method === "GET") {
       const id = url.searchParams.get("id");
+      const debug = url.searchParams.get("debug") === "1";
       if (!id) return json({ error: "Missing id" }, 400);
-      try { const prof = await fetchProfileForDisplay(env, id); return json(prof); }
-      catch { return json({ error: "Lookup failed" }, 502); }
+
+      const dbg = [];
+      const tryEP = async (ep) => {
+        try {
+          const data = await splynxGET(env, ep);
+          dbg.push({ ep, ok: true, sample_keys: Object.keys(data || {}).slice(0, 8) });
+          return data;
+        } catch (e) {
+          dbg.push({ ep, ok: false, err: String(e) });
+          return null;
+        }
+      };
+
+      let cust = await tryEP(`/admin/customers/customer/${id}`);
+      let lead = null;
+      if (!cust) lead = await tryEP(`/crm/leads/${id}`);
+      const contacts = await tryEP(`/admin/customers/${id}/contacts`);
+      const custInfo = await tryEP(`/admin/customers/customer-info/${id}`);
+
+      try {
+        const src = cust || lead || {};
+        const phone = pickPhone({ ...src, contacts });
+
+        const street =
+          src.street ?? src.address ?? src.address_1 ?? src.street_1 ??
+          (src.addresses && (src.addresses.street || src.addresses.address_1)) ?? '';
+
+        const city =
+          src.city ?? (src.addresses && src.addresses.city) ?? '';
+
+        const zip =
+          src.zip_code ?? src.zip ??
+          (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ?? '';
+
+        const passport =
+          (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
+          src.passport || src.id_number ||
+          pickFrom(src, ['passport','id_number','idnumber','national_id','id_card','identity','identity_number','document_number']) ||
+          '';
+
+        const prof = {
+          kind: cust ? "customer" : (lead ? "lead" : "unknown"),
+          id,
+          full_name: src.full_name || src.name || "",
+          email: src.email || src.billing_email || "",
+          phone: phone || "",
+          city, street, zip, passport,
+          partner: src.partner || src.location || "",
+          payment_method: src.payment_method || "",
+        };
+        return json(debug ? { ...prof, debug: dbg } : prof);
+      } catch (e) {
+        return json(debug ? { error: "Lookup failed", debug: dbg } : { error: "Lookup failed" }, 502);
+      }
     }
 
     // ----- Admin approve stub -----
@@ -750,7 +826,8 @@ function renderOnboardUI(linkid) {
     try{
       const r = await fetch('/api/otp/send',{method:'POST',body:JSON.stringify({linkid})});
       const d = await r.json().catch(()=>({ok:false}));
-      if (m) m.textContent = d.ok ? 'Code sent. Check your WhatsApp.' : (d.error||'Failed to send.');
+      if (m) m.textContent = d.ok ? 'Code sent. Check your WhatsApp.' : ((d && d.error) ? ('OTP error: ' + d.error) : 'Failed to send.');
+      if (d && d.tried) console.log('OTP debug tried=', d.tried);
     }catch{ if(m) m.textContent='Network error.'; }
   }
 
@@ -810,28 +887,44 @@ function renderOnboardUI(linkid) {
       const box = document.getElementById('eftBox');
       box.style.display='block';
       box.innerHTML = [
-        '<div class="row"><div class="field"><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"/></div>',
-        '<div class="field"><label>Account Name</label><input readonly value="Vinet Internet Solutions"/></div></div>',
-        '<div class="row"><div class="field"><label>Account Number</label><input readonly value="62757054996"/></div>',
-        '<div class="field"><label>Branch Code</label><input readonly value="250655"/></div></div>',
+        '<div class="row"><div class="field"><label>Bank</label><input readonly value="${escapeHtmlInline(EFT_BANK_NAME())}"/></div>',
+        '<div class="field"><label>Account Name</label><input readonly value="${escapeHtmlInline(EFT_ACCOUNT_NAME())}"/></div></div>',
+        '<div class="row"><div class="field"><label>Account Number</label><input readonly value="${escapeHtmlInline(EFT_ACCOUNT_NO())}"/></div>',
+        '<div class="field"><label>Branch Code</label><input readonly value="${escapeHtmlInline(EFT_BRANCH_CODE())}"/></div></div>',
         '<div class="field"><label><b>Reference</b></label><input readonly style="font-weight:900" value="'+id+'"/></div>',
-        '<div class="note">Please make sure you use the correct <b>Reference</b> when making EFT payments.</div>',
+        '<div class="note">${escapeHtmlInline(EFT_NOTES())}</div>',
         '<div style="display:flex;justify-content:center;margin-top:.6em"><a class="btn-outline" href="/info/eft?id='+id+'" target="_blank" style="text-align:center;min-width:260px">Print banking details</a></div>'
       ].join('');
     }
 
     let dPad = null; // debit signature pad
+    async function prefillDebitFieldsIfEmpty(){
+      // Prefer values from personal info page if already captured
+      const curHolder = (state.debit && state.debit.account_holder) || (state.edits && state.edits.full_name) || '';
+      const curId = (state.debit && state.debit.id_number) || (state.edits && state.edits.passport) || '';
+      if (curHolder) document.getElementById('d_holder').value = curHolder;
+      if (curId) document.getElementById('d_id').value = curId;
+
+      // If still empty, pull from Splynx
+      if (!curHolder || !curId) {
+        try{
+          const id=(linkid||'').split('_')[0];
+          const r=await fetch('/api/splynx/profile?id='+encodeURIComponent(id));
+          const p=await r.json().catch(()=>({}));
+          if (!curHolder && p && p.full_name) document.getElementById('d_holder').value = p.full_name;
+          if (!curId && p && p.passport) document.getElementById('d_id').value = p.passport;
+        }catch{}
+      }
+    }
+
     function renderDebitForm(){
       const d = state.debit || {};
-      const holderPref = d.account_holder || (state.edits && state.edits.full_name) || '';
-      const idPref = d.id_number || (state.edits && state.edits.passport) || '';
-
       const box = document.getElementById('debitBox');
       box.style.display = 'block';
       box.innerHTML = [
         '<div class="row">',
-          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(holderPref||'')+'" required /></div>',
-          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(idPref||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account Holder Name</label><input id="d_holder" value="'+(d.account_holder||'')+'" required /></div>',
+          '<div class="field"><label>Bank Account Holder ID no</label><input id="d_id" value="'+(d.id_number||'')+'" required /></div>',
         '</div>',
         '<div class="row">',
           '<div class="field"><label>Bank</label><input id="d_bank" value="'+(d.bank_name||'')+'" required /></div>',
@@ -846,21 +939,13 @@ function renderOnboardUI(linkid) {
         '<div class="field"><label>Draw your signature for Debit Order</label><canvas id="d_sig" class="signature"></canvas><div class="row"><a class="btn-outline" id="d_clear">Clear</a><span class="note" id="d_msg"></span></div></div>'
       ].join('');
 
-      // If user visited Debit before Step 3, try a one-shot Splynx prefill
-      (async()=>{
-        try{
-          const id=(linkid||'').split('_')[0];
-          const r=await fetch('/api/splynx/profile?id='+encodeURIComponent(id));
-          const p=await r.json().catch(()=>null);
-          if (p && p.full_name && !document.getElementById('d_holder').value) document.getElementById('d_holder').value = p.full_name;
-          if (p && p.passport && !document.getElementById('d_id').value) document.getElementById('d_id').value = p.passport;
-        }catch{}
-      })();
-
       (async()=>{ try{ const r=await fetch('/api/terms?kind=debit'); const t=await r.text(); document.getElementById('debitTerms').innerHTML = t || 'Terms not available.'; }catch{ document.getElementById('debitTerms').textContent='Failed to load terms.'; } })();
 
       dPad = sigPad(document.getElementById('d_sig'));
       document.getElementById('d_clear').onclick = (e)=>{ e.preventDefault(); dPad.clear(); };
+
+      // Prefill holder + id/passport from personal info or Splynx
+      prefillDebitFieldsIfEmpty().catch(()=>{});
     }
 
     function hideDebitForm(){ const box=document.getElementById('debitBox'); box.style.display='none'; box.innerHTML=''; dPad=null; }
@@ -974,7 +1059,7 @@ function renderOnboardUI(linkid) {
     };
   }
 
-  // --- Step 6: Done (with agreement links) ---
+  // --- Step 6: Done (with agreement download links) ---
   function step6(){
     const showDebit = (state && state.pay_method === 'debit');
     stepEl.innerHTML = [
@@ -982,14 +1067,10 @@ function renderOnboardUI(linkid) {
       '<p>Thanks — we’ve recorded your information. Our team will be in contact shortly. ',
       'If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>',
       '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
-      '<div class="field"><b>Your agreements</b></div>',
+      '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
       '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
-        // HTML summaries with captured signature
-        '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement (summary)</a></li>',
-        (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement (summary)</a></li>' : ''),
-        // Official templates (from R2)
-        '<li><a href="/templates/msa" target="_blank">Official MSA template (PDF)</a></li>',
-        (showDebit ? '<li><a href="/templates/debit" target="_blank">Official Debit Order template (PDF)</a></li>' : ''),
+        '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a></li>',
+        (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a></li>' : ''),
       '</ul>'
     ].join('');
   }
@@ -1000,3 +1081,6 @@ function renderOnboardUI(linkid) {
 </script>
 </body></html>`;
 }
+
+// ---------- Small helpers ----------
+function escapeHtmlInline(s){ return String(s||'').replace(/[&<>"]/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;' }[m])); }
