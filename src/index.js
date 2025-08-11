@@ -13,6 +13,9 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
+const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
+const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
+
 
 // ---------- Helpers ----------
 function ipAllowed(request) {
