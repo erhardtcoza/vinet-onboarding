@@ -561,13 +561,21 @@ export default {
       return new Response(obj.body, { headers: { "content-type": "image/png" } });
     }
 
-    // Agreement pages (HTML printable -> browser "Save as PDF")
+       // Agreement pages (HTML printable -> browser "Save as PDF")
     if (path.startsWith("/agreements/") && method === "GET") {
       const [, , type, linkid] = path.split("/");
       if (!type || !linkid) return new Response("Bad request", { status: 400 });
 
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
+
+      // --- Load and escape the terms so they are embedded in the printable doc
+      const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+      const debUrl = env.TERMS_DEBIT_URL   || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+      async function getText(u){ try{ const r=await fetch(u,{cf:{cacheEverything:true,cacheTtl:300}}); return r.ok?await r.text():""; }catch{return "";} }
+      const termsService = (await getText(svcUrl)) || "";
+      const termsDebit   = (await getText(debUrl)) || "";
+      const toHtml = (s) => escapeHtml(String(s||"")).replace(/\r?\n/g, "<br/>");
 
       const e = sess.edits || {};
       const today = new Date().toLocaleDateString();
@@ -580,20 +588,26 @@ export default {
       const passport = escapeHtml(e.passport||'');
       const debit = sess.debit || null;
 
-      function page(title, body){ return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
-        body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
-        .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
-        h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
-        table{width:100%;border-collapse:collapse;margin:.6em 0}td,th{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
-        .muted{color:#666;font-size:12px}.sig{margin-top:14px}.sig img{max-height:120px;border:1px dashed #bbb;border-radius:6px;background:#fff}
-        .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
-        .logo{height:60px;display:block;margin:0 auto 10px}@media print {.actions{display:none}}
-      </style></head><body><div class="card">
-        <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${escapeHtml(title)}</h1>
-        ${body}
-        <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
-        <div class="muted">Generated ${today} • Link ${escapeHtml(linkid)}</div>
-      </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});}
+      function page(title, body){ 
+        return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
+        <style>
+          body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
+          .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
+          h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
+          table{width:100%;border-collapse:collapse;margin:.6em 0}td,th{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
+          .muted{color:#666;font-size:12px}.sig{margin-top:14px}.sig img{max-height:120px;border:1px dashed #bbb;border-radius:6px;background:#fff}
+          .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+          .logo{height:60px;display:block;margin:0 auto 10px}
+          .terms{font-size:12px;line-height:1.4;color:#222;border-top:1px solid #eee;padding-top:12px;margin-top:10px}
+          .pagebreak{height:0; page-break-before:always;}
+          @media print {.actions{display:none} .card{box-shadow:none;margin:0;border-radius:0}}
+        </style></head><body><div class="card">
+          <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${escapeHtml(title)}</h1>
+          ${body}
+          <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+          <div class="muted">Generated ${today} • Link ${escapeHtml(linkid)}</div>
+        </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});
+      }
 
       if (type === "msa") {
         const body = `
@@ -608,7 +622,10 @@ export default {
           </table>
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig/${linkid}.png" alt="signature">
-          </div>`;
+          </div>
+          <div class="pagebreak"></div>
+          <h2>Terms &amp; Conditions</h2>
+          <div class="terms">${toHtml(termsService)}</div>`;
         return page("Master Service Agreement", body);
       }
 
@@ -628,12 +645,16 @@ export default {
           ${debitHtml}
           <div class="sig"><div class="b">Signature</div>
             <img src="/agreements/sig-debit/${linkid}.png" alt="signature">
-          </div>`;
+          </div>
+          <div class="pagebreak"></div>
+          <h2>Debit Order Terms</h2>
+          <div class="terms">${toHtml(termsDebit)}</div>`;
         return page("Debit Order Agreement", body);
       }
 
       return new Response("Unknown agreement type", { status: 404 });
     }
+
 
     // ----- Splynx profile -----
     if (path === "/api/splynx/profile" && method === "GET") {
