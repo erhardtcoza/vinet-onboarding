@@ -121,50 +121,30 @@ async function fetchCustomerMsisdn(env, id) {
   }
   return null;
 }
-// --- Fetch profile (adds customer-info call for passport) ---
 async function fetchProfileForDisplay(env, id) {
-  let cust = null, lead = null, contacts = null, custInfo = null;
-
+  let cust=null, lead=null, contacts=null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (!cust) {
-    try { lead = await splynxGET(env, `/crm/leads/${id}`); } catch {}
-  }
+  if (!cust) { try { lead = await splynxGET(env, `/crm/leads/${id}`); } catch {} }
   try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
-  // NEW: customer-info has the passport/ID for customers
-  try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
 
   const src = cust || lead || {};
   const phone = pickPhone({ ...src, contacts });
 
   const street =
-    src.street ??
-    src.address ??
-    src.address_1 ??
-    src.street_1 ??
-    (src.addresses && (src.addresses.street || src.addresses.address_1)) ??
-    '';
+    src.street ?? src.address ?? src.address_1 ?? src.street_1 ??
+    (src.addresses && (src.addresses.street || src.addresses.address_1)) ?? '';
 
   const city =
-    src.city ??
-    (src.addresses && src.addresses.city) ??
-    '';
+    src.city ?? (src.addresses && src.addresses.city) ?? '';
 
   const zip =
-    src.zip_code ??
-    src.zip ??
-    (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ??
-    '';
+    src.zip_code ?? src.zip ?? (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ?? '';
 
-  // Prefer customer-info.passport; fall back to common variants
-  const passport =
-    (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
-    src.passport ||
-    src.id_number ||
-    pickFrom(src, [
-      'passport', 'id_number', 'idnumber', 'national_id',
-      'id_card', 'identity', 'identity_number', 'identification', 'document_number'
-    ]) ||
-    '';
+  // robust passport/ID extraction (customers API supports 'passport')
+  const passport = pickFrom(src, [
+    'passport','id_number','idnumber','national_id','id_card',
+    'identity','identity_number','identification','document_number'
+  ]) || '';
 
   return {
     kind: cust ? "customer" : (lead ? "lead" : "unknown"),
