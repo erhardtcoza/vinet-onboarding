@@ -191,6 +191,44 @@ async function fetchProfileForDisplay(env, id) {
     payment_method: src.payment_method || "",
   };
 }
+// ----- Splynx helpers (add these) -----
+async function splynxPATCH(env, endpoint, data) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(data || {})
+  });
+  if (!r.ok) throw new Error(`Splynx PATCH ${endpoint} ${r.status}`);
+  try { return await r.json(); } catch { return {}; }
+}
+
+async function splynxUploadDoc(env, entityType, id, filename, bytes, contentType, title) {
+  // entityType: 'lead' | 'customer'
+  const fd = new FormData();
+  // Splynx "Create customer documents" requires a "type" field; use a safe default
+  fd.set('type', 'other');
+  if (title) fd.set('title', title);
+  fd.set('visible_by_customer', '0');
+  fd.set('file', new Blob([bytes], { type: contentType || 'application/octet-stream' }), filename);
+
+  const ep = (entityType === 'lead')
+    ? `/admin/crm/leads/${id}/documents`
+    : `/admin/customers/customer/${id}/documents`;
+
+  const r = await fetch(`${env.SPLYNX_API}${ep}`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+    body: fd
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(()=> '');
+    throw new Error(`Splynx upload ${ep} ${r.status} ${t}`);
+  }
+  try { return await r.json(); } catch { return {}; }
+}
 
 // ---------- Root (simple create-link) ----------
 function renderRootPage() {
