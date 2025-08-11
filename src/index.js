@@ -79,16 +79,40 @@ async function splynxPUT(env, endpoint, payload) {
 function pickPhone(obj) {
   if (!obj) return null;
   const ok = s => /^27\d{8,13}$/.test(String(s || "").trim());
-  const direct = [
-    obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
-    obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone
-  ];
-  for (const v of direct) if (ok(v)) return String(v).trim();
+
+  // If it's already a string, try it
+  if (typeof obj === "string") return ok(obj) ? String(obj).trim() : null;
+
+  // Arrays: scan each element
   if (Array.isArray(obj)) {
-    for (const it of obj) { const m = pickPhone(it); if (m) return m; }
-  } else if (typeof obj === "object") {
-    for (const k of Object.keys(obj)) { const m = pickPhone(obj[k]); if (m) return m; }
+    for (const it of obj) {
+      const m = pickPhone(it);
+      if (m) return m;
+    }
+    return null;
   }
+
+  // Objects
+  if (typeof obj === "object") {
+    // Common direct fields
+    const direct = [
+      obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp,
+      obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone,
+      // extra variants often seen on leads
+      obj.contact_number_2nd, obj.contact_number_3rd, obj.alt_phone, obj.alt_mobile
+    ];
+    for (const v of direct) if (ok(v)) return String(v).trim();
+
+    // Fallback: check every property; accept any string that matches
+    for (const [_, v] of Object.entries(obj)) {
+      if (typeof v === "string" && ok(v)) return String(v).trim();
+      if (v && typeof v === "object") {
+        const m = pickPhone(v);
+        if (m) return m;
+      }
+    }
+  }
+
   return null;
 }
 function pickFrom(obj, keyNames) {
@@ -114,7 +138,7 @@ async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
-    `/crm/leads/${id}`,
+    `/admin/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
     `/crm/leads/${id}/contacts`,
   ];
