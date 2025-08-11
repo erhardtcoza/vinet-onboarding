@@ -676,6 +676,16 @@ function renderOnboardUI(linkid) {
   canvas.signature{border:1px dashed #bbb;border-radius:.6em;width:100%;height:180px;touch-action:none;background:#fff}
   .bigchk{display:flex;align-items:center;gap:.6em;font-weight:700}
   .bigchk input[type=checkbox]{width:22px;height:22px}
+    /* --- Final screen polish --- */
+  .accent { height:8px; background:#e2001a; border-radius:4px; width:60%; max-width:540px; margin:10px auto 18px; }
+  .final p { margin:.35em 0 .65em; }
+  .final ul { margin:.25em 0 0 1em; }
+  .doclist { list-style:none; margin:.4em 0 0 0; padding:0; }
+  .doclist .doc-item { display:flex; align-items:center; gap:.5em; margin:.45em 0; }
+  .doclist .doc-ico { display:inline-flex; width:18px; height:18px; opacity:.9; }
+  .doclist .doc-ico svg { width:18px; height:18px; }
+  .doclist a { text-decoration:none; }
+  .doclist a:hover { text-decoration:underline; }
 </style></head><body>
 <div class="card">
   <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
@@ -910,21 +920,42 @@ function renderOnboardUI(linkid) {
     };
   }
 
-  // --- Step 6: Done (with agreement download links) ---
+    // --- Step 6: Done (with agreement download links) ---
   function step6(){
     const showDebit = (state && state.pay_method === 'debit');
+
+    // simple document icon (inline SVG, no external assets)
+    const docIcon =
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+        '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 3.5L18.5 8H14V3.5zM8 12h8v1.5H8V12zm0 3h8v1.5H8V15zM8 9h4v1.5H8V9z"/>' +
+      '</svg>';
+
     stepEl.innerHTML = [
-      '<h2>All set!</h2>',
-      '<p>Thanks — we’ve recorded your information. Our team will be in contact shortly. ',
-      'If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>',
-      '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
-      '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
-      '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
-        '<li><a href="/agreements/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a></li>',
-        (showDebit ? '<li><a href="/agreements/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a></li>' : ''),
-      '</ul>'
+      '<div class="final">',
+        '<h2 style="color:#e2001a;margin:0 0 .2em">All set!</h2>',
+        '<div class="accent"></div>',
+        '<p>Thanks – we’ve recorded your information. Our team will be in contact shortly.</p>',
+        '<p>If you have any questions, please contact our sales team:</p>',
+        '<ul>',
+          '<li><b>Phone:</b> <a href="tel:+27210070200">021 007 0200</a></li>',
+          '<li><b>Email:</b> <a href="mailto:sales@vinet.co.za">sales@vinet.co.za</a></li>',
+        '</ul>',
+        '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
+        '<div class="field"><b>Your agreements</b> <span class="note">(links will work once approved)</span></div>',
+        '<ul class="doclist">',
+          '<li class="doc-item"><span class="doc-ico">', docIcon, '</span>',
+            '<a href="/agreements/msa/', linkid, '" target="_blank">Master Service Agreement (PDF)</a>',
+          '</li>',
+          (showDebit
+            ? '<li class="doc-item"><span class="doc-ico">' + docIcon + '</span>' +
+              '<a href="/agreements/debit/' + linkid + '" target="_blank">Debit Order Agreement (PDF)</a>' +
+              '</li>'
+            : ''),
+        '</ul>',
+      '</div>'
     ].join('');
   }
+
 
   function render(){ setProg(); [step0,step1,step2,step3,step4,step5,step6][step](); }
   render();
