@@ -738,7 +738,7 @@ if (path === "/api/terms" && method === "GET") {
         const o = {}; for (const [k,v] of form.entries()) o[k]=v; return o;
       });
       const required = ["account_holder","id_number","bank_name","account_number","account_type","debit_day"];
-      for (const k of required) if (!b[k] || String(b[k]).trim()==="") return json({ ok:false, error:\`Missing \${k}\` }, 400);
+      for (const k of required) if (!b[k] || String(b[k]).trim()==="") return json({ ok:false, error: `Missing ${k}` }, 400);
       const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
       const ts = Date.now();
       const key = \`debit/\${id}/\${ts}\`;
