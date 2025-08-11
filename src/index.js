@@ -1,18 +1,6 @@
 // --- Vinet Onboarding Worker ---
 // Admin dashboard, onboarding flow, EFT & Debit Order pages
-// Restores agreed UX and adds Approve & Push to Splynx (leads kept as leads)
-//
-// Key features:
-//  • Debit Order step: signature canvas + required checkbox (renders when selected)
-//  • Robust Splynx lookups (customers + leads) with correct endpoints
-//  • Uploads step (ID + Proof of Address) -> stored in R2 and session
-//  • OTP (WhatsApp template -> fallback to text) + staff code
-//  • Final page with downloadable agreements (PDF stamping from templates)
-//  • Separate endpoints for MSA and Debit signatures
-//  • /agreements/pdf/{msa|debit}/{linkid}[?bbox=1] to render stamped PDFs
-//  • Admin: Pending (in-progress), Completed (awaiting approval), Approved
-//  • Admin: Delete in Pending & Completed performs hard delete (KV+R2) and invalidates link
-//  • Approve & Push updates lead/customer fields, customer-info.passport (customers), uploads documents (uploads + stamped PDFs)
+// Approve & Push to Splynx (keep leads as leads)
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -21,12 +9,12 @@ const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
 const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 
-// Allow-list (public IP range); if you want to relax, tweak this.
+// ---------- IP allow (VNET ASN /20) ----------
 function ipAllowed(request) {
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return false;
   const [a,b,c] = ip.split(".").map(Number);
-  return a===160 && b===226 && c>=128 && c<=143; // 160.226.128.0/20
+  return a===160 && b===226 && c>=128 && c<=143;
 }
 
 // ---------- Small helpers ----------
@@ -94,6 +82,7 @@ async function splynxUploadDocument(env, kind, id, bytes, filename, title) {
     : `/admin/customers/customer/${id}/documents`;
   const form = new FormData();
   form.append("title", title || filename);
+  // Blob is supported in Workers
   form.append("file", new Blob([bytes], { type: "application/pdf" }), filename);
   return splynxPOSTForm(env, ep, form);
 }
@@ -211,17 +200,16 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
 </div></body></html>`;
 }
 
-// ---------- PDF field maps (we'll fine-tune XY next round) ----------
+// ---------- PDF field maps (we’ll tweak XY next pass) ----------
 const MSA_FIELDS = {
-  // These are sane defaults; we kept bbox debugging (?bbox=1) so we can tweak later.
   full_name: { page: 0, x: mm(30), y: mm(240), size: 11, w: mm(120) },
-  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
-  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
   email:     { page: 0, x: mm(30), y: mm(232), size: 11, w: mm(120) },
+  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
+  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
   address:   { page: 0, x: mm(30), y: mm(208), size: 11, w: mm(150) },
   client:    { page: 0, x: mm(150),y: mm(248), size: 11, w: mm(40) },
   signature: { page: 0, x: mm(30), y: mm(188), w: mm(60), h: mm(20) },
-  // page 4 extras
+  // page 4 placeholders (adjust later)
   full_name_p4:{ page: 3, x: mm(140), y: mm(220), size: 11, w: mm(80) },
   date_p4:     { page: 3, x: mm(130), y: mm(230), size: 11, w: mm(40) },
   signature_p4:{ page: 3, x: mm(140), y: mm(235), w: mm(55), h: mm(18) },
@@ -487,7 +475,7 @@ function renderOnboardUI(linkid, restricted=false) {
   let step = 0;
   let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
 
-  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); } // 0..6
+  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); }
   function setProg(){ progEl.style.width = pct() + '%'; }
   function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
 
@@ -592,7 +580,6 @@ function renderOnboardUI(linkid, restricted=false) {
       document.getElementById('d_clear').onclick=(e)=>{ e.preventDefault(); dPad.clear(); };
     }
 
-    // initial render
     if (pay==='eft') renderEft(); else renderDebitForm();
 
     document.getElementById('pm-eft').onclick=()=>{ state.pay_method='eft'; document.getElementById('debitBox').style.display='none'; document.getElementById('eftBox').style.display='block'; renderEft(); save(); };
@@ -723,7 +710,7 @@ async function pushToSplynx(env, linkid) {
   const id = String(sess.id || "").trim();
   if (!id) throw new Error("Missing Splynx ID");
 
-  // Decide lead vs customer
+  // Detect entity type
   let kind = "lead";
   try { await splynxGET(env, `/admin/customers/customer/${id}`); kind = "customer"; } catch {}
   if (kind === "lead") { try { await splynxGET(env, `/admin/crm/leads/${id}`); } catch { throw new Error("Lead/customer not found in Splynx"); } }
@@ -732,7 +719,6 @@ async function pushToSplynx(env, linkid) {
   const nowISO = new Date().toISOString();
 
   if (kind === "lead") {
-    // Update a minimal safe set on the lead
     const payload = {
       name: e.full_name || undefined,
       email: e.email || undefined,
@@ -743,7 +729,6 @@ async function pushToSplynx(env, linkid) {
     };
     await splynxPUT(env, `/admin/crm/leads/${id}`, payload);
   } else {
-    // Customer core
     const payload = {
       full_name: e.full_name || undefined,
       email: e.email || undefined,
@@ -753,11 +738,10 @@ async function pushToSplynx(env, linkid) {
       zip_code: e.zip || undefined
     };
     await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
-    // Customer-info passport
     if (e.passport) await splynxPUT(env, `/admin/customers/customer-info/${id}`, { passport: e.passport });
   }
 
-  // Collect documents: user uploads + stamped PDFs
+  // Documents: user uploads + stamped PDFs
   const docs = [];
   const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
   for (const u of uploads) {
@@ -790,9 +774,11 @@ export default {
     const getIP = () => request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "";
     const getUA = () => request.headers.get("user-agent") || "";
 
-    // Landing: simple entry with link to /admin (if allowed)
+    // Root: redirect to /admin when allowed; otherwise a simple landing
     if (path === "/" && method === "GET") {
-      if (!ipAllowed(request)) return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Vinet Client Onboarding</title><style>body{font-family:system-ui;background:#fafbfc}.card{background:#fff;max-width:800px;margin:3em auto;padding:2em;border-radius:16px;box-shadow:0 2px 12px #0002;text-align:center}h1{color:#e2001a}.logo{height:72px;display:block;margin:0 auto 10px}</style></head><body><div class="card"><img class="logo" src="${LOGO_URL}"><h1>Vinet Client Onboarding</h1><p>Welcome! Please use the onboarding link provided by Vinet.</p></div></body></html>`, { headers:{ "content-type":"text/html; charset=utf-8" } });
+      if (!ipAllowed(request)) {
+        return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Vinet Client Onboarding</title><style>body{font-family:system-ui;background:#fafbfc}.card{background:#fff;max-width:800px;margin:3em auto;padding:2em;border-radius:16px;box-shadow:0 2px 12px #0002;text-align:center}h1{color:#e2001a}.logo{height:72px;display:block;margin:0 auto 10px}</style></head><body><div class="card"><img class="logo" src="${LOGO_URL}"><h1>Vinet Client Onboarding</h1><p>Welcome! Please use the onboarding link provided by Vinet.</p></div></body></html>`, { headers:{ "content-type":"text/html; charset=utf-8" } });
+      }
       return Response.redirect(url.origin + "/admin", 302);
     }
 
@@ -805,7 +791,7 @@ export default {
       return new Response(adminJs(), { headers: { "content-type":"application/javascript; charset=utf-8" } });
     }
 
-    // Info pages
+    // Info page
     if (path === "/info/eft" && method === "GET") {
       const id = url.searchParams.get("id") || "";
       return new Response(await renderEFTPage(id), { headers: { "content-type":"text/html; charset=utf-8" } });
@@ -924,18 +910,18 @@ export default {
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
       await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
-try {
-  await sendWhatsAppTemplate(msisdn, code, "en");
-  return json({ ok: true });
-} catch (e) {
-  try {
-    await sendWhatsAppTextIfSessionOpen(msisdn, 'Your Vinet verification code is: ' + code);
-    return json({ ok: true, note: 'sent-as-text' });
-  } catch (e2) {
-    return json({ ok: false, error: 'WhatsApp send failed (template+text)' }, 502);
-  }
-}
-    
+      try {
+        await sendWhatsAppTemplate(msisdn, code, "en");
+        return json({ ok: true });
+      } catch {
+        try {
+          await sendWhatsAppText(msisdn, 'Your Vinet verification code is: ' + code);
+          return json({ ok: true, note: "sent-as-text" });
+        } catch {
+          return json({ ok: false, error: "WhatsApp send failed (template+text)" }, 502);
+        }
+      }
+    }
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await request.json().catch(() => ({}));
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
@@ -959,7 +945,7 @@ try {
       return new Response(renderOnboardUI(linkid), { headers: { "content-type":"text/html; charset=utf-8" } });
     }
 
-    // Uploads (R2) + persist into session (server-side, too)
+    // Uploads (R2) + persist into session
     if (path === "/api/onboard/upload" && method === "POST") {
       const q = new URL(request.url).searchParams;
       const linkid = q.get("linkid");
@@ -1138,6 +1124,7 @@ try {
       catch { return json({ error: "Lookup failed" }, 502); }
     }
 
+    // Final fallback
     return new Response("Not found", { status: 404 });
   }
 };
