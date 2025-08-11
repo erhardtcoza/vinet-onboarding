@@ -1300,16 +1300,90 @@ export default {
       catch { return json({ error: "Lookup failed" }, 502); }
     }
 
-    // Approve & push (stub: stays a lead)
-    if (path === "/api/admin/approve" && method === "POST") {
-      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-      const { linkid } = await request.json().catch(()=>({}));
-      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-      if (!sess) return json({ ok:false, error:"Not found" }, 404);
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", approved_at:Date.now() }), { expirationTtl: 60*60*24*30 });
-      return json({ ok: true });
+// Approve & push (uploads PDFs + user files into Splynx; auto lead/customer)
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+
+  const { linkid } = await request.json().catch(()=>({}));
+  if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok:false, error:"Not found" }, 404);
+
+  const splynxId = String(sess.id || (linkid.split("_")[0] || "")).trim();
+  if (!splynxId) return json({ ok:false, error:"Missing Splynx ID in session" }, 400);
+
+  // Determine entity type
+  let entityType = null; // 'lead' or 'customer'
+  try { await splynxGET(env, `/admin/crm/leads/${splynxId}`); entityType = 'lead'; } catch {}
+  if (!entityType) { try { await splynxGET(env, `/admin/customers/customer/${splynxId}`); entityType = 'customer'; } catch {} }
+  if (!entityType) return json({ ok:false, error:"ID is neither lead nor customer" }, 404);
+
+  // Optionally push basic edited fields (safe subset)
+  const basic = sess.edits || {};
+  const patchData = {
+    full_name: basic.full_name || undefined,
+    email:     basic.email     || undefined,
+    phone:     basic.phone     || undefined,
+    passport:  basic.passport  || undefined,
+    street:    basic.street    || undefined,
+    city:      basic.city      || undefined,
+    zip_code:  basic.zip       || undefined
+  };
+  try {
+    if (Object.values(patchData).some(v => v)) {
+      if (entityType === 'lead') await splynxPATCH(env, `/admin/crm/leads/${splynxId}`, patchData);
+      else await splynxPATCH(env, `/admin/customers/customer/${splynxId}`, patchData);
     }
+  } catch (e) {
+    // non-fatal — keep going with uploads
+  }
+
+  // Upload MSA PDF
+  try {
+    const msaResp = await renderMsaPdf(env, linkid, false);
+    const msaBytes = new Uint8Array(await msaResp.arrayBuffer());
+    await splynxUploadDoc(env, entityType, splynxId, `MSA_${splynxId}.pdf`, msaBytes, "application/pdf", "MSA");
+  } catch (e) {
+    // keep going; report at the end
+  }
+
+  // Upload Debit Order PDF (if present)
+  try {
+    if (sess.debit_sig_key) {
+      const debResp = await renderDebitPdf(env, linkid, false);
+      const debBytes = new Uint8Array(await debResp.arrayBuffer());
+      await splynxUploadDoc(env, entityType, splynxId, `Debit_${splynxId}.pdf`, debBytes, "application/pdf", "Debit Order");
+    }
+  } catch (e) {
+    // ignore single-doc failure
+  }
+
+  // Upload any extra client files saved in R2
+  try {
+    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+    for (const u of uploads) {
+      if (!u?.key) continue;
+      const obj = await env.R2_UPLOADS.get(u.key);
+      if (!obj) continue;
+      const bytes = new Uint8Array(await obj.arrayBuffer());
+      const fname = u.name || (u.key.split("/").pop() || "upload.bin");
+      const ctype = obj.httpMetadata?.contentType || "application/octet-stream";
+      await splynxUploadDoc(env, entityType, splynxId, fname, bytes, ctype, u.label || fname);
+    }
+  } catch (e) {
+    // ignore; partial uploads still useful
+  }
+
+  // Mark approved + pushed
+  await env.ONBOARD_KV.put(
+    `onboard/${linkid}`,
+    JSON.stringify({ ...sess, status:"approved", approved_at: Date.now(), pushed_to_splynx: true }),
+    { expirationTtl: 60*60*24*30 }
+  );
+
+  return json({ ok: true, entityType, id: splynxId });
+}
 
     return new Response("Not found", { status: 404 });
   },
