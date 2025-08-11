@@ -655,11 +655,16 @@ export default {
 const mm = (v) => v * 2.83464567; // mm -> PDF points
 
 async function fetchBytesFromUrl(urlStr) {
+  if (!urlStr) throw new Error("Template URL missing");
   const r = await fetch(urlStr, { cf: { cacheEverything: true, cacheTtl: 600 } });
-  if (!r.ok) throw new Error(`fetch ${urlStr} ${r.status}`);
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`fetch ${urlStr} ${r.status} ${txt.slice(0,120)}`);
+  }
   const ab = await r.arrayBuffer();
   return new Uint8Array(ab);
 }
+
 async function fetchR2Bytes(env, key) {
   const obj = await env.R2_UPLOADS.get(key);
   if (!obj) return null;
@@ -720,7 +725,8 @@ async function renderMsaPdf(env, linkid, bbox=false) {
   const address = [e.street, e.city, e.zip].filter(Boolean).join(", ");
   const dateStr = new Date().toLocaleDateString();
 
-  const tplBytes = await fetchBytesFromUrl(env.SERVICE_PDF_KEY);
+const tplUrl = env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF;
+const tplBytes = await fetchBytesFromUrl(tplUrl);
   const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
@@ -767,7 +773,8 @@ async function renderDebitPdf(env, linkid, bbox=false) {
   const d = sess.debit || {};
   const dateStr = new Date().toLocaleDateString();
 
-  const tplBytes = await fetchBytesFromUrl(env.DEBIT_PDF_KEY);
+const tplUrl = env.DEBIT_PDF_KEY || DEFAULT_DEBIT_PDF;
+const tplBytes = await fetchBytesFromUrl(tplUrl);
   const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
