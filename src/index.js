@@ -1,5 +1,5 @@
 // --- Vinet Onboarding Worker ---
-// Admin dashboard, onboarding flow, EFT & Debit Order pages (fixed build)
+// Admin dashboard, onboarding flow, EFT & Debit Order pages (fixed build) + Security/Audit page
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -23,6 +23,24 @@ const json = (o, s = 200) =>
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
+// Human timestamp
+function catTime(ts) {
+  try {
+    const d = new Date(ts || Date.now());
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch { return ""; }
+}
+
+// Deterministic device id (non-PII hash)
+async function deviceIdFromParts(parts) {
+  const s = parts.join("|");
+  const enc = new TextEncoder().encode(s);
+  const h = await crypto.subtle.digest("SHA-256", enc);
+  const b = Array.from(new Uint8Array(h)).slice(0, 12); // 12 bytes -> 24 hex
+  return b.map(x => x.toString(16).padStart(2, "0")).join("");
+}
 
 // ---------- Splynx helpers ----------
 async function splynxGET(env, endpoint) {
@@ -474,6 +492,48 @@ const DEBIT_FIELDS = {
   code:           { page: 0, x: 170, y: 535, size: 12, w: 120 },
 };
 
+// ---------- Security/Audit page appended to PDFs ----------
+async function appendSecurityPage(pdf, sess, linkid) {
+  const page = pdf.addPage([595, 842]); // A4
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const margin = 36;
+  const titleSize = 18;
+
+  page.drawText("VINET — Agreement Security Summary", {
+    x: margin, y: 842 - margin - titleSize, size: titleSize, font, color: rgb(0.88, 0.0, 0.10)
+  });
+
+  const t = catTime(sess.last_time || Date.now());
+  const loc = sess.last_loc || {};
+
+  const lines = [
+    ["Link ID", linkid],
+    ["Splynx ID", (linkid || "").split("_")[0]],
+    ["IP Address", sess.last_ip || "n/a"],
+    ["Location", [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
+    ["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
+    ["ASN / Org", [loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
+    ["Cloudflare PoP", loc.colo || "n/a"],
+    ["User-Agent", sess.last_ua || "n/a"],
+    ["Device ID", sess.device_id || "n/a"],
+    ["Timestamp", t],
+  ];
+
+  let y = 842 - margin - 36;
+  const keyW = 140, size = 11;
+
+  for (const [k,v] of lines) {
+    page.drawText(k + ":", { x: margin, y, size, font, color: rgb(0.2,0.2,0.2) });
+    page.drawText(String(v||""), { x: margin + keyW, y, size, font, color: rgb(0,0,0) });
+    y -= 18;
+  }
+
+  page.drawText(
+    "This page is appended for audit purposes and should accompany the agreement.",
+    { x: margin, y: margin, size: 10, font, color: rgb(0.4,0.4,0.4) }
+  );
+}
+
 // ---------- Render PDFs ----------
 async function renderMsaPdf(env, linkid, bbox = false) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -511,19 +571,17 @@ async function renderMsaPdf(env, linkid, bbox = false) {
       for (const key of ["p1_signature", "p4_signature"]) {
         const f = MSA_FIELDS[key];
         const p = pages[f.page || 0];
-        const scale = 1;
-        const { width, height } = png.scale(scale);
-        let w = f.w,
-          h = (height / width) * w;
-        if (h > f.h) {
-          h = f.h;
-          w = (width / height) * h;
-        }
+        const { width, height } = png.scale(1);
+        let w = f.w, h = (height / width) * w;
+        if (h > f.h) { h = f.h; w = (width / height) * h; }
         if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
         p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
       }
     }
   }
+
+  // Append audit page
+  await appendSecurityPage(pdf, sess, linkid);
 
   const bytes = await pdf.save();
   return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
@@ -567,16 +625,15 @@ async function renderDebitPdf(env, linkid, bbox = false) {
       const f = DEBIT_FIELDS.signature;
       const p = pages[f.page || 0];
       const { width, height } = png.scale(1);
-      let w = f.w,
-        h = (height / width) * w;
-      if (h > f.h) {
-        h = f.h;
-        w = (width / height) * h;
-      }
+      let w = f.w, h = (height / width) * w;
+      if (h > f.h) { h = f.h; w = (width / height) * h; }
       if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
       p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
     }
   }
+
+  // Append audit page
+  await appendSecurityPage(pdf, sess, linkid);
 
   const bytes = await pdf.save();
   return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
@@ -633,9 +690,9 @@ function renderOnboardUI(linkid) {
       if (d.ok) {
         if (m) m.textContent = d.mode==='text-fallback' ? 'Code sent as a WhatsApp text. Check your WhatsApp.' : 'Code sent. Check your WhatsApp.';
       } else {
-        if (d.error==='whatsapp-not-configured' || d.error==='whatsapp-send-failed') {
-          if (m) m.textContent = 'WhatsApp sending is unavailable. Use the Staff code option below.';
-          // switch tab to staff code
+        const err = (d.error||'').toLowerCase();
+        if (err.includes('whatsapp') || err.includes('no whatsapp number')) {
+          if (m) m.textContent = 'WhatsApp not available for this customer. Use the Staff code option below.';
           document.getElementById('waBox').style.display='none';
           document.getElementById('staffBox').style.display='block';
           document.getElementById('p-wa').classList.remove('active');
@@ -658,7 +715,7 @@ function renderOnboardUI(linkid) {
     function end(){ draw=false; last=null; }
     canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
     canvas.addEventListener('touchstart',start,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',end);
-    return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); dirty=false; }, dataURL(){ return canvas.toDataURL('image/png'); }, isEmpty(){ return !dirty; } };
+    return { clear(){ ctx.clearRect(0,0,canvas.width,canvas.height); dirty=false; }, dataURL(){ return canvas.toDataURL('image/png'); }, isEmpty(){ return !dirty; } };
   }
 
   // --- Step 0: Welcome ---
@@ -697,7 +754,7 @@ function renderOnboardUI(linkid) {
     stepEl.innerHTML = [
       '<h2>Payment Method</h2>',
       '<div class="field"><div class="pill-wrap"><span class="pill '+(pay==='eft'?'active':'')+'" id="pm-eft">EFT</span><span class="pill '+(pay==='debit'?'active':'')+'" id="pm-debit">Debit order</span></div></div>',
-      '<div id="eftBox" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
+      '<div id="eftBox" class="field" class="field" style="display:'+(pay==='eft'?'block':'none')+';"></div>',
       '<div id="debitBox" class="field" style="display:'+(pay==='debit'?'block':'none')+';"></div>',
       '<div class="row"><a class="btn-outline" id="back1" style="flex:1;text-align:center">Back</a><button class="btn" id="cont" style="flex:1">Continue</button></div>'
     ].join('');
@@ -1014,12 +1071,25 @@ export default {
       return json({ ok:true, key });
     }
 
-    // Save session progress
+    // Save session progress (now capturing audit info)
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
       const body = await request.json().catch(() => ({}));
       const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
-      const next = { ...existing, ...body, last_ip:getIP(), last_time:Date.now() };
+
+      const cf = request.cf || {};
+      const last_loc = {
+        city: cf.city || "", region: cf.region || "", country: cf.country || "",
+        latitude: cf.latitude || "", longitude: cf.longitude || "",
+        timezone: cf.timezone || "", postalCode: cf.postalCode || "",
+        asn: cf.asn || "", asOrganization: cf.asOrganization || "", colo: cf.colo || ""
+      };
+      const last_ip = getIP();
+      const last_ua = request.headers.get("user-agent") || "";
+      const baseForDev = [last_ua, last_ip, cf.asn || "", cf.colo || "", (linkid || "").slice(0,8)];
+      const device_id = existing.device_id || await deviceIdFromParts(baseForDev);
+
+      const next = { ...existing, ...body, last_ip, last_ua, last_loc, device_id, last_time: Date.now() };
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
       return json({ ok:true });
     }
