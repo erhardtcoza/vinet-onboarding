@@ -1,5 +1,3 @@
-Here’s the full index.js with the Splynx create‑document → upload flow for both leads and customers, proper field mapping on PATCH (including billing_email, street_1, city, zip_code), and keeping everything as a lead after push.
-
 // --- Vinet Onboarding Worker ---
 // Admin dashboard, onboarding flow, EFT & Debit Order pages (+ Splynx doc create→upload)
 
