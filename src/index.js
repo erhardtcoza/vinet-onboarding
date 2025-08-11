@@ -924,10 +924,18 @@ export default {
       const code = String(Math.floor(100000 + Math.random() * 900000));
       await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
       await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
-      try { await sendWhatsAppTemplate(msisdn, code, "en"); return json({ ok:true }); }
-      catch { try { await sendWhatsAppText(msisdn, \`Your Vinet verification code is: \${code}\`); return json({ ok:true, note:"sent-as-text" }); }
-        catch { return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); } }
-    }
+try {
+  await sendWhatsAppTemplate(msisdn, code, "en");
+  return json({ ok: true });
+} catch (e) {
+  try {
+    await sendWhatsAppTextIfSessionOpen(msisdn, 'Your Vinet verification code is: ' + code);
+    return json({ ok: true, note: 'sent-as-text' });
+  } catch (e2) {
+    return json({ ok: false, error: 'WhatsApp send failed (template+text)' }, 502);
+  }
+}
+    
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await request.json().catch(() => ({}));
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
