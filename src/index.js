@@ -1,6 +1,7 @@
+Here’s the full index.js with the Splynx create‑document → upload flow for both leads and customers, proper field mapping on PATCH (including billing_email, street_1, city, zip_code), and keeping everything as a lead after push.
+
 // --- Vinet Onboarding Worker ---
-// Admin dashboard, onboarding flow, EFT & Debit Order pages (fixed build)
-// Adds: Splynx "create document -> upload file" for leads/customers on /api/admin/approve
+// Admin dashboard, onboarding flow, EFT & Debit Order pages (+ Splynx doc create→upload)
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -34,71 +35,51 @@ async function splynxGET(env, endpoint) {
 }
 async function splynxPATCH(env, endpoint, data) {
   const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
-    method: "PATCH",
-    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, "content-type": "application/json" },
-    body: JSON.stringify(data || {}),
+    method: 'PATCH',
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, 'content-type': 'application/json' },
+    body: JSON.stringify(data || {})
   });
   if (!r.ok) throw new Error(`Splynx PATCH ${endpoint} ${r.status}`);
   try { return await r.json(); } catch { return {}; }
 }
-
-// Create a doc record, then upload the bytes to that doc.
-// For customers
-async function splynxCreateCustomerDoc(env, customerId, filename) {
-  // prefer explicit "create" endpoint if present
-  // fallback to the collection with minimal payload (filename only)
-  const payload = { filename: filename || "file" };
-  const ep = `/admin/customers/customer/${customerId}/documents`;
-  const r = await fetch(`${env.SPLYNX_API}${ep}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, "content-type": "application/json" },
-    body: JSON.stringify(payload),
+async function splynxPOST(env, endpoint, data) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, 'content-type': 'application/json' },
+    body: JSON.stringify(data || {})
   });
-  if (!r.ok) throw new Error(`Create customer doc failed ${r.status}`);
-  const doc = await r.json().catch(()=>null);
-  const id = (doc && (doc.id || doc.document_id || doc.data?.id)) ?? null;
-  if (!id) throw new Error("Create customer doc: missing id");
-  return id;
-}
-async function splynxUploadCustomerDoc(env, customerId, documentId, bytes, filename, contentType) {
-  const fd = new FormData();
-  fd.set("file", new Blob([bytes], { type: contentType || "application/octet-stream" }), filename || "upload.bin");
-  const ep = `/admin/customers/customer/${customerId}/documents/${documentId}/upload`;
-  const r = await fetch(`${env.SPLYNX_API}${ep}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
-    body: fd,
-  });
-  if (!r.ok) throw new Error(`Upload customer doc failed ${r.status}`);
+  if (!r.ok) throw new Error(`Splynx POST ${endpoint} ${r.status}`);
   try { return await r.json(); } catch { return {}; }
 }
 
-// For leads (CRM)
-async function splynxCreateLeadDoc(env, leadId, filename) {
-  // APIary shows leads-documents as the collection
-  const payload = { lead_id: Number(leadId), filename: filename || "file" };
-  const ep = `/admin/crm/leads-documents`;
-  const r = await fetch(`${env.SPLYNX_API}${ep}`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) throw new Error(`Create lead doc failed ${r.status}`);
-  const doc = await r.json().catch(()=>null);
-  const id = (doc && (doc.id || doc.document_id || doc.data?.id)) ?? null;
-  if (!id) throw new Error("Create lead doc: missing id");
-  return id;
+// Create doc record, then upload binary to the special --upload endpoint
+async function splynxCreateDoc(env, kind, ownerId, title) {
+  if (kind === 'lead') {
+    return await splynxPOST(env, `/admin/crm/leads-documents`, {
+      lead_id: Number(ownerId),
+      title: String(title || 'Document'),
+      type: 'contract'
+    });
+  } else {
+    return await splynxPOST(env, `/admin/customers/customer-documents`, {
+      customer_id: Number(ownerId),
+      title: String(title || 'Document'),
+      type: 'contract'
+    });
+  }
 }
-async function splynxUploadLeadDoc(env, documentId, bytes, filename, contentType) {
+async function splynxUploadToDoc(env, kind, docId, filename, bytes, contentType) {
   const fd = new FormData();
-  fd.set("file", new Blob([bytes], { type: contentType || "application/octet-stream" }), filename || "upload.bin");
-  const ep = `/admin/crm/leads-documents/${documentId}/upload`;
+  fd.set('file', new Blob([bytes], { type: contentType || 'application/octet-stream' }), filename || 'file.bin');
+  const ep = (kind === 'lead')
+    ? `/admin/crm/leads-documents/${docId}--upload`
+    : `/admin/customers/customer-documents/${docId}--upload`;
   const r = await fetch(`${env.SPLYNX_API}${ep}`, {
-    method: "POST",
+    method: 'POST',
     headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
-    body: fd,
+    body: fd
   });
-  if (!r.ok) throw new Error(`Upload lead doc failed ${r.status}`);
+  if (!r.ok) throw new Error(`Splynx upload ${ep} ${r.status}`);
   try { return await r.json(); } catch { return {}; }
 }
 
@@ -191,6 +172,7 @@ async function fetchProfileForDisplay(env, id) {
   const src = cust || lead || {};
   const phone = pickPhone({ ...src, contacts });
 
+  // Street/city/zip – search widely
   const street =
     src.street ||
     src.address ||
@@ -213,6 +195,7 @@ async function fetchProfileForDisplay(env, id) {
     pickFrom(custInfo, ["zip", "zip_code", "postal_code"]) ||
     "";
 
+  // Passport (explicit requirement for pulls)
   const passport =
     (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
     src.passport ||
@@ -435,7 +418,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
 </body></html>`;
 }
 
-// ---------- WhatsApp senders ----------
+// ---------- WhatsApp senders (with fallback) ----------
 async function sendWhatsAppTemplate(to, code, env) {
   const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
   const payload = {
@@ -447,7 +430,12 @@ async function sendWhatsAppTemplate(to, code, env) {
       language: { code: env.WHATSAPP_TEMPLATE_LANG || "en" },
       components: [
         { type: "body", parameters: [{ type: "text", text: code }] },
-        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: code.slice(-6) }] },
+        {
+          type: "button",
+          sub_type: "url",
+          index: "0",
+          parameters: [{ type: "text", text: code.slice(-6) }],
+        },
       ],
     },
   };
@@ -511,18 +499,21 @@ function drawBBox(page, x, y, w, h) {
   page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(1, 0, 0), borderWidth: 0.5, color: rgb(1, 0, 0), opacity: 0.05 });
 }
 
-// ---------- Field maps ----------
+// ---------- Field maps (XY) ----------
 const MSA_FIELDS = {
+  // page index 0=Page1, 3=Page4
   p1_full_name: { page: 0, x: 125, y: 180, size: 12, w: 300 },
   p1_passport:  { page: 0, x: 125, y: 215, size: 12, w: 220 },
   p1_code:      { page: 0, x: 145, y: 245, size: 12, w: 120 },
   p1_signature: { page: 0, x: 400, y: 700, w: 160, h: 45 },
+
   p4_full_name: { page: 3, x: 400, y: 640, size: 12, w: 200 },
   p4_signature: { page: 3, x: 400, y: 670, w: 160, h: 45 },
   p4_date:      { page: 3, x: 360, y: 700, size: 12, w: 120 },
 };
 
 const DEBIT_FIELDS = {
+  // page index 0=Page1
   account_holder: { page: 0, x: 60,  y: 145, size: 12, w: 260 },
   id_number:      { page: 0, x: 65,  y: 200, size: 12, w: 220 },
   bank_name:      { page: 0, x: 100, y: 245, size: 12, w: 260 },
@@ -543,6 +534,8 @@ async function renderMsaPdf(env, linkid, bbox = false) {
   const code = String(linkid).split("_")[0];
 
   const tplUrl = env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF;
+  theTpl: {
+  }
   const tplBytes = await fetchBytesFromUrl(tplUrl);
   const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -563,6 +556,7 @@ async function renderMsaPdf(env, linkid, bbox = false) {
   T("p4_full_name", e.full_name || "");
   T("p4_date", dateStr);
 
+  // Signatures on p1 and p4
   if (sess.agreement_sig_key) {
     const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
     if (sigBytes) {
@@ -669,10 +663,11 @@ function renderOnboardUI(linkid) {
   let step = 0;
   let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
 
-  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); }
+  function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); } // 0..6
   function setProg(){ progEl.style.width = pct() + '%'; }
   function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
 
+  // --- OTP send with fallbacks ---
   async function sendOtp(){
     const m = document.getElementById('otpmsg');
     if (m) m.textContent = 'Sending code to WhatsApp...';
@@ -684,6 +679,7 @@ function renderOnboardUI(linkid) {
       } else {
         if (d.error==='whatsapp-not-configured' || d.error==='whatsapp-send-failed') {
           if (m) m.textContent = 'WhatsApp sending is unavailable. Use the Staff code option below.';
+          // switch tab to staff code
           document.getElementById('waBox').style.display='none';
           document.getElementById('staffBox').style.display='block';
           document.getElementById('p-wa').classList.remove('active');
@@ -695,6 +691,7 @@ function renderOnboardUI(linkid) {
     }catch{ if(m) m.textContent='Network error.'; }
   }
 
+  // --- Signature pad helper ---
   function sigPad(canvas){
     const ctx=canvas.getContext('2d'); let draw=false,last=null,dirty=false;
     function resize(){ const scale=window.devicePixelRatio||1; const rect=canvas.getBoundingClientRect(); canvas.width=Math.floor(rect.width*scale); canvas.height=Math.floor(rect.height*scale); ctx.scale(scale,scale); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#222'; }
@@ -708,11 +705,13 @@ function renderOnboardUI(linkid) {
     return { clear(){ const r=canvas.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height); dirty=false; }, dataURL(){ return canvas.toDataURL('image/png'); }, isEmpty(){ return !dirty; } };
   }
 
+  // --- Step 0: Welcome ---
   function step0(){
     stepEl.innerHTML = '<h2>Welcome</h2><p>We\\u2019ll quickly verify you and confirm a few details.</p><button class="btn" id="start">Let\\u2019s begin</button>';
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
+  // --- Step 1: Verify ---
   function step1(){
     stepEl.innerHTML = [
       '<h2>Verify your identity</h2>',
@@ -736,6 +735,7 @@ function renderOnboardUI(linkid) {
     pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
   }
 
+  // --- Step 2: Payment method ---
   function step2(){
     const pay = state.pay_method || 'eft';
     stepEl.innerHTML = [
@@ -761,7 +761,7 @@ function renderOnboardUI(linkid) {
       ].join('');
     }
 
-    let dPad = null;
+    let dPad = null; // debit signature pad
     function renderDebitForm(){
       const d = state.debit || {};
       const box = document.getElementById('debitBox');
@@ -824,6 +824,7 @@ function renderOnboardUI(linkid) {
     };
   }
 
+  // --- Step 3: Prefill & confirm ---
   function step3(){
     stepEl.innerHTML='<h2>Please verify your details and change if you see any errors</h2><div id="box" class="note">Loading…</div>';
     (async()=>{
@@ -845,6 +846,7 @@ function renderOnboardUI(linkid) {
     })();
   }
 
+  // --- Step 4: Uploads ---
   function step4(){
     stepEl.innerHTML = [
       '<h2>Upload documents</h2>',
@@ -882,6 +884,7 @@ function renderOnboardUI(linkid) {
     };
   }
 
+  // --- Step 5: MSA (with checkbox) ---
   function step5(){
     stepEl.innerHTML=[
       '<h2>Master Service Agreement</h2>',
@@ -899,6 +902,7 @@ function renderOnboardUI(linkid) {
     };
   }
 
+  // --- Step 6: Done ---
   function step6(){
     const showDebit = (state && state.pay_method === 'debit');
     stepEl.innerHTML = [
@@ -933,7 +937,7 @@ export default {
       request.headers.get("x-real-ip") ||
       "";
 
-    // Root
+    // Root: simple creator
     if (path === "/" && method === "GET") {
       return new Response(renderRootPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -950,7 +954,7 @@ export default {
       return new Response(await renderEFTPage(id), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // Terms blobs
+    // Terms blobs (service + debit)
     if (path === "/api/terms" && method === "GET") {
       const kind = (url.searchParams.get("kind") || "").toLowerCase();
       const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
@@ -1078,7 +1082,7 @@ export default {
       return json({ ok:true, sigKey });
     }
 
-    // Debit save + signature
+    // Debit: save details
     if (path === "/api/debit/save" && method === "POST") {
       const b = await request.json().catch(async () => {
         const form = await request.formData().catch(()=>null);
@@ -1092,6 +1096,7 @@ export default {
       const key = `debit/${id}/${ts}`;
       const record = { ...b, splynx_id:id, created:ts, ip:getIP() };
       await env.ONBOARD_KV.put(key, JSON.stringify(record), { expirationTtl: 60*60*24*90 });
+      // also attach in session for PDF
       const linkid = (b.linkid || "");
       if (linkid) {
         const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -1099,6 +1104,8 @@ export default {
       }
       return json({ ok:true, ref:key });
     }
+
+    // Debit: signature
     if (path === "/api/debit/sign" && method === "POST") {
       const { linkid, dataUrl } = await request.json().catch(()=>({}));
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
@@ -1177,86 +1184,6 @@ export default {
 </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
-    // Approve & push (create doc -> upload) + patch fields
-    if (path === "/api/admin/approve" && method === "POST") {
-      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-      const { linkid } = await request.json().catch(()=>({}));
-      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-      if (!sess) return json({ ok:false, error:"Not found" }, 404);
-      const idOnly = (linkid || "").split("_")[0];
-
-      // Decide lead vs customer by probing
-      let entityType = "lead";
-      try { await splynxGET(env, `/admin/customers/customer/${idOnly}`); entityType = "customer"; }
-      catch { try { await splynxGET(env, `/admin/crm/leads/${idOnly}`); entityType = "lead"; } catch { return json({ ok:false, error:"id_unknown" }, 404); } }
-
-      // Patch basic edits (name/email/phone/address/id number)
-      const edits = sess.edits || {};
-      const patchPayload = {
-        full_name: edits.full_name,
-        email: edits.email,
-        phone: edits.phone,
-        street: edits.street,
-        city: edits.city,
-        zip_code: edits.zip,
-        passport: edits.passport,
-        id_number: edits.passport
-      };
-      try {
-        if (entityType === "lead")  await splynxPATCH(env, `/admin/crm/leads/${idOnly}`, patchPayload);
-        else                        await splynxPATCH(env, `/admin/customers/customer/${idOnly}`, patchPayload);
-      } catch (e) {
-        // continue even if patch fails (we still try to upload docs)
-      }
-
-      // Helper: upload one file (bytes) as a Splynx document
-      async function createAndUpload(filename, bytes, contentType) {
-        if (entityType === "customer") {
-          const docId = await splynxCreateCustomerDoc(env, idOnly, filename);
-          await splynxUploadCustomerDoc(env, idOnly, docId, bytes, filename, contentType);
-        } else {
-          const docId = await splynxCreateLeadDoc(env, idOnly, filename);
-          await splynxUploadLeadDoc(env, docId, bytes, filename, contentType);
-        }
-      }
-
-      // 1) Upload MSA PDF (if signed)
-      try {
-        if (sess.agreement_signed) {
-          const msaResp = await renderMsaPdf(env, linkid, false);
-          const msaBytes = new Uint8Array(await msaResp.arrayBuffer());
-          await createAndUpload("Master_Service_Agreement.pdf", msaBytes, "application/pdf");
-        }
-      } catch {}
-
-      // 2) Upload Debit Order PDF (if signed)
-      try {
-        if (sess.debit_sig_key) {
-          const debResp = await renderDebitPdf(env, linkid, false);
-          const debBytes = new Uint8Array(await debResp.arrayBuffer());
-          await createAndUpload("Debit_Order_Agreement.pdf", debBytes, "application/pdf");
-        }
-      } catch {}
-
-      // 3) Upload any extra user uploads from R2
-      try {
-        const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-        for (const u of uploads) {
-          try {
-            const obj = await env.R2_UPLOADS.get(u.key);
-            if (!obj) continue;
-            const arr = new Uint8Array(await obj.arrayBuffer());
-            const name = u.name || (u.key.split("/").pop() || "upload.bin");
-            await createAndUpload(name, arr, obj.httpMetadata?.contentType || "application/octet-stream");
-          } catch {}
-        }
-      } catch {}
-
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", approved_at:Date.now() }), { expirationTtl: 60*60*24*30 });
-      return json({ ok: true, entityType });
-    }
-
     if (path === "/api/admin/reject" && method === "POST") {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid, reason } = await request.json().catch(() => ({}));
@@ -1307,6 +1234,88 @@ export default {
       if (!id) return json({ error: "Missing id" }, 400);
       try { const prof = await fetchProfileForDisplay(env, id); return json(prof); }
       catch { return json({ error: "Lookup failed" }, 502); }
+    }
+
+    // Approve & push (create docs then upload; patch fields)
+    if (path === "/api/admin/approve" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid } = await request.json().catch(()=>({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok:false, error:"Not found" }, 404);
+
+      const idOnly = (linkid || "").split("_")[0];
+
+      // Detect lead vs customer
+      let kind = "lead";
+      try { await splynxGET(env, `/admin/crm/leads/${idOnly}`); kind = "lead"; }
+      catch { try { await splynxGET(env, `/admin/customers/customer/${idOnly}`); kind = "customer"; } catch { return json({ ok:false, error:"id_unknown" }, 404); } }
+
+      // Map edits to Splynx field names
+      const e = sess.edits || {};
+      const patchData = {
+        name: e.full_name || undefined,
+        email: e.email || undefined,
+        billing_email: e.email || undefined,
+        phone: e.phone || undefined,
+        street_1: e.street || undefined,
+        city: e.city || undefined,
+        zip_code: e.zip || undefined
+      };
+
+      // Patch core data
+      try {
+        if (kind === "lead") {
+          await splynxPATCH(env, `/admin/crm/leads/${idOnly}`, patchData);
+        } else {
+          await splynxPATCH(env, `/admin/customers/customer/${idOnly}`, patchData);
+        }
+      } catch (e) {
+        return json({ ok:false, error:`patch_failed:${e.message}` }, 502);
+      }
+
+      // Upload agreements (create doc → upload file)
+      async function createAndUploadDoc(title, filename, bytes, contentType) {
+        const doc = await splynxCreateDoc(env, kind, idOnly, title);
+        const docId = doc?.id || doc?.document?.id || doc?.data?.id || doc?.result?.id;
+        if (!docId) throw new Error("doc_id_missing");
+        await splynxUploadToDoc(env, kind, docId, filename, bytes, contentType);
+      }
+
+      try {
+        const msaResp = await renderMsaPdf(env, linkid, false);
+        const msaBytes = new Uint8Array(await msaResp.arrayBuffer());
+        await createAndUploadDoc(`MSA - ${idOnly}`, `MSA_${idOnly}.pdf`, msaBytes, "application/pdf");
+      } catch (e) {
+        // ignore single doc failure
+      }
+
+      try {
+        if (sess.debit_sig_key) {
+          const debResp = await renderDebitPdf(env, linkid, false);
+          const debBytes = new Uint8Array(await debResp.arrayBuffer());
+          await createAndUploadDoc(`Debit Order - ${idOnly}`, `Debit_${idOnly}.pdf`, debBytes, "application/pdf");
+        }
+      } catch (e) {
+        // ignore single doc failure
+      }
+
+      // Upload any extra files from R2 uploads
+      try {
+        const files = await env.R2_UPLOADS.list({ prefix: `uploads/${linkid}/` });
+        for (const o of (files.objects || [])) {
+          const obj = await env.R2_UPLOADS.get(o.key);
+          if (!obj) continue;
+          const arr = new Uint8Array(await obj.arrayBuffer());
+          const fname = o.key.split("/").pop() || "upload.bin";
+          await createAndUploadDoc(fname, fname, arr, obj.httpMetadata?.contentType || "application/octet-stream");
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", pushed:true, pushed_at: Date.now() }), { expirationTtl: 60*60*24*30 });
+      return json({ ok: true, type: kind, id: idOnly });
     }
 
     return new Response("Not found", { status: 404 });
