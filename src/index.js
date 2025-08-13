@@ -261,6 +261,27 @@ function adminJs() {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/agreements/pdf/")) {
+      return await __pdf2_handlePdf(request, env, url);
+
+    // Admin delete endpoint + purge PDF caches
+    if (url.pathname === "/api/admin/delete-link" && request.method === "POST") {
+      if (typeof ipAllowed === "function" && !ipAllowed(request)) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      let body;
+      try { body = await request.json(); } catch { body = {}; }
+      const linkid = String(body.linkid || "").trim();
+      if (!linkid) return new Response("Missing linkid", { status: 400 });
+      await env.ONBOARD_KV.delete(`onboard/${linkid}`);
+      await env.ONBOARD_KV.delete(`own2_pdf_msa_${linkid}`);
+      await env.ONBOARD_KV.delete(`own2_pdf_debit_${linkid}`);
+      await env.ONBOARD_KV.delete(`msa_pdf_${linkid}`);
+      await env.ONBOARD_KV.delete(`debit_pdf_${linkid}`);
+      return new Response("", { status: 204 });
+    }
+    }
     const path = url.pathname;
     const method = request.method;
 
