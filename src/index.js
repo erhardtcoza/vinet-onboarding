@@ -1269,14 +1269,4 @@ async function __pdf2_handlePdf(request, env, url) {
     return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
   }
   return resp;
-}
-
-// ---- Hook this early in your fetch() router ----
-// Example:
-//   const url = new URL(request.url);
-//   if (url.pathname.startsWith("/agreements/pdf/")) {
-//     return await __pdf2_handlePdf(request, env, url);
-//   }
-// =================================================================
-
-// --- END Own-PDF override ---
+};
