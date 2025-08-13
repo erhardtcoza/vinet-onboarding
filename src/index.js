@@ -10,6 +10,27 @@
 //  • /agreements/pdf/{msa|debit}/{linkid}[?bbox=1] to render stamped PDFs
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+// ===== PDF KV Cache Helpers (7 days) =====
+async function __getCachedPdf(env, key) {
+  try {
+    const ab = await env.ONBOARD_KV.get(key, { type: "arrayBuffer" });
+    if (!ab) return null;
+    return new Uint8Array(ab);
+  } catch { return null; }
+}
+async function __setCachedPdf(env, key, bytes) {
+  try {
+    await env.ONBOARD_KV.put(key, bytes, { expirationTtl: 7 * 24 * 60 * 60 });
+  } catch {}
+}
+async function __purgePdfCacheForLink(env, linkid) {
+  try {
+    await env.ONBOARD_KV.delete(`msa_pdf_${linkid}`);
+    await env.ONBOARD_KV.delete(`debit_pdf_${linkid}`);
+  } catch {}
+}
+// ===== end cache helpers =====
+
 
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
@@ -327,6 +348,7 @@ export default {
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (sess) {
         await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, debit_signed:true, debit_sig_key:sigKey }), { expirationTtl: 86400 });
+      await __purgePdfCacheForLink(env, linkid);
       }
       return json({ ok:true, sigKey });
     }
@@ -339,6 +361,7 @@ export default {
       const token = Math.random().toString(36).slice(2,10);
       const linkid = `${id}_${token}`;
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ id, created: Date.now(), progress: 0 }), { expirationTtl: 86400 });
+      await __purgePdfCacheForLink(env, linkid);
       return json({ url: `${url.origin}/onboard/${linkid}` });
     }
 
@@ -411,6 +434,7 @@ export default {
       if (ok) {
         const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
         if (sess) await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
+      await __purgePdfCacheForLink(env, linkid);
         if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`);
       }
       return json({ ok });
@@ -444,6 +468,7 @@ export default {
       const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
       const next = { ...existing, ...body, last_ip:getIP(), last_ua:getUA(), last_time:Date.now() };
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
+      await __purgePdfCacheForLink(env, linkid);
       return json({ ok:true });
     }
 
@@ -458,6 +483,7 @@ export default {
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return json({ ok:false, error:"Unknown session" }, 404);
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, agreement_signed:true, agreement_sig_key:sigKey, status:"pending" }), { expirationTtl: 86400 });
+      await __purgePdfCacheForLink(env, linkid);
       return json({ ok:true, sigKey });
     }
 
@@ -517,6 +543,7 @@ export default {
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess) return json({ ok:false, error:"Not found" }, 404);
       await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"rejected", reject_reason:String(reason||"").slice(0,300), rejected_at:Date.now() }), { expirationTtl:86400 });
+      await __purgePdfCacheForLink(env, linkid);
       return json({ ok:true });
     }
 
@@ -664,6 +691,10 @@ async function renderBrandedHeader(pdf, title, logoUrl) {
 
 // -------------------- MSA PDF --------------------
 async function renderMSA(env, linkid) {
+const __cacheKey = `msa_pdf_${linkid}`;
+const __cached = await __getCachedPdf(env, __cacheKey);
+if (__cached) return new Response(__cached, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+
   const cacheKey = `pdf_msa_${linkid}`;
   const cached = await getCachedPDF(env, cacheKey);
   if (cached) {
@@ -711,6 +742,10 @@ async function renderMSA(env, linkid) {
 
 // -------------------- Debit PDF --------------------
 async function renderDEBIT(env, linkid) {
+const __cacheKey = `debit_pdf_${linkid}`;
+const __cached = await __getCachedPdf(env, __cacheKey);
+if (__cached) return new Response(__cached, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+
   const cacheKey = `pdf_debit_${linkid}`;
   const cached = await getCachedPDF(env, cacheKey);
   if (cached) {
@@ -1034,4 +1069,4 @@ function renderOnboardUI(linkid) {
 })();
 </script>
 </body></html>`;
-};
+}
