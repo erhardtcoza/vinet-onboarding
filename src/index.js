@@ -575,162 +575,171 @@ function renderOnboardUI(linkid) {
 // ---------- PDF helpers & renderers ----------
 const mm = (v) => v * 2.83464567; // mm -> PDF points
 
-async function fetchBytesFromUrl(urlStr) {
-  if (!urlStr) throw new Error("Template URL missing");
-  const r = await fetch(urlStr, { cf: { cacheEverything: true, cacheTtl: 600 } });
-  if (!r.ok) throw new Error(`fetch ${urlStr} ${r.status}`);
-  const ab = await r.arrayBuffer();
-  return new Uint8Array(ab);
-}
-async function fetchR2Bytes(env, key) {
-  const obj = await env.R2_UPLOADS.get(key);
-  if (!obj) return null;
-  const ab = await obj.arrayBuffer();
-  return new Uint8Array(ab);
-}
-function drawText(page, text, x, y, opts) {
-  const { font, size = 10, color = rgb(0,0,0), maxWidth = null, lineHeight = 1.2 } = opts || {};
-  if (!text) return;
-  const words = String(text).split(/\s+/);
-  let line = "";
-  let cursorY = y;
-  const wrapAndDraw = (t) => page.drawText(t, { x, y: cursorY, size, font, color });
-  if (!maxWidth) { wrapAndDraw(String(text)); return; }
-  for (const w of words) {
-    const tryLine = line ? line + " " + w : w;
-    const width = font.widthOfTextAtSize(tryLine, size);
-    if (width <= maxWidth) { line = tryLine; continue; }
-    if (line) wrapAndDraw(line);
-    line = w;
-    cursorY -= size * lineHeight;
+function headerBlock(page, font, logo, title) {
+  // page width ~ 612, height ~ 792 (slightly narrower than A4 look)
+  const margin = 36;
+  const yTop = page.getHeight() - margin;
+
+  // Title (left)
+  page.drawText(title, {
+    x: margin,
+    y: yTop - 10,
+    size: 18,
+    font,
+    color: rgb(0.88, 0, 0.10) // Vinet red
+  });
+
+  // Logo (right)
+  if (logo) {
+    const w = 90;
+    const { width, height } = logo.scale(1);
+    const h = (height / width) * w;
+    page.drawImage(logo, { x: page.getWidth() - margin - w, y: yTop - h, width: w, height: h });
   }
-  if (line) wrapAndDraw(line);
-}
-function drawBBox(page, x, y, w, h) {
-  page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(1,0,0), borderWidth: 0.5, color: rgb(1,0,0), opacity: 0.05 });
-}
 
-// (positions are approximate; can tweak with ?bbox=1 later)
-const MSA_FIELDS = {
-  full_name: { page: 0, x: mm(30), y: mm(240), size: 11, w: mm(120) },
-  email:     { page: 0, x: mm(30), y: mm(232), size: 11, w: mm(120) },
-  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
-  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
-  address:   { page: 0, x: mm(30), y: mm(208), size: 11, w: mm(150) },
-  date:      { page: 0, x: mm(150),y: mm(200), size: 11, w: mm(40) },
-  signature: { page: 0, x: mm(30), y: mm(188), w: mm(60), h: mm(20) },
-};
-const DEBIT_FIELDS = {
-  account_holder: { page: 0, x: mm(30), y: mm(235), size: 11, w: mm(120) },
-  id_number:      { page: 0, x: mm(30), y: mm(227), size: 11, w: mm(120) },
-  bank_name:      { page: 0, x: mm(30), y: mm(219), size: 11, w: mm(120) },
-  account_number: { page: 0, x: mm(30), y: mm(211), size: 11, w: mm(120) },
-  account_type:   { page: 0, x: mm(30), y: mm(203), size: 11, w: mm(80) },
-  debit_day:      { page: 0, x: mm(120),y: mm(203), size: 11, w: mm(30) },
-  date:           { page: 0, x: mm(150),y: mm(195), size: 11, w: mm(40) },
-  signature:      { page: 0, x: mm(30), y: mm(183), w: mm(60), h: mm(20) },
-};
+  // Site + phone under logo (right column text block)
+  const rightX = page.getWidth() - margin - 160;
+  page.drawText(SITE,  { x: rightX, y: yTop - 48, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawText(PHONE, { x: rightX, y: yTop - 62, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
 
-async function makeMsaPdfBytes(env, linkid, bbox=false) {
+  // Small red rule under header
+  page.drawLine({
+    start: { x: margin, y: yTop - 78 },
+    end:   { x: page.getWidth() - margin, y: yTop - 78 },
+    thickness: 1.2,
+    color: rgb(0.88, 0, 0.10)
+  });
+
+  return yTop - 96; // return content start y
+}
+async function renderMsaPdf(env, linkid) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed) throw new Error("Not signed");
+  if (!sess || !sess.agreement_signed) return new Response("Not signed", { status: 404 });
+
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const logo = await embedLogo(pdf);
+
+  const page = pdf.addPage([612, 792]);
+  let y = headerBlock(page, font, logo, "Master Service Agreement");
+
+  const idOnly = (linkid || "").split("_")[0];
   const e = sess.edits || {};
-  const address = [e.street, e.city, e.zip].filter(Boolean).join(", ");
-  const dateStr = new Date().toLocaleDateString();
 
-  const tplUrl = env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF;
-  const tplBytes = await fetchBytesFromUrl(tplUrl);
-  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  // Section: Customer information
+  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
 
-  const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = MSA_FIELDS[key]; if (!f) return;
-    const p = pages[f.page || 0];
-    if (key === "signature") return;
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+  const info = {
+    "Client code": idOnly,
+    "Full name": e.full_name || "",
+    "Email": e.email || "",
+    "Phone": e.phone || "",
+    "ID / Passport": e.passport || "",
+    "Street": e.street || "",
+    "City": e.city || "",
+    "ZIP": e.zip || "",
   };
 
-  draw("full_name", e.full_name || "");
-  draw("email", e.email || "");
-  draw("phone", e.phone || "");
-  draw("passport", e.passport || "");
-  draw("address", address);
-  draw("date", dateStr);
-
-  if (sess.agreement_sig_key) {
-    const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-    if (sigBytes) {
-      const png = await pdf.embedPng(sigBytes);
-      const f = MSA_FIELDS.signature;
-      const p = pages[f.page || 0];
-      const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
-      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
-    }
+  // Labeled rows (wrapping for long values)
+  for (const [k, v] of Object.entries(info)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 140, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 140 });
+    y -= 16;
   }
+  y -= 12;
 
-  return await pdf.save();
+  // Terms
+  const terms = await fetchText(env.TERMS_SERVICE_URL || TERMS_MSA_URL);
+  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 16;
+  drawText(page, terms || "(No terms available.)", 36, y, {
+    font, size: 10, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.28
+  });
+
+  // Footer signature block: left name, centre signature, right date
+  footerSignature(page, font, e.full_name || "");
+
+  // Security/Audit page
+  await appendSecurityPage(pdf, sess, linkid);
+
+  const bytes = await pdf.save();
+  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
 }
-async function makeDebitPdfBytes(env, linkid, bbox=false) {
+async function renderDebitPdf(env, linkid) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) throw new Error("Not found");
-  const d = sess.debit || {};
-  const dateStr = new Date().toLocaleDateString();
+  if (!sess) return new Response("Not found", { status: 404 });
 
-  const tplUrl = env.DEBIT_PDF_KEY || DEFAULT_DEBIT_PDF;
-  const tplBytes = await fetchBytesFromUrl(tplUrl);
-  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
+  const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const logo = await embedLogo(pdf);
 
-  const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = DEBIT_FIELDS[key]; if (!f) return;
-    const p = pages[f.page || 0];
-    if (key === "signature") return;
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
+  const page = pdf.addPage([612, 792]);
+  let y = headerBlock(page, font, logo, "Debit Order Instruction");
+
+  const idOnly = (linkid || "").split("_")[0];
+  const e = sess.edits || {};
+  const d = sess.debit || {};
+
+  // Section: Customer information
+  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
+
+  const customerInfo = {
+    "Client code": idOnly,
+    "Full name": e.full_name || "",
+    "Email": e.email || "",
+    "Phone": e.phone || "",
+    "Street": e.street || "",
+    "City": e.city || "",
+    "ZIP": e.zip || "",
   };
-
-  draw("account_holder", d.account_holder || "");
-  draw("id_number", d.id_number || "");
-  draw("bank_name", d.bank_name || "");
-  draw("account_number", d.account_number || "");
-  draw("account_type", d.account_type || "");
-  draw("debit_day", d.debit_day || "");
-  draw("date", dateStr);
-
-  if (sess.debit_sig_key) {
-    const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
-    if (sigBytes) {
-      const png = await pdf.embedPng(sigBytes);
-      const f = DEBIT_FIELDS.signature;
-      const p = pages[f.page || 0];
-      const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
-      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
-    }
+  for (const [k, v] of Object.entries(customerInfo)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
+    y -= 16;
   }
 
-  return await pdf.save();
+  y -= 12;
+
+  // Section: Debit order details (from the form)
+  page.drawText("Debit order details", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
+
+  const debitInfo = {
+    "Account holder": d.account_holder || "",
+    "Holder ID / Passport": d.id_number || "",
+    "Bank": d.bank_name || "",
+    "Account number": d.account_number || "",
+    "Account type": d.account_type || "",
+    "Debit day": d.debit_day || "",
+  };
+  for (const [k, v] of Object.entries(debitInfo)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
+    y -= 16;
+  }
+
+  y -= 12;
+
+  // Terms
+  const terms = await fetchText(env.TERMS_DEBIT_URL || TERMS_DEBIT_URL);
+  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 16;
+  drawText(page, terms || "(No terms available.)", 36, y, {
+    font, size: 9.5, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.26
+  });
+
+  // Footer signature block
+  footerSignature(page, font, e.full_name || "");
+
+  // Security/Audit page
+  await appendSecurityPage(pdf, sess, linkid);
+
+  const bytes = await pdf.save();
+  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
 }
-async function renderMsaPdf(env, linkid, bbox=false) {
-  try {
-    const bytes = await makeMsaPdfBytes(env, linkid, bbox);
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-  } catch { return new Response("Not signed", { status: 404 }); }
-}
-async function renderDebitPdf(env, linkid, bbox=false) {
-  try {
-    const bytes = await makeDebitPdfBytes(env, linkid, bbox);
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-  } catch { return new Response("Not found", { status: 404 }); }
-}
+
 
 // ---------- Worker entry ----------
 export default {
