@@ -559,8 +559,6 @@ export default {
       }
     }
 
-    // --- Imports ---
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // --------------- Helper: Get Current Date ----------------
 function nowLocalDate() {
