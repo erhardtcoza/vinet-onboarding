@@ -11,6 +11,34 @@
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
+// ---------- Own-PDF helpers (wrapping, dates, cached text) ----------
+function nowLocalDate() {
+  try { return new Date().toLocaleDateString(); } catch { return ""; }
+}
+function drawWrapped(page, text, x, y, maxWidth, font, size, color, lineHeight){
+  const words = String(text||"").split(/\s+/);
+  const widthOf = s => font.widthOfTextAtSize(s, size);
+  let line = "", cursorY = y;
+  for (const w of words){
+    const test = line ? line + " " + w : w;
+    if (widthOf(test) > maxWidth){
+      if (line) page.drawText(line, { x, y: cursorY, size, font, color });
+      cursorY -= size * (lineHeight || 1.3);
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) page.drawText(line, { x, y: cursorY, size, font, color });
+  return cursorY - size * (lineHeight || 1.3);
+}
+async function fetchTextCached(url){
+  try {
+    const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 1800 } });
+    return r.ok ? await r.text() : "";
+  } catch { return ""; }
+}
+
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
@@ -261,27 +289,6 @@ function adminJs() {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    if (url.pathname.startsWith("/agreements/pdf/")) {
-      return await __pdf2_handlePdf(request, env, url);
-
-    // Admin delete endpoint + purge PDF caches
-    if (url.pathname === "/api/admin/delete-link" && request.method === "POST") {
-      if (typeof ipAllowed === "function" && !ipAllowed(request)) {
-        return new Response("Forbidden", { status: 403 });
-      }
-      let body;
-      try { body = await request.json(); } catch { body = {}; }
-      const linkid = String(body.linkid || "").trim();
-      if (!linkid) return new Response("Missing linkid", { status: 400 });
-      await env.ONBOARD_KV.delete(`onboard/${linkid}`);
-      await env.ONBOARD_KV.delete(`own2_pdf_msa_${linkid}`);
-      await env.ONBOARD_KV.delete(`own2_pdf_debit_${linkid}`);
-      await env.ONBOARD_KV.delete(`msa_pdf_${linkid}`);
-      await env.ONBOARD_KV.delete(`debit_pdf_${linkid}`);
-      return new Response("", { status: 204 });
-    }
-    }
     const path = url.pathname;
     const method = request.method;
 
@@ -1057,112 +1064,19 @@ function renderOnboardUI(linkid) {
 </body></html>`;
 }
 
-// --- BEGIN Own-PDF override (appended) ---
-// === Vinet PDF Override Patch (Own layout, no templates) ===================
-// Add this block near the TOP of your index.js (after imports).
-// It intercepts /agreements/pdf/* before any older handlers and forces the
-// custom renderers below. It uses fresh cache keys so old template PDFs
-// won't be returned, and it purges legacy keys the first time it runs.
-
-// ---- Small local helpers (prefixed to avoid name clashes) ----
-async function __pdf2_fetchTextCached(url) {
-  try {
-    const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 3600 } });
-    return r.ok ? await r.text() : "";
-  } catch { return ""; }
-}
-function __pdf2_nowDate() {
-  try { return new Date().toLocaleDateString(); } catch { return ""; }
-}
-function __pdf2_drawWrapped(page, text, x, y, maxWidth, font, size, color, lineHeight) {
-  const words = String(text||"").split(/\s+/);
-  let line = "", cursorY = y;
-  const widthOf = s => font.widthOfTextAtSize(s, size);
-  for (const w of words) {
-    const test = line ? line + " " + w : w;
-    if (widthOf(test) > maxWidth) {
-      if (line) page.drawText(line, { x, y: cursorY, size, font, color });
-      cursorY -= size * (lineHeight || 1.3);
-      line = w;
-    } else line = test;
-  }
-  if (line) page.drawText(line, { x, y: cursorY, size, font, color });
-  return cursorY - size * (lineHeight || 1.3);
-}
-async function __pdf2_fetchR2Bytes(env, key) {
-  if (!key) return null;
-  try {
-    const obj = await env.R2_UPLOADS.get(key);
-    if (!obj) return null;
-    const ab = await obj.arrayBuffer();
-    return new Uint8Array(ab);
-  } catch { return null; }
-}
-
-// ---- Header + Audit page ----
-const __pdf2_LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
-async function __pdf2_renderHeader(pdf, title) {
-  const page = pdf.addPage([540, 800]);
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const M = 28;
-  page.drawText(title, { x: M, y: 754, size: 18, font, color: rgb(0, 0, 0) });
-  page.drawText("www.vinet.co.za • 021 007 0200", { x: 540 - M - 250, y: 754, size: 11, font, color: rgb(0.2,0.2,0.2) });
-
-  try {
-    const r = await fetch(__pdf2_LOGO_URL, { cf: { cacheEverything: true, cacheTtl: 1800 } });
-    if (r.ok) {
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      let img = null;
-      try { img = await pdf.embedJpg(bytes); } catch { img = await pdf.embedPng(bytes); }
-      const w = 110, s = img.scale(1), h = (s.height/s.width)*w;
-      page.drawImage(img, { x: 540 - M - w, y: 730, width: w, height: h });
-    }
-  } catch {}
-
-  page.drawLine({ start: { x: M, y: 720 }, end: { x: 540 - M, y: 720 }, thickness: 1, color: rgb(0.85,0.85,0.85) });
-  return page;
-}
-async function __pdf2_appendAudit(pdf, sess, linkid) {
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const page = pdf.addPage([540, 800]);
-  const M = 28;
-  page.drawText("VINET — Agreement Security Summary", { x: M, y: 754, size: 18, font, color: rgb(0.88,0,0.10) });
-  const t = __pdf2_nowDate();
-  const loc = sess.last_loc || {};
-  const lines = [
-    ["Link ID", linkid],
-    ["Splynx ID", (linkid || "").split("_")[0]],
-    ["IP Address", sess.last_ip || "n/a"],
-    ["Location", [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
-    ["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
-    ["ASN / Org", [loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
-    ["Cloudflare PoP", loc.colo || "n/a"],
-    ["User-Agent", sess.last_ua || "n/a"],
-    ["Device ID", sess.device_id || "n/a"],
-    ["Timestamp", t],
-  ];
-  let y = 700, keyW = 120, size = 11;
-  for (const [k,v] of lines) {
-    page.drawText(k + ":", { x: M, y, size, font, color: rgb(0.2,0.2,0.2) });
-    page.drawText(String(v||""), { x: M + keyW, y, size, font, color: rgb(0,0,0) });
-    y -= 18;
-  }
-  page.drawText("This page is appended for audit purposes and should accompany the agreement.", { x: M, y: M, size: 10, font, color: rgb(0.4,0.4,0.4) });
-}
-
-// ---- OWN PDF renderers (no templates) ----
-async function __pdf2_renderMSA(env, linkid) {
+async function makeMsaPdfBytes(env, linkid, bbox=false) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Not found", { status: 404 });
-  const terms = await __pdf2_fetchTextCached(env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS);
+  if (!sess || !sess.agreement_signed) throw new Error("Not signed");
+  const termsText = await fetchTextCached(env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt");
   const edits = sess.edits || {};
   const idOnly = String(linkid).split("_")[0];
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const p = await __pdf2_renderHeader(pdf, "Master Service Agreement");
-  const M = 28, colL=M, colR=270, topY=700;
+
+  const p = await renderBrandedHeader(pdf, "Master Service Agreement");
+  const M = 28, colL = M, colR = 270, topY = 700;
 
   p.drawText("Client Information", { x: M, y: topY, size: 13, font: bold, color: rgb(0.1,0.1,0.1) });
   let y = topY - 16;
@@ -1179,26 +1093,30 @@ async function __pdf2_renderMSA(env, linkid) {
   labR("Client Code:", idOnly);
 
   y -= 8; p.drawText("MSA Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) }); y -= 14;
-  __pdf2_drawWrapped(p, terms || "Terms unavailable.", M, y, 540 - M*2, font, 10.5, rgb(0,0,0), 1.35);
+  const afterY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M*2, font, 10.5, rgb(0,0,0), 1.35);
 
-  await __pdf2_appendAudit(pdf, sess, linkid);
-  const bytes = await pdf.save();
-  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+  // Signature-like summary (optional): we already have signatures stored separately in PNGs for HTML print,
+  // but MSA PDF per your request contains info + terms + audit page.
+  await appendAuditPage(pdf, sess, linkid);
+
+  return await pdf.save();
 }
 
-async function __pdf2_renderDEBIT(env, linkid) {
+
+async function makeDebitPdfBytes(env, linkid, bbox=false) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Not found", { status: 404 });
-  const terms = await __pdf2_fetchTextCached(env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS);
-  const edits = sess.edits || {};
+  if (!sess) throw new Error("Not found");
   const d = sess.debit || {};
+  const termsText = await fetchTextCached(env.TERMS_DEBIT_URL || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt");
+  const edits = sess.edits || {};
   const idOnly = String(linkid).split("_")[0];
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const p = await __pdf2_renderHeader(pdf, "Debit Order Instruction");
-  const M = 28, colL=M, colR=270, topY=700;
+
+  const p = await renderBrandedHeader(pdf, "Debit Order Instruction");
+  const M = 28, colL = M, colR = 270, topY = 700;
 
   p.drawText("Client Information", { x: M, y: topY, size: 13, font: bold, color: rgb(0.1,0.1,0.1) });
   let y = topY - 16;
@@ -1226,47 +1144,9 @@ async function __pdf2_renderDEBIT(env, linkid) {
   for (const [k,v] of det) { p.drawText(k,{x:M,y,size:10,font:bold}); p.drawText(v,{x:M+170,y,size:10,font}); y-=16; }
 
   y -= 8; p.drawText("Debit Order Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) }); y -= 14;
-  __pdf2_drawWrapped(p, terms || "Terms unavailable.", M, y, 540 - M*2, font, 9, rgb(0,0,0), 1.35);
+  drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M*2, font, 9, rgb(0,0,0), 1.35);
 
-  await __pdf2_appendAudit(pdf, sess, linkid);
-  const bytes = await pdf.save();
-  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+  await appendAuditPage(pdf, sess, linkid);
+
+  return await pdf.save();
 }
-
-// ---- Route override with fresh cache keys & legacy-purge ----
-async function __pdf2_handlePdf(request, env, url) {
-  // New cache keys to avoid returning old template PDFs
-  const parts = url.pathname.split("/");
-  // /agreements/pdf/:type/:linkid
-  const type = parts[3], linkid = parts[4];
-  if (!linkid) return new Response("Missing linkid", { status: 400 });
-
-  // NOCACHE bypass while testing (optional)
-  const nocache = url.searchParams.get("nocache") === "1";
-
-  // Purge any legacy template keys once
-  try {
-    await env.ONBOARD_KV.delete(`pdf_msa_${linkid}`);
-    await env.ONBOARD_KV.delete(`pdf_debit_${linkid}`);
-  } catch {}
-
-  const key = `own2_pdf_${type}_${linkid}`;
-  if (!nocache) {
-    try {
-      const ab = await env.ONBOARD_KV.get(key, { type: "arrayBuffer" });
-      if (ab) return new Response(ab, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-    } catch {}
-  }
-
-  let resp;
-  if (type === "msa") resp = await __pdf2_renderMSA(env, linkid);
-  else if (type === "debit") resp = await __pdf2_renderDEBIT(env, linkid);
-  else return new Response("Unknown PDF type", { status: 404 });
-
-  if (resp.ok) {
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    await env.ONBOARD_KV.put(key, bytes, { expirationTtl: 7 * 24 * 60 * 60 });
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-  }
-  return resp;
-};
