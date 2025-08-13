@@ -581,8 +581,7 @@ page.drawText("VINET — Agreement Security Summary", {
 x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
 });
 const t = nowLocalDate();
-const loc = sess.last\_loc || {};
-const lines = [
+const loc = sess.last_loc || {};const lines = [
 ["Link ID", linkid],
 ["Splynx ID", (linkid || "").split("\_")[0]],
 ["IP Address", sess.last\_ip || "n/a"],
