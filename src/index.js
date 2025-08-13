@@ -1136,10 +1136,43 @@ export default {
       await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, status:"rejected", reject_reason:String(reason||"").slice(0,300), rejected_at:Date.now() }), { expirationTtl:86400 });
       return json({ ok:true });
     }
-    if (path === "/api/admin/approve" && method === "POST") {
-      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-      return json({ ok: true });
-    }
+    // ----- Admin approve (NOW PUSHES TO SPLYNX) -----
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+
+  const { linkid } = await request.json().catch(() => ({}));
+  if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok:false, error:"Not found" }, 404);
+
+  const splynxId = (sess.id || String(linkid).split("_")[0] || "").toString();
+  if (!splynxId) return json({ ok:false, error:"No Splynx ID on session" }, 400);
+
+  try {
+    // Push the edited profile fields
+    const edits = sess.edits || {};
+    await pushEditsToSplynx(env, splynxId, edits);
+
+    // Optionally: you might also want to mark payment preference or add a short note.
+    // Many installs have /admin/customers/customer/{id} custom fields or notes endpoints.
+    // If you have a specific field for payment method, you can uncomment and adapt this:
+    //
+    // try {
+    //   await splynxPUT(env, `/admin/customers/customer/${splynxId}`, {
+    //     payment_method: sess.pay_method || undefined
+    //   });
+    // } catch (_) {}
+
+    // Flip local session to approved
+    const next = { ...sess, status: "approved", approved_at: Date.now(), pushed: true };
+    await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
+
+    return json({ ok: true });
+  } catch (e) {
+    return json({ ok:false, error:`Push failed: ${e.message||e}` }, 502);
+  }
+}
 
     // ---------- Serve agreement signature PNGs ----------
     if (path.startsWith("/agreements/sig/") && method === "GET") {
