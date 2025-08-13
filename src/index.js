@@ -1070,3 +1070,61 @@ function renderOnboardUI(linkid) {
 </script>
 </body></html>`;
 }
+ // Approve & push (PUT for customers/leads). Info sync first, then mark approved.
+    if (path === "/api/admin/approve" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid } = await request.json().catch(()=>({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok:false, error:"Not found" }, 404);
+
+      const idOnly = (linkid||"").split("_")[0];
+      // determine type
+      let type="lead";
+      try { await splynxGET(env, `/admin/crm/leads/${idOnly}`); type="lead"; }
+      catch { try { await splynxGET(env, `/admin/customers/customer/${idOnly}`); type="customer"; } catch { return json({ ok:false, error:"id_unknown" }, 404); } }
+
+      // map fields
+      const e = sess.edits || {};
+      const base = {
+        email: e.email || "",
+        billing_email: e.email || "",
+        phone: e.phone || "",
+        street: e.street || e.street_1 || "",
+        street_1: e.street || "",
+        city: e.city || "",
+        zip_code: e.zip || "",
+        full_name: e.full_name || undefined
+      };
+
+      try {
+        if (type==="customer") {
+          await splynxPUT(env, `/admin/customers/customer/${idOnly}`, base);
+          // passport/id into customer-info (PATCH supports updating a single field)
+          if (e.passport) {
+            try { await splynxPATCH(env, `/admin/customers/customer-info/${idOnly}`, { passport: e.passport }); } catch {}
+          }
+        } else {
+          await splynxPUT(env, `/admin/crm/leads/${idOnly}`, base);
+        }
+      } catch (err) {
+        return json({ ok:false, error:`patch_failed:${err.message}` }, 502);
+      }
+
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", approved_at: Date.now() }), { expirationTtl: 60*60*24*30 });
+      return json({ ok:true, type, id:idOnly });
+    }
+
+    if (path === "/api/admin/reject" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid, reason } = await request.json().catch(() => ({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      if (!sess) return json({ ok:false, error:"Not found" }, 404);
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"rejected", reject_reason:String(reason||"").slice(0,300), rejected_at:Date.now() }), { expirationTtl:86400 });
+      return json({ ok:true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+};
