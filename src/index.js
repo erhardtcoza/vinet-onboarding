@@ -11,8 +11,13 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // ---------- Config ----------
+const TERMS_MSA_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
+const SITE  = "www.vinet.co.za";
+const PHONE = "021 007 0200";
 const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
 const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 
@@ -576,7 +581,6 @@ function renderOnboardUI(linkid) {
 const mm = (v) => v * 2.83464567; // mm -> PDF points
 
 function headerBlock(page, font, logo, title) {
-  // page width ~ 612, height ~ 792 (slightly narrower than A4 look)
   const margin = 36;
   const yTop = page.getHeight() - margin;
 
@@ -590,12 +594,32 @@ function headerBlock(page, font, logo, title) {
   });
 
   // Logo (right)
+  let rightColLeft = page.getWidth() - margin - 160;
   if (logo) {
     const w = 90;
     const { width, height } = logo.scale(1);
     const h = (height / width) * w;
-    page.drawImage(logo, { x: page.getWidth() - margin - w, y: yTop - h, width: w, height: h });
+    const logoX = page.getWidth() - margin - w;
+    const logoY = yTop - h;
+    page.drawImage(logo, { x: logoX, y: logoY, width: w, height: h });
+    rightColLeft = Math.min(rightColLeft, logoX - 4); // keep text left of logo if needed
   }
+
+  // Site + phone under logo (right aligned block)
+  const contactY0 = yTop - 48;
+  page.drawText(SITE,  { x: rightColLeft, y: contactY0,     size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawText(PHONE, { x: rightColLeft, y: contactY0 - 14, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+
+  // Thin red rule
+  page.drawLine({
+    start: { x: margin, y: yTop - 78 },
+    end:   { x: page.getWidth() - margin, y: yTop - 78 },
+    thickness: 1.2,
+    color: rgb(0.88, 0, 0.10)
+  });
+
+  return yTop - 96; // content start Y
+}
 
   // Site + phone under logo (right column text block)
   const rightX = page.getWidth() - margin - 160;
@@ -604,13 +628,109 @@ function headerBlock(page, font, logo, title) {
 
   // Small red rule under header
   page.drawLine({
-    start: { x: margin, y: yTop - 78 },
+    start: {
+async function fetchText(url) {
+  try {
+    const r = await fetch(url, { cf:{ cacheEverything:true, cacheTtl:300 } });
+    if (!r.ok) return "";
+    return await r.text();
+  } catch { return ""; }
+}
+ x: margin, y: yTop - 78 },
     end:   { x: page.getWidth() - margin, y: yTop - 78 },
     thickness: 1.2,
     color: rgb(0.88, 0, 0.10)
   });
 
   return yTop - 96; // return content start y
+}
+
+async function appendSecurityPage(pdf, sess, linkid) {
+  const page = pdf.addPage([612, 792]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const margin = 36;
+  let y = page.getHeight() - margin - 10;
+  page.drawText("VINET — Agreement Security Summary", { x: margin, y, size: 16, font, color: rgb(0.1,0.1,0.1) });
+  y -= 24;
+
+  const info = [
+    ["Link ID", linkid],
+    ["Splynx ID", String((sess && sess.id) || (linkid||'').split('_')[0])],
+    ["IP Address", String(sess && (sess.last_ip || sess.ip || ''))],
+    ["Location", String(sess && sess.location || '')],
+    ["Coordinates", String(sess && sess.coords || '')],
+    ["ASN / Org", String(sess && sess.asn || '')],
+    ["Cloudflare PoP", String(sess && sess.pop || '')],
+    ["User-Agent", String(sess && (sess.last_ua || sess.ua || ''))],
+    ["Device ID", String(sess && sess.device_id || '')],
+    ["Timestamp", new Date(sess && (sess.last_time || sess.created || Date.now())).toISOString().replace('T',' ').slice(0,16)],
+  ];
+
+  for (const [k, v] of info) {
+    page.drawText(k + ":", { x: margin, y, size: 11, font, color: rgb(0.35,0.35,0.35) });
+    page.drawText(String(v || ''), { x: margin + 140, y, size: 11, font, color: rgb(0,0,0) });
+    y -= 16;
+  }
+
+  // Note
+  y -= 10;
+  const note = "This page is appended for audit purposes and should accompany the agreement.";
+  page.drawText(note, { x: margin, y, size: 10, font, color: rgb(0.25,0.25,0.25) });
+}
+
+async function embedLogo(pdf) {
+  try {
+    const r = await fetch(LOGO_URL, { cf:{cacheEverything:true, cacheTtl:3600} });
+    if (r.ok) {
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      try { return await pdf.embedPng(bytes); } catch {}
+      try { return await pdf.embedJpg(bytes); } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+function footerSignature(page, font, fullName) {
+  const margin = 36;
+  const y = 72; // bottom area
+  const width = page.getWidth() - margin * 2;
+  const colW = width / 3;
+
+  // Labels
+  page.drawText("Full name", { x: margin + 6,           y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+  page.drawText("Signature", { x: margin + colW + 6,    y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+  page.drawText("Date",      { x: margin + colW*2 + 6,  y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+
+  // Lines
+  const lineY = y + 20;
+  page.drawLine({ start:{x:margin,           y:lineY}, end:{x:margin+colW-12,  y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+  page.drawLine({ start:{x:margin+colW,      y:lineY}, end:{x:margin+colW*2-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+  page.drawLine({ start:{x:margin+colW*2,    y:lineY}, end:{x:margin+colW*3-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+
+  // Values (left + right; signature stays blank)
+  if (fullName) {
+    page.drawText(String(fullName), { x: margin + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
+  }
+  const today = new Date().toLocaleDateString();
+  page.drawText(today, { x: margin + colW*2 + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
+}
+
+function drawText(page, text, x, y, { font, size = 11, color = rgb(0,0,0), maxWidth = 480, lineHeight = 1.3 }) {
+  const words = String(text || "").split(/\s+/);
+  let line = "", cursorY = y;
+  function widthOf(s){ return font.widthOfTextAtSize(s, size); }
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (widthOf(test) > maxWidth) {
+      page.drawText(line, { x, y: cursorY, size, font, color });
+      cursorY -= size * lineHeight;
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) page.drawText(line, { x, y: cursorY, size, font, color });
+  return cursorY - size * lineHeight;
 }
 async function renderMsaPdf(env, linkid) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -1235,3 +1355,15 @@ export default {
     return new Response("Not found", { status: 404 });
   }
 };
+
+async function makeMsaPdfBytes(env, linkid, showBBox=false) {
+  const resp = await renderMsaPdf(env, linkid, showBBox);
+  const ab = await resp.arrayBuffer();
+  return new Uint8Array(ab);
+}
+
+async function makeDebitPdfBytes(env, linkid, showBBox=false) {
+  const resp = await renderDebitPdf(env, linkid, showBBox);
+  const ab = await resp.arrayBuffer();
+  return new Uint8Array(ab);
+}
