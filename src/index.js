@@ -831,58 +831,67 @@ function renderSignatureRow(page, fonts, y, name, dateStr, sigPng) {
 }
 
 // ----- MSA PDF -----
-async function renderMsaPdfInline(request, env, linkid) {
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed) return new Response("Not signed", { status: 404 });
+async function renderMsaPdfInline(env, id, data) {
+  console.log(`[MSA] Generating for ID: ${id}`);
 
-  // Signature is required
-  if (!sess.agreement_sig_key) return new Response("Signature missing. Please sign the agreement first.", { status: 400 });
+  // 1. Check if cache exists
+  const cacheKey = `pdf:msa:${id}`;
+  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+  if (cached) {
+    console.log(`[MSA] Cache HIT for ${cacheKey}`);
+    return new Uint8Array(cached);
+  } else {
+    console.log(`[MSA] Cache MISS for ${cacheKey}`);
+  }
 
-  const idOnly = (linkid || "").split("_")[0];
-  const e = sess.edits || {};
-  const prof = await fetchProfileForDisplay(env, idOnly).catch(()=>({}));
-  const data = {
-    full_name: e.full_name || prof.full_name || "",
-    email:     e.email     || prof.email     || "",
-    phone:     e.phone     || prof.phone     || "",
-    street:    e.street    || prof.street    || "",
-    city:      e.city      || prof.city      || "",
-    zip:       e.zip       || prof.zip       || "",
-    passport:  e.passport  || prof.passport  || "",
-    client_code: idOnly
-  };
+  // 2. Validate required fields
+  const { name, id_number, signature_data_url } = data || {};
+  if (!name || !id_number || !signature_data_url) {
+    console.warn(`[MSA] Missing required fields:`, { name, id_number, signature_data_url });
+    throw new Error("Missing required fields for MSA PDF generation.");
+  }
 
-  const termsUrl = env.TERMS_SERVICE_URL || DEFAULT_SERVICE_TERMS;
-  const termsText = await fetchTextCached(termsUrl).catch(()=> "") || "";
+  // 3. Load base MSA template
+  const basePdf = await env.ONBOARD_KV.get("template:msa:raw", "arrayBuffer");
+  if (!basePdf) {
+    console.error(`[MSA] Base template not found in KV`);
+    throw new Error("MSA template not found.");
+  }
 
-  const pdf = await PDFDocument.create();
-  const regular = await pdf.embedFont(StandardFonts.Helvetica);
-  const small   = await pdf.embedFont(StandardFonts.Helvetica);
-  const italic  = await pdf.embedFont(StandardFonts.HelveticaOblique);
+  try {
+    // 4. Start building PDF
+    const pdfDoc = await PDFDocument.load(basePdf);
+    const pages = pdfDoc.getPages();
+    const firstPage = pages[0];
 
-  const fonts = { regular, small, italic };
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const signatureImage = await pdfDoc.embedPng(signature_data_url);
 
-  // Page 1
-  const page = pdf.addPage([PAGE_W, PAGE_H]);
-  let y = await renderHeader(pdf, page, "Master Service Agreement");
+    // Add text
+    firstPage.drawText(name, { x: 50, y: 150, size: 12, font });
+    firstPage.drawText(id_number, { x: 50, y: 135, size: 12, font });
 
-  // Client block
-  y = await renderClientBlock(page, regular, data, y);
+    // Add signature
+    firstPage.drawImage(signatureImage, {
+      x: 200,
+      y: 100,
+      width: 100,
+      height: 30,
+    });
 
-  // Terms
-  y -= 4;
-  page.drawText("Terms", { x: MARGIN_X, y, size: 12, font: regular, color: BRAND_RED });
-  y -= 14;
-  y = drawParagraph(page, regular, termsText || "(terms unavailable)", MARGIN_X, y, 11, 4, CONTENT_W, rgb(0,0,0)) - 8;
+    const pdfBytes = await pdfDoc.save();
+    console.log(`[MSA] Successfully generated PDF (${pdfBytes.length} bytes)`);
 
-  // Signature row
-  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-  const sigPng = sigBytes ? await pdf.embedPng(sigBytes) : null;
+    // Cache for 7 days
+    await env.ONBOARD_KV.put(cacheKey, pdfBytes, { expirationTtl: 60 * 60 * 24 * 7 });
 
-  // Enforce signature presence
-  if (!sigPng) return new Response("Signature missing. Please sign the agreement first.", { status: 400 });
+    return pdfBytes;
+  } catch (err) {
+    console.error(`[MSA] PDF generation failed:`, err);
+    throw new Error("PDF generation failed.");
+  }
+}
 
-  renderSignatureRow(page, fonts, Math.max(MARGIN_X + 70, y - 64), data.full_name, nowDateStr(), sigPng);
 
   // Audit page
   await appendSecurityPage(pdf, sess, linkid);
