@@ -1,3 +1,4 @@
+
 // --- Vinet Onboarding Worker ---
 // Admin dashboard, onboarding flow, EFT & Debit Order pages, Splynx push
 // - Doc uploads use collection endpoints:
@@ -11,17 +12,16 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // ---------- Config ----------
-const TERMS_MSA_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
-
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
 const SITE  = "www.vinet.co.za";
 const PHONE = "021 007 0200";
-const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
-const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
 
-// ---------- Helpers ----------
+// Default external terms (can be overridden by env vars)
+const TERMS_MSA_URL   = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+const TERMS_DEBIT_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+
+// ---------- Generic helpers (TOP-LEVEL!) ----------
 function ipAllowed(request) {
   const ip = request.headers.get("CF-Connecting-IP");
   if (!ip) return false;
@@ -32,6 +32,276 @@ const json = (o, s = 200) =>
   new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
 
 function esc(s){ return String(s||"").replace(/[&<>"]/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;" }[m])); }
+
+// Safe text fetcher with CF edge cache
+async function fetchText(url) {
+  try {
+    const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 300 } });
+    return r.ok ? await r.text() : "";
+  } catch {
+    return "";
+  }
+}
+
+// Text wrapping helper for PDFs
+function drawText(page, text, x, y, { font, size = 11, color = rgb(0,0,0), maxWidth = 480, lineHeight = 1.3 }) {
+  const words = String(text || "").split(/\s+/);
+  let line = "", cursorY = y;
+  function widthOf(s){ return font.widthOfTextAtSize(s, size); }
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (widthOf(test) > maxWidth) {
+      if (line) page.drawText(line, { x, y: cursorY, size, font, color });
+      cursorY -= size * lineHeight;
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) page.drawText(line, { x, y: cursorY, size, font, color });
+  return cursorY - size * lineHeight;
+}
+
+// Embed logo (PNG or JPEG) into the PDF
+async function embedLogo(pdf) {
+  try {
+    const r = await fetch(LOGO_URL, { cf: { cacheEverything: true, cacheTtl: 3600 } });
+    const ab = await r.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    // Basic sniff: PNG starts with 0x89 50 4E 47, JPEG with 0xFF 0xD8
+    if (bytes[0] === 0x89 && bytes[1] === 0x50) return await pdf.embedPng(bytes);
+    return await pdf.embedJpg(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function headerBlock(page, font, logo, title) {
+  const margin = 36;
+  const yTop = page.getHeight() - margin;
+
+  // Title (left)
+  page.drawText(title, {
+    x: margin,
+    y: yTop - 10,
+    size: 18,
+    font,
+    color: rgb(0.88, 0, 0.10) // Vinet red
+  });
+
+  // Logo (right)
+  let rightColLeft = page.getWidth() - margin - 160;
+  if (logo) {
+    const w = 90;
+    const { width, height } = logo.scale(1);
+    const h = (height / width) * w;
+    const logoX = page.getWidth() - margin - w;
+    const logoY = yTop - h;
+    page.drawImage(logo, { x: logoX, y: logoY, width: w, height: h });
+    rightColLeft = Math.min(rightColLeft, logoX - 4);
+  }
+
+  // Site + phone under logo (right column text block)
+  const contactY0 = yTop - 48;
+  page.drawText(SITE,  { x: rightColLeft, y: contactY0,      size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawText(PHONE, { x: rightColLeft, y: contactY0 - 14, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+
+  // Thin red rule
+  page.drawLine({
+    start: { x: margin, y: yTop - 78 },
+    end:   { x: page.getWidth() - margin, y: yTop - 78 },
+    thickness: 1.2,
+    color: rgb(0.88, 0, 0.10)
+  });
+
+  return yTop - 96; // content start Y
+}
+
+function footerSignature(page, font, fullName) {
+  const margin = 36;
+  const y = 72; // bottom area
+  const width = page.getWidth() - margin * 2;
+  const colW = width / 3;
+
+  // Labels
+  page.drawText("Full name", { x: margin + 6,          y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+  page.drawText("Signature", { x: margin + colW + 6,   y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+  page.drawText("Date",      { x: margin + colW*2 + 6, y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
+
+  // Lines
+  const lineY = y + 20;
+  page.drawLine({ start:{x:margin,           y:lineY}, end:{x:margin+colW-12,  y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+  page.drawLine({ start:{x:margin+colW,      y:lineY}, end:{x:margin+colW*2-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+  page.drawLine({ start:{x:margin+colW*2,    y:lineY}, end:{x:margin+colW*3-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
+
+  // Values (left + right; signature stays blank)
+  if (fullName) {
+    page.drawText(String(fullName), { x: margin + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
+  }
+  const today = new Date().toLocaleDateString();
+  page.drawText(today, { x: margin + colW*2 + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
+}
+
+// Append a simple security/audit page from session metadata
+async function appendSecurityPage(pdf, sess, linkid) {
+  const page = pdf.addPage([612, 792]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const title = "VINET — Agreement Security Summary";
+
+  const margin = 36;
+  let y = page.getHeight() - margin;
+
+  page.drawText(title, { x: margin, y: y, size: 16, font, color: rgb(0.1,0.1,0.1) });
+  y -= 18;
+  page.drawLine({ start:{x:margin, y:y}, end:{x:page.getWidth()-margin, y:y}, thickness: 1.1, color: rgb(0.88,0,0.10) });
+  y -= 18;
+
+  const lines = [
+    ["Link ID", linkid || ""],
+    ["Splynx ID", String((sess && sess.id) || "").trim()],
+    ["IP Address", String(sess && (sess.last_ip || sess.ip) || "")],
+    ["User-Agent", String(sess && (sess.last_ua || "") || "")],
+    ["Timestamp", sess && sess.last_time ? new Date(sess.last_time).toLocaleString() : ""],
+  ];
+
+  for (const [k, v] of lines) {
+    page.drawText(`${k}:`, { x: margin, y, size: 11, font, color: rgb(0.35,0.35,0.35) });
+    drawText(page, String(v || ""), margin + 120, y, { font, size: 11, color: rgb(0,0,0), maxWidth: 612 - 72 - 120 });
+    y -= 16;
+  }
+
+  page.drawText("This page is appended for audit purposes and should accompany the agreement.", {
+    x: margin, y: y - 8, size: 10, font, color: rgb(0.2,0.2,0.2)
+  });
+}
+
+// ---------- PDF generators (bytes) ----------
+async function makeMsaPdfBytes(env, linkid) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_signed) throw new Error("Not signed");
+
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const logo = await embedLogo(pdf);
+
+  const page = pdf.addPage([612, 792]);
+  let y = headerBlock(page, font, logo, "Master Service Agreement");
+
+  const idOnly = (linkid || "").split("_")[0];
+  const e = sess.edits || {};
+
+  // Section: Customer information
+  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
+
+  const info = {
+    "Client code": idOnly,
+    "Full name": e.full_name || "",
+    "Email": e.email || "",
+    "Phone": e.phone || "",
+    "ID / Passport": e.passport || "",
+    "Street": e.street || "",
+    "City": e.city || "",
+    "ZIP": e.zip || "",
+  };
+
+  // Labeled rows (wrapping for long values)
+  for (const [k, v] of Object.entries(info)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 140, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 140 });
+    y -= 16;
+  }
+  y -= 12;
+
+  // Terms
+  const terms = await fetchText(env.TERMS_SERVICE_URL || TERMS_MSA_URL);
+  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 16;
+  drawText(page, terms || "(No terms available.)", 36, y, {
+    font, size: 10, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.28
+  });
+
+  // Footer signature block
+  footerSignature(page, font, e.full_name || "");
+
+  // Security/Audit page
+  await appendSecurityPage(pdf, sess, linkid);
+
+  return await pdf.save();
+}
+
+async function makeDebitPdfBytes(env, linkid) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) throw new Error("Not found");
+
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const logo = await embedLogo(pdf);
+
+  const page = pdf.addPage([612, 792]);
+  let y = headerBlock(page, font, logo, "Debit Order Instruction");
+
+  const idOnly = (linkid || "").split("_")[0];
+  const e = sess.edits || {};
+  const d = sess.debit || {};
+
+  // Section: Customer information
+  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
+
+  const customerInfo = {
+    "Client code": idOnly,
+    "Full name": e.full_name || "",
+    "Email": e.email || "",
+    "Phone": e.phone || "",
+    "Street": e.street || "",
+    "City": e.city || "",
+    "ZIP": e.zip || "",
+  };
+  for (const [k, v] of Object.entries(customerInfo)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
+    y -= 16;
+  }
+
+  y -= 12;
+
+  // Section: Debit order details (from the form)
+  page.drawText("Debit order details", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 18;
+
+  const debitInfo = {
+    "Account holder": d.account_holder || "",
+    "Holder ID / Passport": d.id_number || "",
+    "Bank": d.bank_name || "",
+    "Account number": d.account_number || "",
+    "Account type": d.account_type || "",
+    "Debit day": d.debit_day || "",
+  };
+  for (const [k, v] of Object.entries(debitInfo)) {
+    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
+    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
+    y -= 16;
+  }
+
+  y -= 12;
+
+  // Terms
+  const terms = await fetchText(env.TERMS_DEBIT_URL || TERMS_DEBIT_URL);
+  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
+  y -= 16;
+  drawText(page, terms || "(No terms available.)", 36, y, {
+    font, size: 9.5, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.26
+  });
+
+  // Footer signature block
+  footerSignature(page, font, e.full_name || "");
+
+  // Security/Audit page
+  await appendSecurityPage(pdf, sess, linkid);
+
+  return await pdf.save();
+}
 
 // ---------- EFT Info Page ----------
 async function renderEFTPage(id) {
@@ -577,290 +847,6 @@ function renderOnboardUI(linkid) {
 </body></html>`;
 }
 
-// ---------- PDF helpers & renderers ----------
-const mm = (v) => v * 2.83464567; // mm -> PDF points
-
-function headerBlock(page, font, logo, title) {
-  const margin = 36;
-  const yTop = page.getHeight() - margin;
-
-  // Title (left)
-  page.drawText(title, {
-    x: margin,
-    y: yTop - 10,
-    size: 18,
-    font,
-    color: rgb(0.88, 0, 0.10) // Vinet red
-  });
-
-  // Logo (right)
-  let rightColLeft = page.getWidth() - margin - 160;
-  if (logo) {
-    const w = 90;
-    const { width, height } = logo.scale(1);
-    const h = (height / width) * w;
-    const logoX = page.getWidth() - margin - w;
-    const logoY = yTop - h;
-    page.drawImage(logo, { x: logoX, y: logoY, width: w, height: h });
-    rightColLeft = Math.min(rightColLeft, logoX - 4); // keep text left of logo if needed
-  }
-
-  // Site + phone under logo (right aligned block)
-  const contactY0 = yTop - 48;
-  page.drawText(SITE,  { x: rightColLeft, y: contactY0,     size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-  page.drawText(PHONE, { x: rightColLeft, y: contactY0 - 14, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-
-  // Thin red rule
-  page.drawLine({
-    start: { x: margin, y: yTop - 78 },
-    end:   { x: page.getWidth() - margin, y: yTop - 78 },
-    thickness: 1.2,
-    color: rgb(0.88, 0, 0.10)
-  });
-
-  return yTop - 96; // content start Y
-}
-
-  // Site + phone under logo (right column text block)
-  const rightX = page.getWidth() - margin - 160;
-  page.drawText(SITE,  { x: rightX, y: yTop - 48, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-  page.drawText(PHONE, { x: rightX, y: yTop - 62, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-
-  // Small red rule under header
-  page.drawLine({
-    start: {
-async function fetchText(url) {
-  try {
-    const r = await fetch(url, { cf:{ cacheEverything:true, cacheTtl:300 } });
-    if (!r.ok) return "";
-    return await r.text();
-  } catch { return ""; }
-}
- x: margin, y: yTop - 78 },
-    end:   { x: page.getWidth() - margin, y: yTop - 78 },
-    thickness: 1.2,
-    color: rgb(0.88, 0, 0.10)
-  });
-
-  return yTop - 96; // return content start y
-}
-
-async function appendSecurityPage(pdf, sess, linkid) {
-  const page = pdf.addPage([612, 792]);
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const margin = 36;
-  let y = page.getHeight() - margin - 10;
-  page.drawText("VINET — Agreement Security Summary", { x: margin, y, size: 16, font, color: rgb(0.1,0.1,0.1) });
-  y -= 24;
-
-  const info = [
-    ["Link ID", linkid],
-    ["Splynx ID", String((sess && sess.id) || (linkid||'').split('_')[0])],
-    ["IP Address", String(sess && (sess.last_ip || sess.ip || ''))],
-    ["Location", String(sess && sess.location || '')],
-    ["Coordinates", String(sess && sess.coords || '')],
-    ["ASN / Org", String(sess && sess.asn || '')],
-    ["Cloudflare PoP", String(sess && sess.pop || '')],
-    ["User-Agent", String(sess && (sess.last_ua || sess.ua || ''))],
-    ["Device ID", String(sess && sess.device_id || '')],
-    ["Timestamp", new Date(sess && (sess.last_time || sess.created || Date.now())).toISOString().replace('T',' ').slice(0,16)],
-  ];
-
-  for (const [k, v] of info) {
-    page.drawText(k + ":", { x: margin, y, size: 11, font, color: rgb(0.35,0.35,0.35) });
-    page.drawText(String(v || ''), { x: margin + 140, y, size: 11, font, color: rgb(0,0,0) });
-    y -= 16;
-  }
-
-  // Note
-  y -= 10;
-  const note = "This page is appended for audit purposes and should accompany the agreement.";
-  page.drawText(note, { x: margin, y, size: 10, font, color: rgb(0.25,0.25,0.25) });
-}
-
-async function embedLogo(pdf) {
-  try {
-    const r = await fetch(LOGO_URL, { cf:{cacheEverything:true, cacheTtl:3600} });
-    if (r.ok) {
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      try { return await pdf.embedPng(bytes); } catch {}
-      try { return await pdf.embedJpg(bytes); } catch {}
-    }
-  } catch {}
-  return null;
-}
-
-function footerSignature(page, font, fullName) {
-  const margin = 36;
-  const y = 72; // bottom area
-  const width = page.getWidth() - margin * 2;
-  const colW = width / 3;
-
-  // Labels
-  page.drawText("Full name", { x: margin + 6,           y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
-  page.drawText("Signature", { x: margin + colW + 6,    y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
-  page.drawText("Date",      { x: margin + colW*2 + 6,  y: y + 36, size: 10, font, color: rgb(0.35,0.35,0.35) });
-
-  // Lines
-  const lineY = y + 20;
-  page.drawLine({ start:{x:margin,           y:lineY}, end:{x:margin+colW-12,  y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
-  page.drawLine({ start:{x:margin+colW,      y:lineY}, end:{x:margin+colW*2-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
-  page.drawLine({ start:{x:margin+colW*2,    y:lineY}, end:{x:margin+colW*3-12,y:lineY}, thickness: 0.8, color: rgb(0.2,0.2,0.2) });
-
-  // Values (left + right; signature stays blank)
-  if (fullName) {
-    page.drawText(String(fullName), { x: margin + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
-  }
-  const today = new Date().toLocaleDateString();
-  page.drawText(today, { x: margin + colW*2 + 6, y: lineY - 12, size: 10, font, color: rgb(0,0,0) });
-}
-
-function drawText(page, text, x, y, { font, size = 11, color = rgb(0,0,0), maxWidth = 480, lineHeight = 1.3 }) {
-  const words = String(text || "").split(/\s+/);
-  let line = "", cursorY = y;
-  function widthOf(s){ return font.widthOfTextAtSize(s, size); }
-  for (const w of words) {
-    const test = line ? line + " " + w : w;
-    if (widthOf(test) > maxWidth) {
-      page.drawText(line, { x, y: cursorY, size, font, color });
-      cursorY -= size * lineHeight;
-      line = w;
-    } else {
-      line = test;
-    }
-  }
-  if (line) page.drawText(line, { x, y: cursorY, size, font, color });
-  return cursorY - size * lineHeight;
-}
-async function renderMsaPdf(env, linkid) {
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed) return new Response("Not signed", { status: 404 });
-
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const logo = await embedLogo(pdf);
-
-  const page = pdf.addPage([612, 792]);
-  let y = headerBlock(page, font, logo, "Master Service Agreement");
-
-  const idOnly = (linkid || "").split("_")[0];
-  const e = sess.edits || {};
-
-  // Section: Customer information
-  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
-  y -= 18;
-
-  const info = {
-    "Client code": idOnly,
-    "Full name": e.full_name || "",
-    "Email": e.email || "",
-    "Phone": e.phone || "",
-    "ID / Passport": e.passport || "",
-    "Street": e.street || "",
-    "City": e.city || "",
-    "ZIP": e.zip || "",
-  };
-
-  // Labeled rows (wrapping for long values)
-  for (const [k, v] of Object.entries(info)) {
-    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
-    drawText(page, String(v || ""), 36 + 140, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 140 });
-    y -= 16;
-  }
-  y -= 12;
-
-  // Terms
-  const terms = await fetchText(env.TERMS_SERVICE_URL || TERMS_MSA_URL);
-  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
-  y -= 16;
-  drawText(page, terms || "(No terms available.)", 36, y, {
-    font, size: 10, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.28
-  });
-
-  // Footer signature block: left name, centre signature, right date
-  footerSignature(page, font, e.full_name || "");
-
-  // Security/Audit page
-  await appendSecurityPage(pdf, sess, linkid);
-
-  const bytes = await pdf.save();
-  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-}
-async function renderDebitPdf(env, linkid) {
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Not found", { status: 404 });
-
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const logo = await embedLogo(pdf);
-
-  const page = pdf.addPage([612, 792]);
-  let y = headerBlock(page, font, logo, "Debit Order Instruction");
-
-  const idOnly = (linkid || "").split("_")[0];
-  const e = sess.edits || {};
-  const d = sess.debit || {};
-
-  // Section: Customer information
-  page.drawText("Customer information", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
-  y -= 18;
-
-  const customerInfo = {
-    "Client code": idOnly,
-    "Full name": e.full_name || "",
-    "Email": e.email || "",
-    "Phone": e.phone || "",
-    "Street": e.street || "",
-    "City": e.city || "",
-    "ZIP": e.zip || "",
-  };
-  for (const [k, v] of Object.entries(customerInfo)) {
-    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
-    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
-    y -= 16;
-  }
-
-  y -= 12;
-
-  // Section: Debit order details (from the form)
-  page.drawText("Debit order details", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
-  y -= 18;
-
-  const debitInfo = {
-    "Account holder": d.account_holder || "",
-    "Holder ID / Passport": d.id_number || "",
-    "Bank": d.bank_name || "",
-    "Account number": d.account_number || "",
-    "Account type": d.account_type || "",
-    "Debit day": d.debit_day || "",
-  };
-  for (const [k, v] of Object.entries(debitInfo)) {
-    page.drawText(`${k}:`, { x: 36, y, size: 11, font, color: rgb(0.35, 0.35, 0.35) });
-    drawText(page, String(v || ""), 36 + 160, y, { font, size: 11, color: rgb(0, 0, 0), maxWidth: 612 - 72 - 160 });
-    y -= 16;
-  }
-
-  y -= 12;
-
-  // Terms
-  const terms = await fetchText(env.TERMS_DEBIT_URL || TERMS_DEBIT_URL);
-  page.drawText("Terms", { x: 36, y, size: 12, font, color: rgb(0.1, 0.1, 0.1) });
-  y -= 16;
-  drawText(page, terms || "(No terms available.)", 36, y, {
-    font, size: 9.5, color: rgb(0, 0, 0), maxWidth: 612 - 72, lineHeight: 1.26
-  });
-
-  // Footer signature block
-  footerSignature(page, font, e.full_name || "");
-
-  // Security/Audit page
-  await appendSecurityPage(pdf, sess, linkid);
-
-  const bytes = await pdf.save();
-  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-}
-
-
 // ---------- Worker entry ----------
 export default {
   async fetch(request, env) {
@@ -873,7 +859,7 @@ export default {
     // ----- Admin UI -----
     if (path === "/admin" && method === "GET") {
       if (!ipAllowed(request)) {
-        return new Response(`<!doctype html><meta charset="utf-8"><title>Restricted</title><div style="font-family:system-ui;padding:40px;max-width:720px;margin:auto"><h1 style="color:#e2001a">Access restricted</h1><p>This dashboard is only available from the Vinet network.</p></div>`, { status: 403, headers: { "content-type":"text/html; charset=utf-8" } });
+        return new Response(\`<!doctype html><meta charset="utf-8"><title>Restricted</title><div style="font-family:system-ui;padding:40px;max-width:720px;margin:auto"><h1 style="color:#e2001a">Access restricted</h1><p>This dashboard is only available from the Vinet network.</p></div>\`, { status: 403, headers: { "content-type":"text/html; charset=utf-8" } });
       }
       return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -890,15 +876,15 @@ export default {
     // ----- Terms -----
     if (path === "/api/terms" && method === "GET") {
       const kind = (url.searchParams.get("kind") || "").toLowerCase();
-      const svcUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
-      const debUrl = env.TERMS_DEBIT_URL || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+      const svcUrl = env.TERMS_SERVICE_URL || TERMS_MSA_URL;
+      const debUrl = env.TERMS_DEBIT_URL || TERMS_DEBIT_URL;
       async function getText(u){ try{ const r=await fetch(u,{cf:{cacheEverything:true,cacheTtl:300}}); return r.ok?await r.text():""; }catch{return "";} }
       const escHtml = s => s.replace(/[&<>]/g, t => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[t]));
       const service = escHtml(await getText(svcUrl) || "");
       const debit = escHtml(await getText(debUrl) || "");
       let body = "";
-      if (kind === "debit") body = `<h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">${debit}</pre>`;
-      else body = `<h3>Service Terms</h3><pre style="white-space:pre-wrap">${service}</pre>`;
+      if (kind === "debit") body = \`<h3>Debit Order Terms</h3><pre style="white-space:pre-wrap">\${debit}</pre>\`;
+      else body = \`<h3>Service Terms</h3><pre style="white-space:pre-wrap">\${service}</pre>\`;
       return new Response(body || "<p>Terms unavailable.</p>", { headers: { "content-type": "text/html; charset=utf-8" } });
     }
 
@@ -910,10 +896,10 @@ export default {
         const o = {}; for (const [k,v] of form.entries()) o[k]=v; return o;
       });
       const required = ["account_holder","id_number","bank_name","account_number","account_type","debit_day"];
-      for (const k of required) if (!b[k] || String(b[k]).trim()==="") return json({ ok:false, error:`Missing ${k}` }, 400);
+      for (const k of required) if (!b[k] || String(b[k]).trim()==="") return json({ ok:false, error:\`Missing \${k}\` }, 400);
       const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
       const ts = Date.now();
-      const key = `debit/${id}/${ts}`;
+      const key = \`debit/\${id}/\${ts}\`;
       const record = { ...b, splynx_id:id, created:ts, ip:getIP(), ua:getUA() };
       await env.ONBOARD_KV.put(key, JSON.stringify(record), { expirationTtl: 60*60*24*90 });
       return json({ ok:true, ref:key });
@@ -923,11 +909,11 @@ export default {
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
       const png = dataUrl.split(",")[1];
       const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
-      const sigKey = `debit_agreements/${linkid}/signature.png`;
+      const sigKey = \`debit_agreements/\${linkid}/signature.png\`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, { httpMetadata: { contentType: "image/png" } });
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (sess) {
-        await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, debit_signed:true, debit_sig_key:sigKey }), { expirationTtl: 86400 });
+        await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, debit_signed:true, debit_sig_key:sigKey }), { expirationTtl: 86400 });
       }
       return json({ ok:true, sigKey });
     }
@@ -938,9 +924,9 @@ export default {
       const { id } = await request.json().catch(() => ({}));
       if (!id) return json({ error:"Missing id" }, 400);
       const token = Math.random().toString(36).slice(2,10);
-      const linkid = `${id}_${token}`;
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ id, created: Date.now(), progress: 0 }), { expirationTtl: 86400 });
-      return json({ url: `${url.origin}/onboard/${linkid}` });
+      const linkid = \`\${id}_\${token}\`;
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ id, created: Date.now(), progress: 0 }), { expirationTtl: 86400 });
+      return json({ url: \`\${url.origin}/onboard/\${linkid}\` });
     }
 
     // ----- Admin: staff OTP -----
@@ -948,10 +934,10 @@ export default {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(() => ({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return json({ ok:false, error:"Unknown linkid" }, 404);
       const code = String(Math.floor(100000 + Math.random() * 900000));
-      await env.ONBOARD_KV.put(`staffotp/${linkid}`, code, { expirationTtl: 900 });
+      await env.ONBOARD_KV.put(\`staffotp/\${linkid}\`, code, { expirationTtl: 900 });
       return json({ ok:true, linkid, code });
     }
 
@@ -977,7 +963,7 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA template send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(\`WA template send failed \${r.status} \${t}\`); }
     }
     async function sendWhatsAppText(toMsisdn, bodyText) {
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -987,7 +973,7 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA text send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(\`WA text send failed \${r.status} \${t}\`); }
     }
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await request.json().catch(() => ({}));
@@ -997,8 +983,8 @@ export default {
       try { msisdn = await fetchCustomerMsisdn(env, splynxId); } catch { return json({ ok:false, error:"Splynx lookup failed" }, 502); }
       if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
       const code = String(Math.floor(100000 + Math.random() * 900000));
-      await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
-      await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(\`otp/\${linkid}\`, code, { expirationTtl: 600 });
+      await env.ONBOARD_KV.put(\`otp_msisdn/\${linkid}\`, msisdn, { expirationTtl: 600 });
       try { await sendWhatsAppTemplate(msisdn, code, "en"); return json({ ok:true }); }
       catch(e){ try { await sendWhatsAppText(msisdn, 'Your Vinet verification code is: ' + code); return json({ ok:true, note:"sent-as-text" }); }
         catch { return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502); } }
@@ -1006,13 +992,13 @@ export default {
     if (path === "/api/otp/verify" && method === "POST") {
       const { linkid, otp, kind } = await request.json().catch(() => ({}));
       if (!linkid || !otp) return json({ ok:false, error:"Missing params" }, 400);
-      const key = kind === "staff" ? `staffotp/${linkid}` : `otp/${linkid}`;
+      const key = kind === "staff" ? \`staffotp/\${linkid}\` : \`otp/\${linkid}\`;
       const expected = await env.ONBOARD_KV.get(key);
       const ok = !!expected && expected === otp;
       if (ok) {
-        const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-        if (sess) await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
-        if (kind === "staff") await env.ONBOARD_KV.delete(`staffotp/${linkid}`);
+        const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
+        if (sess) await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, otp_verified:true }), { expirationTtl: 86400 });
+        if (kind === "staff") await env.ONBOARD_KV.delete(\`staffotp/\${linkid}\`);
       }
       return json({ ok });
     }
@@ -1020,7 +1006,7 @@ export default {
     // ----- Onboarding UI -----
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return new Response("Link expired or invalid", { status: 404 });
       return new Response(renderOnboardUI(linkid), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -1031,15 +1017,15 @@ export default {
       const linkid = urlParams.get("linkid");
       const fileName = urlParams.get("filename") || "file.bin";
       const label = urlParams.get("label") || "File";
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return new Response("Invalid link", { status: 404 });
       const body = await request.arrayBuffer();
-      const key = `uploads/${linkid}/${Date.now()}_${fileName}`;
+      const key = \`uploads/\${linkid}/\${Date.now()}_\${fileName}\`;
       await env.R2_UPLOADS.put(key, body);
       // also store metadata on session for admin review
       const uploads = Array.isArray(sess.uploads) ? sess.uploads.slice() : [];
       uploads.push({ key, name:fileName, size:body.byteLength, label });
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
       return json({ ok:true, key });
     }
 
@@ -1047,9 +1033,9 @@ export default {
     if (path.startsWith("/api/progress/") && method === "POST") {
       const linkid = path.split("/")[3];
       const body = await request.json().catch(() => ({}));
-      const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+      const existing = (await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json")) || {};
       const next = { ...existing, ...body, last_ip:getIP(), last_ua:getUA(), last_time:Date.now() };
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify(next), { expirationTtl: 86400 });
       return json({ ok:true });
     }
 
@@ -1059,11 +1045,11 @@ export default {
       if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
       const png = dataUrl.split(",")[1];
       const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
-      const sigKey = `agreements/${linkid}/signature.png`;
+      const sigKey = \`agreements/\${linkid}/signature.png\`;
       await env.R2_UPLOADS.put(sigKey, bytes.buffer, { httpMetadata: { contentType: "image/png" } });
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return json({ ok:false, error:"Unknown session" }, 404);
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, agreement_signed:true, agreement_sig_key:sigKey, status:"pending" }), { expirationTtl: 86400 });
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, agreement_signed:true, agreement_sig_key:sigKey, status:"pending" }), { expirationTtl: 86400 });
       return json({ ok:true, sigKey });
     }
 
@@ -1091,7 +1077,7 @@ export default {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
       if (!linkid) return new Response("Missing linkid", { status: 400 });
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return new Response("Not found", { status: 404 });
       const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
       const filesHTML = uploads.length
@@ -1118,9 +1104,9 @@ export default {
 </div>
 <script>
   const msg=document.getElementById('msg');
-  document.getElementById('approve').onclick=async()=>{ msg.textContent='Pushing...'; try{ const r=await fetch('/api/admin/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)}})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Approved and pushed.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
-  document.getElementById('reject').onclick=async()=>{ const reason=prompt('Reason for rejection?')||''; msg.textContent='Rejecting...'; try{ const r=await fetch('/api/admin/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)},reason})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Rejected.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
-  document.getElementById('delete').onclick=async()=>{ if(!confirm('Delete this record? This will invalidate the link.')) return; msg.textContent='Deleting...'; try{ const r=await fetch('/api/admin/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)}})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Deleted.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
+  document.getElementById('approve').onclick=async()=>{ msg.textContent='Pushing...'; try{ const r=await fetch('/api/admin/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify("{{LINKID}}").replace("{{LINKID}}", "${esc(linkid)}")}})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Approved and pushed.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
+  document.getElementById('reject').onclick=async()=>{ const reason=prompt('Reason for rejection?')||''; msg.textContent='Rejecting...'; try{ const r=await fetch('/api/admin/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify("{{LINKID}}").replace("{{LINKID}}", "${esc(linkid)}")},reason})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Rejected.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
+  document.getElementById('delete').onclick=async()=>{ if(!confirm('Delete this record? This will invalidate the link.')) return; msg.textContent='Deleting...'; try{ const r=await fetch('/api/admin/delete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify("{{LINKID}}").replace("{{LINKID}}", "${esc(linkid)}")}})}); const d=await r.json().catch(()=>({ok:false})); msg.textContent=d.ok?'Deleted.':(d.error||'Failed.'); }catch{ msg.textContent='Network error.'; } };
 </script>
 </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -1129,9 +1115,9 @@ export default {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid, reason } = await request.json().catch(() => ({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return json({ ok:false, error:"Not found" }, 404);
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"rejected", reject_reason:String(reason||"").slice(0,300), rejected_at:Date.now() }), { expirationTtl:86400 });
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, status:"rejected", reject_reason:String(reason||"").slice(0,300), rejected_at:Date.now() }), { expirationTtl:86400 });
       return json({ ok:true });
     }
 
@@ -1151,7 +1137,7 @@ export default {
     // ----- Agreements signature PNGs -----
     if (path.startsWith("/agreements/sig/") && method === "GET") {
       const linkid = (path.split("/").pop() || "").replace(/\.png$/i,'');
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess || !sess.agreement_sig_key) return new Response("Not found", { status: 404 });
       const obj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
       if (!obj) return new Response("Not found", { status: 404 });
@@ -1159,25 +1145,30 @@ export default {
     }
     if (path.startsWith("/agreements/sig-debit/") && method === "GET") {
       const linkid = (path.split("/").pop() || "").replace(/\.png$/i,'');
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess || !sess.debit_sig_key) return new Response("Not found", { status: 404 });
       const obj = await env.R2_UPLOADS.get(sess.debit_sig_key);
       if (!obj) return new Response("Not found", { status: 404 });
       return new Response(obj.body, { headers: { "content-type": "image/png" } });
     }
 
-    // ---------- PDF stamping endpoints ----------
+    // ---------- PDF endpoints (use bytes helpers) ----------
     if (path.startsWith("/agreements/pdf/") && method === "GET") {
       const parts = path.split("/");
       const type = parts[3];
       const linkid = parts[4] || "";
-      const showBBox = url.searchParams.get("bbox") === "1";
       if (!linkid) return new Response("Missing linkid", { status: 400 });
       try {
-        if (type === "msa") return await renderMsaPdf(env, linkid, showBBox);
-        if (type === "debit") return await renderDebitPdf(env, linkid, showBBox);
+        if (type === "msa") {
+          const bytes = await makeMsaPdfBytes(env, linkid);
+          return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+        }
+        if (type === "debit") {
+          const bytes = await makeDebitPdfBytes(env, linkid);
+          return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+        }
         return new Response("Unknown type", { status: 404 });
-      } catch {
+      } catch (e) {
         return new Response("PDF render failed", { status: 500 });
       }
     }
@@ -1195,11 +1186,11 @@ export default {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(()=>({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess) return json({ ok:false, error:"Not found" }, 404);
 
       const id = sess.id;
-      const isLead = !await (async()=>{ try{ await splynxGET(env, `/admin/customers/customer/${id}`); return true; }catch{ return false; } })();
+      const isLead = !await (async()=>{ try{ await splynxGET(env, \`/admin/customers/customer/\${id}\`); return true; }catch{ return false; } })();
 
       // Update lead/customer details
       const e = sess.edits || {};
@@ -1214,7 +1205,7 @@ export default {
             city: e.city || undefined,
             zip_code: e.zip || undefined
           };
-          await splynxPUT(env, `/admin/crm/leads/${id}`, payload);
+          await splynxPUT(env, \`/admin/crm/leads/\${id}\`, payload);
         } else {
           const payload = {
             full_name: e.full_name || undefined,
@@ -1225,9 +1216,9 @@ export default {
             city: e.city || undefined,
             zip_code: e.zip || undefined
           };
-          await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
+          await splynxPUT(env, \`/admin/customers/customer/\${id}\`, payload);
           if (e.passport) {
-            await splynxPUT(env, `/admin/customers/customer-info/${id}`, { passport: e.passport });
+            await splynxPUT(env, \`/admin/customers/customer-info/\${id}\`, { passport: e.passport });
           }
         }
       } catch (err) {
@@ -1236,13 +1227,13 @@ export default {
 
       // Upload agreements (PDFs)
       try {
-        const msaBytes = await makeMsaPdfBytes(env, linkid, false);
-        await splynxUploadDocument(env, isLead ? "lead":"customer", id, msaBytes, `MSA_${linkid}.pdf`, "MSA");
+        const msaBytes = await makeMsaPdfBytes(env, linkid);
+        await splynxUploadDocument(env, isLead ? "lead":"customer", id, msaBytes, \`MSA_\${linkid}.pdf\`, "MSA");
       } catch {}
       try {
         if (sess.debit_sig_key) {
-          const doBytes = await makeDebitPdfBytes(env, linkid, false);
-          await splynxUploadDocument(env, isLead ? "lead":"customer", id, doBytes, `DEBIT_${linkid}.pdf`, "Debit Order");
+          const doBytes = await makeDebitPdfBytes(env, linkid);
+          await splynxUploadDocument(env, isLead ? "lead":"customer", id, doBytes, \`DEBIT_\${linkid}.pdf\`, "Debit Order");
         }
       } catch {}
 
@@ -1257,7 +1248,7 @@ export default {
         }
       } catch {}
 
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", approved_at: Date.now() }), { expirationTtl: 86400 });
+      await env.ONBOARD_KV.put(\`onboard/\${linkid}\`, JSON.stringify({ ...sess, status:"approved", approved_at: Date.now() }), { expirationTtl: 86400 });
       return json({ ok:true });
     }
 
@@ -1266,7 +1257,7 @@ export default {
       if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const { linkid } = await request.json().catch(()=>({}));
       if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (sess) {
         try {
           if (Array.isArray(sess.uploads)) {
@@ -1276,9 +1267,9 @@ export default {
           if (sess.debit_sig_key) try { await env.R2_UPLOADS.delete(sess.debit_sig_key); } catch {}
         } catch {}
       }
-      try { await env.ONBOARD_KV.delete(`onboard/${linkid}`); } catch {}
-      try { await env.ONBOARD_KV.delete(`otp/${linkid}`); } catch {}
-      try { await env.ONBOARD_KV.delete(`staffotp/${linkid}`); } catch {}
+      try { await env.ONBOARD_KV.delete(\`onboard/\${linkid}\`); } catch {}
+      try { await env.ONBOARD_KV.delete(\`otp/\${linkid}\`); } catch {}
+      try { await env.ONBOARD_KV.delete(\`staffotp/\${linkid}\`); } catch {}
       return json({ ok:true });
     }
 
@@ -1286,7 +1277,7 @@ export default {
     if (path.startsWith("/agreements/") && method === "GET") {
       const [, , type, linkid] = path.split("/");
       if (!type || !linkid) return new Response("Bad request", { status: 400 });
-      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const sess = await env.ONBOARD_KV.get(\`onboard/\${linkid}\`, "json");
       if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
       const e = sess.edits || {};
       const today = new Date().toLocaleDateString();
@@ -1299,7 +1290,7 @@ export default {
       const passport = esc(e.passport||'');
       const debit = sess.debit || null;
 
-      function page(title, body){ return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>
+      function page(title, body){ return new Response(\`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>\${esc(title)}</title><style>
         body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#fafbfc;color:#222}
         .card{background:#fff;max-width:820px;margin:24px auto;border-radius:14px;box-shadow:0 2px 12px #0002;padding:22px 26px}
         h1{color:#e2001a;margin:.2em 0 .3em;font-size:28px}.b{font-weight:600}
@@ -1308,45 +1299,45 @@ export default {
         .actions{margin-top:14px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
         .logo{height:60px;display:block;margin:0 auto 10px}@media print {.actions{display:none}}
       </style></head><body><div class="card">
-        <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>${esc(title)}</h1>
-        ${body}
+        <img class="logo" src="${LOGO_URL}" alt="Vinet"><h1>\${esc(title)}</h1>
+        \${body}
         <div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
-        <div class="muted">Generated ${today} • Link ${esc(linkid)}</div>
-      </div></body></html>`,{headers:{'content-type':'text/html; charset=utf-8'}});}
+        <div class="muted">Generated \${today} • Link \${esc(linkid)}</div>
+      </div></body></html>\`,{headers:{'content-type':'text/html; charset=utf-8'}});}
 
       if (type === "msa") {
-        const body = `
+        const body = \`
           <p>This document represents your Master Service Agreement with Vinet Internet Solutions.</p>
           <table>
-            <tr><th class="b">Customer</th><td>${name}</td></tr>
-            <tr><th class="b">Email</th><td>${email}</td></tr>
-            <tr><th class="b">Phone</th><td>${phone}</td></tr>
-            <tr><th class="b">ID / Passport</th><td>${passport}</td></tr>
-            <tr><th class="b">Address</th><td>${street}, ${city}, ${zip}</td></tr>
-            <tr><th class="b">Date</th><td>${today}</td></tr>
+            <tr><th class="b">Customer</th><td>\${name}</td></tr>
+            <tr><th class="b">Email</th><td>\${email}</td></tr>
+            <tr><th class="b">Phone</th><td>\${phone}</td></tr>
+            <tr><th class="b">ID / Passport</th><td>\${passport}</td></tr>
+            <tr><th class="b">Address</th><td>\${street}, \${city}, \${zip}</td></tr>
+            <tr><th class="b">Date</th><td>\${today}</td></tr>
           </table>
           <div class="sig"><div class="b">Signature</div>
-            <img src="/agreements/sig/${esc(linkid)}.png" alt="signature">
-          </div>`;
+            <img src="/agreements/sig/\${esc(linkid)}.png" alt="signature">
+          </div>\`;
         return page("Master Service Agreement", body);
       }
       if (type === "debit") {
         const hasDebit = !!(debit && debit.account_holder && debit.account_number);
-        const debitHtml = hasDebit ? `
+        const debitHtml = hasDebit ? \`
           <table>
-            <tr><th class="b">Account Holder</th><td>${esc(debit.account_holder||'')}</td></tr>
-            <tr><th class="b">ID Number</th><td>${esc(debit.id_number||'')}</td></tr>
-            <tr><th class="b">Bank</th><td>${esc(debit.bank_name||'')}</td></tr>
-            <tr><th class="b">Account No</th><td>${esc(debit.account_number||'')}</td></tr>
-            <tr><th class="b">Account Type</th><td>${esc(debit.account_type||'')}</td></tr>
-            <tr><th class="b">Debit Day</th><td>${esc(debit.debit_day||'')}</td></tr>
-          </table>` : `<p class="muted">No debit order details on file for this onboarding.</p>`;
-        const body = `
+            <tr><th class="b">Account Holder</th><td>\${esc(debit.account_holder||'')}</td></tr>
+            <tr><th class="b">ID Number</th><td>\${esc(debit.id_number||'')}</td></tr>
+            <tr><th class="b">Bank</th><td>\${esc(debit.bank_name||'')}</td></tr>
+            <tr><th class="b">Account No</th><td>\${esc(debit.account_number||'')}</td></tr>
+            <tr><th class="b">Account Type</th><td>\${esc(debit.account_type||'')}</td></tr>
+            <tr><th class="b">Debit Day</th><td>\${esc(debit.debit_day||'')}</td></tr>
+          </table>\` : \`<p class="muted">No debit order details on file for this onboarding.</p>\`;
+        const body = \`
           <p>This document represents your Debit Order Instruction.</p>
-          ${debitHtml}
+          \${debitHtml}
           <div class="sig"><div class="b">Signature</div>
-            <img src="/agreements/sig-debit/${esc(linkid)}.png" alt="signature">
-          </div>`;
+            <img src="/agreements/sig-debit/\${esc(linkid)}.png" alt="signature">
+          </div>\`;
         return page("Debit Order Agreement", body);
       }
       return new Response("Unknown", { status: 404 });
@@ -1355,15 +1346,3 @@ export default {
     return new Response("Not found", { status: 404 });
   }
 };
-
-async function makeMsaPdfBytes(env, linkid, showBBox=false) {
-  const resp = await renderMsaPdf(env, linkid, showBBox);
-  const ab = await resp.arrayBuffer();
-  return new Uint8Array(ab);
-}
-
-async function makeDebitPdfBytes(env, linkid, showBBox=false) {
-  const resp = await renderDebitPdf(env, linkid, showBBox);
-  const ab = await resp.arrayBuffer();
-  return new Uint8Array(ab);
-}
