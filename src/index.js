@@ -583,14 +583,14 @@ x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
 const t = nowLocalDate();
 const loc = sess.last_loc || {};const lines = [
 ["Link ID", linkid],
-["Splynx ID", (linkid || "").split("\_")[0]],
-["IP Address", sess.last\_ip || "n/a"],
+["Splynx ID", (linkid || "").split("_")[0]],
+["IP Address", sess.last_ip || "n/a"],
 ["Location", [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
 ["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
 ["ASN / Org", [loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
 ["Cloudflare PoP", loc.colo || "n/a"],
-["User-Agent", sess.last\_ua || "n/a"],
-["Device ID", sess.device\_id || "n/a"],
+["User-Agent", sess.last_ua || "n/a"],
+["Device ID", sess.device_id || "n/a"],
 ["Timestamp", t],
 ];
 let y = 800 - M - 50;
@@ -619,7 +619,7 @@ page.drawText("[www.vinet.co.za](http://www.vinet.co.za) • 021 007 0200", { x:
 
 // Logo (slightly bigger than before)
 try {
-const r = await fetch(LOGO\_URL, { cf: { cacheEverything: true, cacheTtl: 1800 } });
+const r = await fetch(LOGO_URL, { cf: { cacheEverything: true, cacheTtl: 1800 } });
 if (r.ok) {
 const bytes = new Uint8Array(await r.arrayBuffer());
 const img = await pdf.embedJpg(bytes).catch(async()=>await pdf.embedPng(bytes));
@@ -642,15 +642,15 @@ return page;
 }
 
 async function renderMSA(env, linkid) {
-const sess = await env.ONBOARD\_KV.get(`onboard/${linkid}`, "json");
+const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
 if (!sess) return new Response("Not found", { status: 404 });
-if (!sess.agreement\_signed || !sess.agreement\_sig\_key) {
+if (!sess.agreement_signed || !sess.agreement_sig_key) {
 return new Response("MSA requires a signed agreement; signature missing.", { status: 409 });
 }
 
-const termsText = await fetchTextCached(env.TERMS\_SERVICE\_URL || DEFAULT\_MSA\_TERMS);
+const termsText = await fetchTextCached(env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS);
 const edits = sess.edits || {};
-const idOnly = String(linkid).split("\_")[0];
+const idOnly = String(linkid).split("_")[0];
 
 const pdf = await PDFDocument.create();
 const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -675,7 +675,7 @@ p.drawText(v, { x: colR + 130, y, size: 10, font, color: rgb(0,0,0) });
 y -= 16;
 };
 
-lab("Full Name:", edits.full\_name || "");
+lab("Full Name:", edits.full_name || "");
 lab("Email:", edits.email || "");
 lab("Phone:", edits.phone || "");
 lab("Street:", edits.street || "");
@@ -695,10 +695,10 @@ const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 
 // Signature block
 let sigBaseY = Math.max(afterTermsY - 24, 120);
 p.drawText("Name", { x: M, y: sigBaseY, size: 10, font: bold, color: rgb(0.2,0.2,0.2) });
-p.drawText(edits.full\_name || "", { x: M, y: sigBaseY - 16, size: 10, font, color: rgb(0,0,0) });
+p.drawText(edits.full_name || "", { x: M, y: sigBaseY - 16, size: 10, font, color: rgb(0,0,0) });
 
 p.drawText("Signature", { x: 540/2 - 40, y: sigBaseY, size: 10, font: bold, color: rgb(0.2,0.2,0.2) });
-const sigBytes = await fetchR2Bytes(env, sess.agreement\_sig\_key);
+const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
 if (sigBytes) {
 const img = await pdf.embedPng(sigBytes);
 const w = 160, s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
@@ -716,13 +716,13 @@ return new Response(bytes, { headers: { "content-type": "application/pdf", "cach
 }
 
 async function renderDEBIT(env, linkid) {
-const sess = await env.ONBOARD\_KV.get(`onboard/${linkid}`, "json");
+const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
 if (!sess) return new Response("Not found", { status: 404 });
 const d = sess.debit || {};
 const edits = sess.edits || {};
-const idOnly = String(linkid).split("\_")[0];
+const idOnly = String(linkid).split("_")[0];
 
-const termsText = await fetchTextCached(env.TERMS\_DEBIT\_URL || DEFAULT\_DEBIT\_TERMS);
+const termsText = await fetchTextCached(env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS);
 
 const pdf = await PDFDocument.create();
 const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -737,7 +737,7 @@ let y = topY - 16;
 const lab = (k, v) => { p.drawText(k, { x: colL, y, size: 10, font: bold }); p.drawText(v, { x: colL + 120, y, size: 10, font }); y -= 16; };
 const labR = (k, v) => { p.drawText(k, { x: colR, y, size: 10, font: bold }); p.drawText(v, { x: colR + 130, y, size: 10, font }); y -= 16; };
 
-lab("Full Name:", edits.full\_name || "");
+lab("Full Name:", edits.full_name || "");
 lab("Email:", edits.email || "");
 lab("Phone:", edits.phone || "");
 lab("Street:", edits.street || "");
@@ -751,12 +751,12 @@ p.drawText("Debit Order Details", { x: M, y, size: 12, font: bold, color: rgb(0.
 y -= 16;
 
 const det = [
-["Account Holder Name:", d.account\_holder || ""],
-["Account Holder ID / Passport:", d.id\_number || ""],
-["Bank:", d.bank\_name || ""],
-["Bank Account No:", d.account\_number || ""],
-["Account Type:", d.account\_type || ""],
-["Debit Order Date:", d.debit\_day || ""],
+["Account Holder Name:", d.account_holder || ""],
+["Account Holder ID / Passport:", d.id_number || ""],
+["Bank:", d.bank_name || ""],
+["Bank Account No:", d.account_number || ""],
+["Account Type:", d.account_type || ""],
+["Debit Order Date:", d.debit_day || ""],
 ];
 for (const [k, v] of det) {
 p.drawText(k, { x: M, y, size: 10, font: bold });
@@ -774,11 +774,11 @@ const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 
 // Signature row
 let sigBaseY = Math.max(afterTermsY - 24, 120);
 p.drawText("Name", { x: M, y: sigBaseY, size: 10, font: bold });
-p.drawText(edits.full\_name || "", { x: M, y: sigBaseY - 16, size: 10, font });
+p.drawText(edits.full_name || "", { x: M, y: sigBaseY - 16, size: 10, font });
 
 p.drawText("Signature", { x: 540/2 - 40, y: sigBaseY, size: 10, font: bold });
-if (sess.debit\_sig\_key) {
-const sigBytes = await fetchR2Bytes(env, sess.debit\_sig\_key);
+if (sess.debit_sig_key) {
+const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
 if (sigBytes) {
 const img = await pdf.embedPng(sigBytes);
 const w = 160; const s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
