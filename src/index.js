@@ -10,9 +10,6 @@
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-// Safe no-op purge helper
-async function __purgePdfCacheForLink(env, linkid){ try{ if(!linkid) return; await env.ONBOARD_KV.delete(`msa_pdf_${linkid}`); await env.ONBOARD_KV.delete(`debit_pdf_${linkid}`);}catch{}}
-
 // ---------- Config ----------
 const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
@@ -142,9 +139,9 @@ async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
-    `/crm/leads/${id}`,
+    `/admin/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
-    `/crm/leads/${id}/contacts`,
+    `/admin/crm/leads/${id}/contacts`,
   ];
   for (const ep of eps) {
     try { const data = await splynxGET(env, ep); const m = pickPhone(data); if (m) return m; } catch {}
@@ -154,7 +151,7 @@ async function fetchCustomerMsisdn(env, id) {
 async function fetchProfileForDisplay(env, id) {
   let cust = null, lead = null, contacts = null, custInfo = null;
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (!cust) { try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {} }
+  if (!cust) { try { lead = await splynxGET(env, `/admin/admin/crm/leads/${id}`); } catch {} }
   try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
   try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
 
@@ -1088,7 +1085,7 @@ export default {
             city: e.city || undefined,
             zip_code: e.zip || undefined
           };
-          await splynxPUT(env, `/admin/crm/leads/${id}`, payload);
+          await splynxPUT(env, `/admin/admin/crm/leads/${id}`, payload);
         } else {
           const payload = {
             full_name: e.full_name || undefined,
