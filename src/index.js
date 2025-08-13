@@ -575,29 +575,29 @@ function renderOnboardUI(linkid) {
 // ---------- PDF BRAND RENDERERS ----------
 async function appendAuditPage(pdf, sess, linkid) {
 const font = await pdf.embedFont(StandardFonts.Helvetica);
-const page = pdf.addPage(\[540, 800]); // slightly narrower than A4
+const page = pdf.addPage([540, 800]); // slightly narrower than A4
 const M = 28;
 page.drawText("VINET — Agreement Security Summary", {
 x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
 });
 const t = nowLocalDate();
 const loc = sess.last\_loc || {};
-const lines = \[
-\["Link ID", linkid],
-\["Splynx ID", (linkid || "").split("\_")\[0]],
-\["IP Address", sess.last\_ip || "n/a"],
-\["Location", \[loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
-\["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
-\["ASN / Org", \[loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
-\["Cloudflare PoP", loc.colo || "n/a"],
-\["User-Agent", sess.last\_ua || "n/a"],
-\["Device ID", sess.device\_id || "n/a"],
-\["Timestamp", t],
+const lines = [
+["Link ID", linkid],
+["Splynx ID", (linkid || "").split("\_")[0]],
+["IP Address", sess.last\_ip || "n/a"],
+["Location", [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
+["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
+["ASN / Org", [loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
+["Cloudflare PoP", loc.colo || "n/a"],
+["User-Agent", sess.last\_ua || "n/a"],
+["Device ID", sess.device\_id || "n/a"],
+["Timestamp", t],
 ];
 let y = 800 - M - 50;
 const keyW = 120;
 const size = 11;
-for (const \[k, v] of lines) {
+for (const [k, v] of lines) {
 page.drawText(k + ":", { x: M, y, size, font, color: rgb(0.2, 0.2, 0.2) });
 page.drawText(String(v||""), { x: M + keyW, y, size, font, color: rgb(0, 0, 0) });
 y -= 18;
@@ -608,7 +608,7 @@ x: M, y: M, size: 10, font, color: rgb(0.4, 0.4, 0.4),
 }
 
 async function renderBrandedHeader(pdf, title) {
-const page = pdf.addPage(\[540, 800]); // narrower look
+const page = pdf.addPage([540, 800]); // narrower look
 const font = await pdf.embedFont(StandardFonts.Helvetica);
 const M = 28;
 
@@ -651,7 +651,7 @@ return new Response("MSA requires a signed agreement; signature missing.", { sta
 
 const termsText = await fetchTextCached(env.TERMS\_SERVICE\_URL || DEFAULT\_MSA\_TERMS);
 const edits = sess.edits || {};
-const idOnly = String(linkid).split("\_")\[0];
+const idOnly = String(linkid).split("\_")[0];
 
 const pdf = await PDFDocument.create();
 const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -721,7 +721,7 @@ const sess = await env.ONBOARD\_KV.get(`onboard/${linkid}`, "json");
 if (!sess) return new Response("Not found", { status: 404 });
 const d = sess.debit || {};
 const edits = sess.edits || {};
-const idOnly = String(linkid).split("\_")\[0];
+const idOnly = String(linkid).split("\_")[0];
 
 const termsText = await fetchTextCached(env.TERMS\_DEBIT\_URL || DEFAULT\_DEBIT\_TERMS);
 
@@ -751,15 +751,15 @@ y -= 8;
 p.drawText("Debit Order Details", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) });
 y -= 16;
 
-const det = \[
-\["Account Holder Name:", d.account\_holder || ""],
-\["Account Holder ID / Passport:", d.id\_number || ""],
-\["Bank:", d.bank\_name || ""],
-\["Bank Account No:", d.account\_number || ""],
-\["Account Type:", d.account\_type || ""],
-\["Debit Order Date:", d.debit\_day || ""],
+const det = [
+["Account Holder Name:", d.account\_holder || ""],
+["Account Holder ID / Passport:", d.id\_number || ""],
+["Bank:", d.bank\_name || ""],
+["Bank Account No:", d.account\_number || ""],
+["Account Type:", d.account\_type || ""],
+["Debit Order Date:", d.debit\_day || ""],
 ];
-for (const \[k, v] of det) {
+for (const [k, v] of det) {
 p.drawText(k, { x: M, y, size: 10, font: bold });
 p.drawText(v, { x: M + 170, y, size: 10, font });
 y -= 16;
