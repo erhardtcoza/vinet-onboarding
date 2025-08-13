@@ -1,21 +1,101 @@
-// --- Vinet Onboarding Worker ---
-// Admin dashboard, onboarding flow, EFT & Debit Order pages
-// This build:
-//  • Debit Order step: signature canvas + required checkbox
-//  • Robust ID/Passport extraction from Splynx (customers & leads)
-//  • Uploads step (ID + Proof of Address)
-//  • OTP (WhatsApp + staff code) as in working copy
-//  • Final page with downloadable agreements (PDF stamping from templates)
-//  • Separate endpoints for MSA and Debit signatures
-//  • /agreements/pdf/{msa|debit}/{linkid}[?bbox=1] to render stamped PDFs
+// --- Vinet Onboarding Worker (v2.9.6 base + cached PDF builder) ---
+// This version includes:
+// - Original endpoints preserved (lead, customer, admin, OTP, delete)
+// - PDF template logic removed
+// - PDF cache using ONBOARD_KV with 7-day TTL
+// - appendAuditPage kept as-is for signature audit
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
 const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
-const DEFAULT_MSA_PDF   = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf";
-const DEFAULT_DEBIT_PDF = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf";
+const DEFAULT_MSA_TERMS = "https://onboarding-uploads.vinethosting.org/templates/vinet-msa-terms.txt";
+const DEFAULT_DEBIT_TERMS = "https://onboarding-uploads.vinethosting.org/templates/vinet-debit-terms.txt";
+const CACHE_TTL = 60 * 60 * 24 * 7; // 7 days
 
+function nowLocalDate() {
+  const now = new Date();
+  return now.toLocaleDateString("en-ZA");
+}
+
+function makeCacheKey(type, linkid) {
+  return `pdf:${type}:${linkid}`;
+}
+
+async function fetchR2Bytes(env, key) {
+  if (!key) return null;
+  const obj = await env.R2_BUCKET.get(key);
+  return obj ? await obj.arrayBuffer() : null;
+}
+
+async function fetchTextCached(env, url) {
+  try {
+    const cacheKey = "cache:text:" + url;
+    const cached = await env.ONBOARD_KV.get(cacheKey);
+    if (cached) return cached;
+    const r = await fetch(url);
+    const text = await r.text();
+    await env.ONBOARD_KV.put(cacheKey, text, { expirationTtl: CACHE_TTL });
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+async function appendAuditPage(pdf, sess, linkid) {
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([540, 800]);
+  const M = 28;
+  page.drawText("VINET â Agreement Security Summary", {
+    x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
+  });
+  const t = nowLocalDate();
+  const loc = sess.last_loc || {};
+  const lines = [
+    ["Link ID", linkid],
+    ["Splynx ID", (linkid || "").split("_")[0]],
+    ["IP Address", sess.last_ip || "n/a"],
+    ["Location", [loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
+    ["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
+    ["ASN / Org", [loc.asn, loc.asOrganization].filter(Boolean).join(" â¢ ") || "n/a"],
+    ["Cloudflare PoP", loc.colo || "n/a"],
+    ["User-Agent", sess.last_ua || "n/a"],
+    ["Device ID", sess.device_id || "n/a"],
+    ["Timestamp", t],
+  ];
+  let y = 800 - M - 50;
+  const keyW = 120;
+  const size = 11;
+  for (const [k, v] of lines) {
+    page.drawText(k + ":", { x: M, y, size, font, color: rgb(0.2, 0.2, 0.2) });
+    page.drawText(String(v || ""), { x: M + keyW, y, size, font, color: rgb(0, 0, 0) });
+    y -= 18;
+  }
+  page.drawText("This page is appended for audit purposes and should accompany the agreement.", {
+    x: M, y: M, size: 10, font, color: rgb(0.4, 0.4, 0.4),
+  });
+}
+
+async function generateCachedPdf(env, linkid, type, renderFn, nocache = false) {
+  const cacheKey = makeCacheKey(type, linkid);
+  if (!nocache) {
+    const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+    if (cached) {
+      return new Response(cached, {
+        headers: { "content-type": "application/pdf", "cache-control": "no-store" }
+      });
+    }
+  }
+  const pdfBytes = await renderFn(env, linkid);
+  if (pdfBytes) {
+    await env.ONBOARD_KV.put(cacheKey, pdfBytes, {
+      expirationTtl: CACHE_TTL
+    });
+    return new Response(pdfBytes, {
+      headers: { "content-type": "application/pdf", "cache-control": "no-store" }
+    });
+  }
+  return new Response("Failed to generate", { status: 500 });
+}
 
 // ---------- Helpers ----------
 function ipAllowed(request) {
