@@ -139,9 +139,9 @@ async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
-    `/crm/leads/${id}`,
+    `/admin/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
-    `/crm/leads/${id}/contacts`,
+    `/admin/crm/leads/${id}/contacts`,
   ];
   for (const ep of eps) {
     try { const data = await splynxGET(env, ep); const m = pickPhone(data); if (m) return m; } catch {}
@@ -625,7 +625,7 @@ const bytes = new Uint8Array(await r.arrayBuffer());
 const img = await pdf.embedJpg(bytes).catch(async()=>await pdf.embedPng(bytes));
 const w = 110; // bigger
 const scale = img.scale(1);
-const h = (scale.height/scale.width) \* w;
+const h = (scale.height/scale.width) * w;
 page.drawImage(img, { x: 540 - M - w, y: 730, width: w, height: h });
 }
 } catch {}
@@ -690,7 +690,7 @@ p.drawText("MSA Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1)
 y -= 14;
 
 // Terms paragraph (wrapped)
-const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M\*2, font, 10.5, rgb(0,0,0), 1.35);
+const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M*2, font, 10.5, rgb(0,0,0), 1.35);
 
 // Signature block
 let sigBaseY = Math.max(afterTermsY - 24, 120);
@@ -701,7 +701,7 @@ p.drawText("Signature", { x: 540/2 - 40, y: sigBaseY, size: 10, font: bold, colo
 const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
 if (sigBytes) {
 const img = await pdf.embedPng(sigBytes);
-const w = 160, s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
+const w = 160, s = img.scale(1); let h = (s.height/s.width)*w; if (h>45) { h=45; }
 p.drawImage(img, { x: 540/2 - 80, y: sigBaseY - 16 - h + 8, width: w, height: h });
 }
 
@@ -769,7 +769,7 @@ p.drawText("Debit Order Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,
 y -= 14;
 
 // Slightly smaller terms (about 5pt down from body)
-const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M\*2, font, 9, rgb(0,0,0), 1.35);
+const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M*2, font, 9, rgb(0,0,0), 1.35);
 
 // Signature row
 let sigBaseY = Math.max(afterTermsY - 24, 120);
@@ -781,7 +781,7 @@ if (sess.debit_sig_key) {
 const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
 if (sigBytes) {
 const img = await pdf.embedPng(sigBytes);
-const w = 160; const s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
+const w = 160; const s = img.scale(1); let h = (s.height/s.width)*w; if (h>45) { h=45; }
 p.drawImage(img, { x: 540/2 - 80, y: sigBaseY - 16 - h + 8, width: w, height: h });
 }
 }
@@ -855,7 +855,7 @@ export default {
     }
     if (path === "/api/debit/sign" && method === "POST") {
       const { linkid, dataUrl } = await request.json().catch(()=>({}));
-      if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
+      if (!linkid || !dataUrl || !/^data:image/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
       const png = dataUrl.split(",")[1];
       const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
       const sigKey = `debit_agreements/${linkid}/signature.png`;
@@ -991,7 +991,7 @@ export default {
     // ----- Service agreement signature -----
     if (path === "/api/sign" && method === "POST") {
       const { linkid, dataUrl } = await request.json().catch(() => ({}));
-      if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
+      if (!linkid || !dataUrl || !/^data:image/png;base64,/.test(dataUrl)) return json({ ok:false, error:"Missing/invalid signature" }, 400);
       const png = dataUrl.split(",")[1];
       const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
       const sigKey = `agreements/${linkid}/signature.png`;
