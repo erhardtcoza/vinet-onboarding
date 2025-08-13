@@ -554,13 +554,13 @@ function renderOnboardUI(linkid) {
     const showDebit = (state && state.pay_method === 'debit');
     stepEl.innerHTML = [
       '<h2>All set!</h2>',
-      '<p>Thanks — we’ve recorded your information. Our team will be in contact shortly. ',
+      '<p>Thanks - we've recorded your information. Our team will be in contact shortly. ',
       'If you have any questions please contact our sales team at <b>021 007 0200</b> / <b>sales@vinetco.za</b>.</p>',
       '<hr style="border:none;border-top:1px solid #e6e6e6;margin:16px 0">',
       '<div class="field"><b>Your agreements</b> <span class="note">(available immediately after signing)</span></div>',
       '<ul style="margin:.4em 0 0 1em; padding:0; line-height:1.9">',
-        '<li><a href="/agreements/pdf/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a> — <a href="/agreements/pdf/msa/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>',
-        (showDebit ? '<li><a href="/agreements/pdf/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a> — <a href="/agreements/pdf/debit/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>' : ''),
+        '<li><a href="/agreements/pdf/msa/'+linkid+'" target="_blank">Master Service Agreement (PDF)</a> - <a href="/agreements/pdf/msa/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>',
+        (showDebit ? '<li><a href="/agreements/pdf/debit/'+linkid+'" target="_blank">Debit Order Agreement (PDF)</a> - <a href="/agreements/pdf/debit/'+linkid+'?bbox=1" target="_blank" class="note">debug</a></li>' : ''),
       '</ul>'
     ].join('');
   }
@@ -577,7 +577,7 @@ async function appendAuditPage(pdf, sess, linkid) {
 const font = await pdf.embedFont(StandardFonts.Helvetica);
 const page = pdf.addPage([540, 800]); // slightly narrower than A4
 const M = 28;
-page.drawText("VINET — Agreement Security Summary", {
+page.drawText("VINET - Agreement Security Summary", {
 x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
 });
 const t = nowLocalDate();
@@ -1033,7 +1033,7 @@ export default {
         ? `<ul style="list-style:none;padding:0">${uploads.map(u=>{
             const href = '/api/admin/file?key=' + encodeURIComponent(u.key);
             const size = Math.round((u.size||0)/1024) + ' KB';
-            return `<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em"><b>${esc(u.label)||'File'}</b> — <a href="${href}" target="_blank">${esc(u.name)}</a> • ${size}</li>`;
+            return `<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em"><b>${esc(u.label)||'File'}</b> - <a href="${href}" target="_blank">${esc(u.name)}</a> • ${size}</li>`;
           }).join("")}</ul>`
         : `<div class="note">No files</div>`;
       return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Review</title>
@@ -1045,8 +1045,8 @@ export default {
   <h2>Uploads</h2>${filesHTML}
   <h2>Agreements</h2>
   <ul>
-    <li><a href="/agreements/pdf/msa/${esc(linkid)}" target="_blank">MSA (PDF)</a> — <a class="note" href="/agreements/pdf/msa/${esc(linkid)}?bbox=1" target="_blank">debug</a></li>
-    <li><a href="/agreements/pdf/debit/${esc(linkid)}" target="_blank">Debit Order (PDF)</a> — <a class="note" href="/agreements/pdf/debit/${esc(linkid)}?bbox=1" target="_blank">debug</a></li>
+    <li><a href="/agreements/pdf/msa/${esc(linkid)}" target="_blank">MSA (PDF)</a> - <a class="note" href="/agreements/pdf/msa/${esc(linkid)}?bbox=1" target="_blank">debug</a></li>
+    <li><a href="/agreements/pdf/debit/${esc(linkid)}" target="_blank">Debit Order (PDF)</a> - <a class="note" href="/agreements/pdf/debit/${esc(linkid)}?bbox=1" target="_blank">debug</a></li>
   </ul>
   <div style="margin-top:12px"><button class="btn" id="approve">Approve & Push</button> <button class="btn-outline" id="reject">Reject</button> <button class="btn-outline" id="delete">Delete</button></div>
   <div id="msg" class="note" style="margin-top:8px"></div>
@@ -1085,7 +1085,7 @@ export default {
 
     // ----- Agreements signature PNGs -----
     if (path.startsWith("/agreements/sig/") && method === "GET") {
-      const linkid = (path.split("/").pop() || "").replace(/\.png$/i,'');
+      const linkid = (path.split("/").pop() || "").replace(/.png$/i,'');
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess || !sess.agreement_sig_key) return new Response("Not found", { status: 404 });
       const obj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
@@ -1093,7 +1093,7 @@ export default {
       return new Response(obj.body, { headers: { "content-type": "image/png" } });
     }
     if (path.startsWith("/agreements/sig-debit/") && method === "GET") {
-      const linkid = (path.split("/").pop() || "").replace(/\.png$/i,'');
+      const linkid = (path.split("/").pop() || "").replace(/.png$/i,'');
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (!sess || !sess.debit_sig_key) return new Response("Not found", { status: 404 });
       const obj = await env.R2_UPLOADS.get(sess.debit_sig_key);
