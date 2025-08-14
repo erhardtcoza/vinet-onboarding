@@ -1,5 +1,5 @@
 // index.js — Vinet Onboarding Worker (full build)
-// Features:
+// Features (unchanged except PDFs):
 // • Admin dashboard & review
 // • Onboarding flow with OTP (WhatsApp + staff code)
 // • Payment method (EFT or Debit Order) with signature & required checkbox
@@ -22,11 +22,10 @@
 //
 // ---------------------------------------------------------------
 
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // ---------- Constants ----------
-const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
-const ALLOWED_IPS = ["160.226.128.0/20"]; // VNET ASN range
+const LOGO_URL = "https://static.vinet.co.za/logo.jpeg"; // keep as per your build
 const PDF_CACHE_TTL = 60 * 60 * 24 * 7; // 7 days
 const DEFAULT_MSA_TERMS_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
 const DEFAULT_DEBIT_TERMS_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
@@ -44,6 +43,12 @@ function localDateZA() {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+function fmtDDMMYYYY(d = new Date()) {
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth()+1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 }
 async function fetchTextCached(url, env, cachePrefix = "terms") {
   const key = `${cachePrefix}:${btoa(url).slice(0, 40)}`;
@@ -588,7 +593,125 @@ function renderOnboardUI(linkid) {
 </body></html>`;
 }
 
-// ---------- PDF RENDERERS ----------
+// ====== PDF helper utilities (layout, header, wrapping, pagination) ======
+const VINET_RED = { r: 237/255, g: 28/255, b: 36/255 };   // #ed1c24
+const VINET_BLACK = { r: 3/255, g: 3/255, b: 3/255 };     // #030303
+const SITE_URL = "www.vinet.co.za";
+const TEL_STR  = "021 007 0200";
+
+async function embedLogo(pdf, url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("logo fetch");
+    const bytes = await res.arrayBuffer();
+    try { return await pdf.embedPng(bytes); } catch { return await pdf.embedJpg(bytes); }
+  } catch { return null; }
+}
+function drawDashedLine(page, x, y, w, dash = 6, gap = 4, thickness = 0.7, color = VINET_BLACK) {
+  let cx = x;
+  while (cx < x + w) {
+    const seg = Math.min(dash, x + w - cx);
+    page.drawRectangle({ x: cx, y: y, width: seg, height: thickness, color });
+    cx += dash + gap;
+  }
+}
+function header(page, fonts, logoImg, docTitle, opts = {}) {
+  const { W=595, M=40 } = opts;
+  const { font, bold } = fonts;
+  let y = 812; // top
+  // Title left
+  page.drawText(docTitle, { x: M, y, size: 18, font: bold, color: VINET_RED });
+  // Logo + site/tel right
+  const logoW = 140; // ~50% bigger
+  let lx = W - M - logoW, ly = y - 6;
+  if (logoImg) {
+    const scale = logoImg.scale(1);
+    const h = (scale.height / scale.width) * logoW;
+    page.drawImage(logoImg, { x: lx, y: ly - h + 16, width: logoW, height: h });
+    ly -= h;
+  }
+  page.drawText(SITE_URL, { x: lx, y: ly - 4, size: 10, font, color: VINET_BLACK });
+  page.drawText(TEL_STR,   { x: lx, y: ly - 18, size: 10, font, color: VINET_BLACK });
+
+  // Divider
+  drawDashedLine(page, M, 788, W - M*2, 6, 4, 0.7, VINET_BLACK);
+  return 780; // return next y baseline
+}
+function drawKeyVal(page, fonts, xKey, xVal, y, key, val, size=11, gapY=16) {
+  const { font, bold } = fonts;
+  page.drawText(key, { x: xKey, y, size, font: bold, color: VINET_BLACK });
+  page.drawText(String(val ?? ""), { x: xVal, y, size, font, color: VINET_BLACK });
+  return y - gapY;
+}
+function wrapTextLines(text, font, size, maxWidth) {
+  const words = String(text||"").split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const test = (line ? line + " " : "") + w;
+    if (font.widthOfTextAtSize(test, size) > maxWidth) {
+      if (line) lines.push(line);
+      // if a single word is longer than maxWidth, hard split
+      if (font.widthOfTextAtSize(w, size) > maxWidth) {
+        let buf = "";
+        for (const ch of w) {
+          const t2 = buf + ch;
+          if (font.widthOfTextAtSize(t2, size) > maxWidth) { lines.push(buf); buf = ch; }
+          else buf = t2;
+        }
+        if (buf) line = buf;
+        else line = "";
+      } else {
+        line = w;
+      }
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function drawParagraph(page, text, x, y, width, lineH, font, size, opts={}) {
+  const lines = wrapTextLines(text, font, size, width);
+  for (const ln of lines) {
+    if (y < (opts.bottomY ?? 60)) return { y, flowed: true };
+    page.drawText(ln, { x, y, size, font, color: VINET_BLACK });
+    y -= lineH;
+  }
+  return { y, flowed: false };
+}
+function ensureSpaceOrAddPage(pdf, page, needY) {
+  if (needY < 60) {
+    return pdf.addPage([595, 842]);
+  }
+  return page;
+}
+function drawFooterSignatureRow(page, fonts, M, W, nameText) {
+  const { font, bold } = fonts;
+  const baseY = 70; // bottom margin area
+  // Left: Name
+  page.drawText("Name:", { x: M, y: baseY+18, size: 10, font: bold });
+  page.drawText(String(nameText||""), { x: M+50, y: baseY+18, size: 10, font });
+  // Center: Signature
+  page.drawText("Signature:", { x: (W/2)-40, y: baseY+18, size: 10, font: bold });
+  page.drawText("(signed)", { x: (W/2)-40, y: baseY+4, size: 10, font });
+  // Right: Date
+  page.drawText("Date (DD/MM/YYYY):", { x: W - M - 150, y: baseY+18, size: 10, font: bold });
+  page.drawText(fmtDDMMYYYY(), { x: W - M - 150, y: baseY+4, size: 10, font });
+}
+async function drawCenteredSignatureImage(pdf, page, sigBytes, centerX, y, maxW=220) {
+  if (!sigBytes) return;
+  try {
+    const img = await pdf.embedPng(sigBytes);
+    const scale = img.scale(1);
+    const h = (scale.height / scale.width) * maxW;
+    page.drawImage(img, { x: centerX - maxW/2, y: y - h/2, width: maxW, height: h });
+  } catch {}
+}
+
+// ---------- PDF RENDERERS (UPDATED) ----------
+
+// MSA PDF: title in red, personal info split L/R, 2 columns terms at 7pt across pages, footer + centered signature, audit page (no header)
 async function renderMSAPdf(env, linkid) {
   const cacheKey = `pdf:msa:${linkid}`;
   const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
@@ -602,61 +725,118 @@ async function renderMSAPdf(env, linkid) {
   const terms = (await fetchTextCached(termsUrl, env, "terms:msa")) || "Terms unavailable.";
 
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595, 842]); // A4
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const fonts = { font, bold };
+  const W = 595, H = 842, M = 40;
 
-  const M = 40;
-  let y = 800;
+  const logoImg = await embedLogo(pdf, LOGO_URL);
 
-  page.drawText("Master Service Agreement", { x: M, y, size: 18, font: bold });
-  y -= 28;
+  // Page 1
+  let page = pdf.addPage([W, H]);
+  let y = header(page, fonts, logoImg, "Vinet Internet Solutions Service Agreement", { W, M });
 
-  const row = (k, v) => { page.drawText(k, { x: M, y, size: 11, font: bold }); page.drawText(String(v || ""), { x: M + 140, y, size: 11, font }); y -= 16; };
+  // Personal info split (left/right)
   const idOnly = String(linkid).split("_")[0];
-
-  row("Full Name:", edits.full_name);
-  row("Email:", edits.email);
-  row("Phone:", edits.phone);
-  row("Street:", edits.street);
-  row("City:", edits.city);
-  row("ZIP:", edits.zip);
-  row("ID / Passport:", edits.passport);
-  row("Client Code:", idOnly);
+  const leftXK = M, leftXV = M + 120;
+  const rightXK = W/2 + 10, rightXV = rightXK + 80;
 
   y -= 6;
-  page.drawText("Agreement Terms", { x: M, y, size: 13, font: bold });
-  y -= 18;
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Client code:", idOnly);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Full Name:", edits.full_name);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "ID / Passport:", edits.passport);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Email:", edits.email);
 
-  const wrap = (text, x, y, width, size, fnt, lineH) => {
-    const words = text.split(/\s+/); let line = "";
-    for (const w of words) {
-      const test = `${line}${w} `; const tw = fnt.widthOfTextAtSize(test, size);
-      if (tw > width) { page.drawText(line.trim(), { x, y, size, font: fnt }); y -= lineH; line = `${w} `; }
-      else { line = test; }
+  let yRight = y + 64; // start right block a bit higher to balance
+  yRight = drawKeyVal(page, fonts, rightXK, rightXV, yRight, "Phone:", edits.phone);
+  yRight = drawKeyVal(page, fonts, rightXK, rightXV, yRight, "Street:", edits.street);
+  yRight = drawKeyVal(page, fonts, rightXK, rightXV, yRight, "City:", edits.city);
+  yRight = drawKeyVal(page, fonts, rightXK, rightXV, yRight, "ZIP:", edits.zip);
+
+  // Divider to end info
+  const endInfoY = Math.min(y, yRight) - 8;
+  drawDashedLine(page, M, endInfoY, W - M*2);
+  y = endInfoY - 12;
+
+  // Two-column terms at 7pt, auto flow across pages
+  const colGap = 16;
+  const colW = (W - M*2 - colGap) / 2;
+  const lineH = 9.8;
+  let remaining = terms;
+
+  function takeTextChunk(txt) { return txt; } // entire text; we'll draw in streaming manner
+
+  let colIndex = 0; // 0 left, 1 right
+  let xCol = M;
+  let yCol = y;
+
+  const paragraphs = String(terms||"").split(/\n+\s*\n+/); // paragraph split to avoid mid-word splits on hard breaks
+  let pIdx = 0;
+  while (pIdx < paragraphs.length) {
+    const para = paragraphs[pIdx];
+    // draw paragraph into current column, carrying overflow to new column/page
+    let res = drawParagraph(page, para, xCol, yCol, colW, lineH, font, 7, { bottomY: 90 });
+    if (!res.flowed) {
+      // blank line between paragraphs
+      yCol = res.y - lineH * 0.6;
+      pIdx++;
+    } else {
+      // need new column or page
+      colIndex++;
+      if (colIndex % 2 === 1) {
+        // move to right column
+        xCol = M + colW + colGap;
+        yCol = y;
+      } else {
+        // new page
+        page = pdf.addPage([W, H]);
+        // header for subsequent pages should remain same look & feel (you asked the audit page to be headerless, not the terms pages)
+        y = header(page, fonts, logoImg, "Vinet Internet Solutions Service Agreement", { W, M });
+        // reset columns
+        xCol = M;
+        yCol = y - 12;
+      }
     }
-    if (line) page.drawText(line.trim(), { x, y, size, font: fnt });
-    return y;
-  };
-
-  y = wrap(terms, M, y, 595 - M * 2, 10, font, 14);
-  y -= 18;
-
-  page.drawText("Signature:", { x: M, y, size: 11, font: bold });
-  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-  if (sigBytes) {
-    const sigImg = await pdf.embedPng(sigBytes);
-    const w = 180; const scale = sigImg.scale(1); const h = (scale.height / scale.width) * w;
-    page.drawImage(sigImg, { x: M + 90, y: y - h + 8, width: w, height: h });
   }
-  page.drawText("Date:", { x: 595 - M - 80, y, size: 11, font: bold });
-  page.drawText(localDateZA(), { x: 595 - M - 80, y: y - 16, size: 11, font });
+
+  // Ensure space for footer row; if not, add a new page with header
+  if (yCol < 140) {
+    page = pdf.addPage([W, H]);
+    y = header(page, fonts, logoImg, "Vinet Internet Solutions Service Agreement", { W, M });
+  }
+  // Footer: Name (left), Signature centered, Date (right)
+  drawFooterSignatureRow(page, fonts, M, W, edits.full_name);
+  // Center the signature image between Name and Date
+  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
+  await drawCenteredSignatureImage(pdf, page, sigBytes, W/2, 92, 220);
+
+  // Security audit page (NO header as requested)
+  {
+    const p = pdf.addPage([W, H]);
+    const title = "Security Audit";
+    p.drawText(title, { x: M, y: H-60, size: 16, font: bold, color: VINET_RED });
+    drawDashedLine(p, M, H-72, W - M*2);
+    const meta = [
+      ["Link ID", linkid],
+      ["Generated", new Date().toISOString()],
+      ["Client IP (last)", String(sess.last_ip || "")],
+      ["User-Agent (last)", String(sess.last_ua || "").slice(0, 300)],
+      ["Agreement signed", String(!!sess.agreement_signed)],
+    ];
+    let ay = H-100;
+    for (const [k,v] of meta) {
+      p.drawText(k + ":", { x: M, y: ay, size: 11, font: bold });
+      p.drawText(String(v||""), { x: M+120, y: ay, size: 11, font });
+      ay -= 16;
+    }
+  }
 
   const bytes = await pdf.save();
   await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
   return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
 }
 
+// Debit Order PDF: title in red, left/right info blocks, terms 8pt single column, footer with centered signature, audit page (no header)
 async function renderDebitPdf(env, linkid) {
   const cacheKey = `pdf:debit:${linkid}`;
   const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
@@ -671,63 +851,76 @@ async function renderDebitPdf(env, linkid) {
   const terms = (await fetchTextCached(termsUrl, env, "terms:debit")) || "Terms unavailable.";
 
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595, 842]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const fonts = { font, bold };
+  const W = 595, H = 842, M = 40;
 
-  const M = 40;
-  let y = 800;
+  const logoImg = await embedLogo(pdf, LOGO_URL);
 
-  page.drawText("Debit Order Instruction", { x: M, y, size: 18, font: bold });
-  y -= 28;
+  // Page 1
+  let page = pdf.addPage([W, H]);
+  let y = header(page, fonts, logoImg, "Vinet Debit Order Instruction", { W, M });
 
+  // Left block (client) / Right block (debit order details)
   const idOnly = String(linkid).split("_")[0];
-  const row = (k, v) => { page.drawText(k, { x: M, y, size: 11, font: bold }); page.drawText(String(v || ""), { x: M + 160, y, size: 11, font }); y -= 16; };
 
-  row("Full Name:", edits.full_name);
-  row("Email:", edits.email);
-  row("Phone:", edits.phone);
-  row("Street:", edits.street);
-  row("City:", edits.city);
-  row("ZIP:", edits.zip);
-  row("ID / Passport:", edits.passport);
-  row("Client Code:", idOnly);
+  const leftXK = M, leftXV = M + 110;
+  y -= 6;
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Client code:", idOnly);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Full Name:", edits.full_name);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "ID / Passport:", edits.passport);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Email:", edits.email);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Phone:", edits.phone);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "Street:", edits.street);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "City:", edits.city);
+  y = drawKeyVal(page, fonts, leftXK, leftXV, y, "ZIP:", edits.zip);
 
-  y -= 10;
-  page.drawText("Banking Details", { x: M, y, size: 13, font: bold });
-  y -= 18;
-  row("Bank:", d.bank_name);
-  row("Account Number:", d.account_number);
-  row("Account Type:", d.account_type);
-  row("Debit Day:", d.debit_day);
+  // Right block header
+  let yR = 772;
+  const rightXK = W/2 + 10, rightXV = rightXK + 150;
+  page.drawText("Debit Order Details", { x: rightXK, y: yR, size: 13, font: bold, color: VINET_BLACK });
+  yR -= 18;
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Account Holder Name:", d.account_holder);
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Account Holder ID:", d.id_number);
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Bank:", d.bank_name);
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Bank Account No:", d.account_number);
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Account Type:", d.account_type);
+  yR = drawKeyVal(page, fonts, rightXK, rightXV, yR, "Debit Order Date:", d.debit_day);
 
-  y -= 12;
-  page.drawText("Terms", { x: M, y, size: 12, font: bold });
-  y -= 16;
+  // Divider to end info part
+  const infoEndY = Math.min(y, yR) - 10;
+  drawDashedLine(page, M, infoEndY, W - M*2);
 
-  const wrap = (text, x, y, width, size, fnt, lineH) => {
-    const words = text.split(/\s+/); let line = "";
-    for (const w of words) {
-      const test = `${line}${w} `; const tw = fnt.widthOfTextAtSize(test, size);
-      if (tw > width) { page.drawText(line.trim(), { x, y, size, font: fnt }); y -= lineH; line = `${w} `; }
-      else { line = test; }
-    }
-    if (line) page.drawText(line.trim(), { x, y, size, font: fnt });
-    return y;
-  };
+  // Terms (single column, 8pt)
+  let yT = infoEndY - 12;
+  const pRes = drawParagraph(page, terms, M, yT, W - M*2, 11.5, font, 8, { bottomY: 120 });
+  yT = pRes.y;
 
-  y = wrap(terms, M, y, 595 - M * 2, 10, font, 14);
-  y -= 16;
-
-  page.drawText("Signature:", { x: M, y, size: 11, font: bold });
+  // Footer: Name (left), Signature centered, Date (right)
+  drawFooterSignatureRow(page, fonts, M, W, edits.full_name);
   const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
-  if (sigBytes) {
-    const sigImg = await pdf.embedPng(sigBytes);
-    const w = 180; const scale = sigImg.scale(1); const h = (scale.height / scale.width) * w;
-    page.drawImage(sigImg, { x: M + 90, y: y - h + 8, width: w, height: h });
+  await drawCenteredSignatureImage(pdf, page, sigBytes, W/2, 92, 220);
+
+  // Security audit page (NO header)
+  {
+    const p = pdf.addPage([W, H]);
+    p.drawText("Security Audit", { x: M, y: H-60, size: 16, font: bold, color: VINET_RED });
+    drawDashedLine(p, M, H-72, W - M*2);
+    const meta = [
+      ["Link ID", linkid],
+      ["Generated", new Date().toISOString()],
+      ["Client IP (last)", String(sess.last_ip || "")],
+      ["User-Agent (last)", String(sess.last_ua || "").slice(0, 300)],
+      ["Debit signed", String(!!sess.debit_signed)],
+    ];
+    let ay = H-100;
+    for (const [k,v] of meta) {
+      p.drawText(k + ":", { x: M, y: ay, size: 11, font: bold });
+      p.drawText(String(v||""), { x: M+120, y: ay, size: 11, font });
+      ay -= 16;
+    }
   }
-  page.drawText("Date:", { x: 595 - M - 80, y, size: 11, font: bold });
-  page.drawText(localDateZA(), { x: 595 - M - 80, y: y - 16, size: 11, font });
 
   const bytes = await pdf.save();
   await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
@@ -857,7 +1050,7 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA template send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=> ""); throw new Error(`WA template send failed ${r.status} ${t}`); }
     }
     async function sendWhatsAppTextIfSessionOpen(toMsisdn, bodyText) {
       const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -867,7 +1060,7 @@ export default {
         headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) { const t = await r.text().catch(()=>""); throw new Error(`WA text send failed ${r.status} ${t}`); }
+      if (!r.ok) { const t = await r.text().catch(()=> ""); throw new Error(`WA text send failed ${r.status} ${t}`); }
     }
     if (path === "/api/otp/send" && method === "POST") {
       const { linkid } = await request.json().catch(() => ({}));
@@ -1116,7 +1309,7 @@ export default {
       catch { return json({ error: "Lookup failed" }, 502); }
     }
 
-    // ----- Onboard UI route -----
+    // ----- Onboard UI route (duplicate guard) -----
     if (path.startsWith("/onboard/") && method === "GET") {
       const linkid = path.split("/")[2] || "";
       const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
