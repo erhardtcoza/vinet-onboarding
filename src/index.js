@@ -1,270 +1,245 @@
-// --- Vinet Onboarding Worker (Cloudflare) ---
-// Binding expectations (wrangler.toml):
-// D1:            binding="DB"
-// KV:            binding="ONBOARD_KV"
-// R2:            binding="R2_UPLOADS"
-// Vars (subset): API_URL, SPLYNX_API, SPLYNX_AUTH, TERMS_SERVICE_URL, TERMS_DEBIT_URL
-//                ADMIN_IPS, LINK_TTL_HOURS, R2_PUBLIC_BASE
-//                EFT_* values, WHATSAPP_* values (template send)
+// src/index.js
+// Vinet Onboarding Worker — single-file deploy
+// Requires wrangler.toml bindings you already provided (DB, ONBOARD_KV, R2_UPLOADS, vars)
 //
-// NOTE: This file is self-contained. Drop it into src/index.js.
-//
-// PDF generation uses pdf-lib (Workers-compatible).
+// npm dep: pdf-lib (Wrangler bundles it)
+//   npm i pdf-lib
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-// ---------- Brand ----------
+// ---------- Brand / assets ----------
 const BRAND = {
   site: "www.vinet.co.za",
   phone: "021 007 0200",
-  red: "#ed1c24",
-  black: "#030303",
+  redHex: "#ed1c24",
+  blackHex: "#030303",
 };
 const LOGO_HIGHRES = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
 const LOGO_LOWRES  = "https://static.vinet.co.za/Vinet%20Logo%20jpg_Full%20Logo.jpg";
+const LOGO_URL     = LOGO_LOWRES; // for HTML
 
-// ---------- Small helpers ----------
-const esc=(s="")=>String(s).replace(/[&<>"]/g,t=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[t]));
-const now=()=>Date.now();
-const rand=(n=6)=>{const cs="abcdefghjkmnpqrstuvwxyz23456789";let o="";for(let i=0;i<n;i++)o+=cs[Math.floor(Math.random()*cs.length)];return o;};
-async function fetchText(url){ try{ const r=await fetch(url,{cf:{cacheEverything:true,cacheTtl:300}}); if(!r.ok) return ""; return await r.text(); }catch{ return ""; } }
-async function fetchArrayBuffer(url){ const r=await fetch(url); if(!r.ok) throw new Error(`fetchArrayBuffer ${url} ${r.status}`); return await r.arrayBuffer(); }
-const JSONRes=(o,s=200)=>new Response(JSON.stringify(o),{status:s,headers:{"content-type":"application/json"}});
-function ddmmyyyy(iso){ try{ const d=new Date(iso||Date.now()); const dd=String(d.getDate()).padStart(2,'0'); const mm=String(d.getMonth()+1).padStart(2,'0'); const yy=d.getFullYear(); return `${dd}/${mm}/${yy}` }catch{ return "" } }
+// ---------- Helpers ----------
+const esc = (s="") => String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+const now = () => Date.now();
+const rand = (n=6) => { const cs="abcdefghjkmnpqrstuvwxyz23456789"; let o=""; for(let i=0;i<n;i++) o+=cs[Math.floor(Math.random()*cs.length)]; return o; };
+const ddmmyyyy = (iso) => { try{ const d=new Date(iso||Date.now()); const dd=String(d.getDate()).padStart(2,'0'); const mm=String(d.getMonth()+1).padStart(2,'0'); const yy=d.getFullYear(); return `${dd}/${mm}/${yy}` }catch{ return "" } };
+async function fetchText(url){ try{ const r=await fetch(url,{cf:{cacheEverything:true,cacheTtl:300}}); return r.ok?await r.text():""; }catch{ return ""; } }
+async function fetchArrayBuffer(url){ const r=await fetch(url); if(!r.ok) throw new Error(`fetch ${url} ${r.status}`); return r.arrayBuffer(); }
 
-// ---------- IP gating (ADMIN_IPS supports single IPs + CIDR /24 + /20) ----------
-function parseAdminIPs(val){
-  const items=String(val||"").split(",").map(s=>s.trim()).filter(Boolean);
-  const out=[];
-  for(const it of items){
-    const m = it.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\/(\d+))?$/);
-    if(!m) continue;
-    const a=+m[1],b=+m[2],c=+m[3],d=+m[4],mask=m[5]?+m[5]:32;
-    if(mask===32){ out.push({a,b,cMin:c,cMax:c,dMin:d,dMax:d}); }
-    else if(mask===24){ out.push({a,b,cMin:c,cMax:c,dMin:0,dMax:255}); }
-    else if(mask===20){ out.push({a,b,cMin:c,cMax:c+15,dMin:0,dMax:255}); }
+// Original simple admin IP gate: 160.226.128.0–160.226.143.255
+function ipAllowed(request) {
+  const ip = request.headers.get("CF-Connecting-IP");
+  if (!ip) return false;
+  const [a,b,c] = ip.split(".").map(Number);
+  return a === 160 && b === 226 && c >= 128 && c <= 143;
+}
+
+// ---------- Splynx helpers ----------
+async function splynxGET(env, endpoint) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, { headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` }});
+  if (!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`);
+  return r.json();
+}
+async function splynxPOSTForm(env, endpoint, form) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, { method:"POST", headers:{ Authorization:`Basic ${env.SPLYNX_AUTH}` }, body: form });
+  if (!r.ok) throw new Error(`Splynx POST ${endpoint} ${r.status}`);
+  return r.json().catch(()=>({}));
+}
+function pickPhone(obj) {
+  if (!obj) return null;
+  const normalize = s => String(s||"").trim().replace(/^\+/, ""); // "+27" -> "27"
+  const ok = s => /^27\d{8,13}$/.test(normalize(s));
+  const direct = [obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp, obj.msisdn, obj.primary_phone, obj.contact_number, obj.billing_phone];
+  for (const v of direct) if (ok(v)) return normalize(v);
+  if (Array.isArray(obj)) { for (const it of obj){ const m=pickPhone(it); if(m) return m; } }
+  else if (typeof obj === "object") { for (const k of Object.keys(obj)){ const m=pickPhone(obj[k]); if(m) return m; } }
+  return null;
+}
+function pickFrom(obj, keyNames) {
+  if (!obj) return null;
+  const wanted = keyNames.map(k => String(k).toLowerCase());
+  const stack = [obj];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (Array.isArray(cur)) { for (const it of cur) stack.push(it); continue; }
+    if (cur && typeof cur === "object") {
+      for (const [k,v] of Object.entries(cur)) {
+        if (wanted.includes(String(k).toLowerCase())) {
+          const s = String(v ?? "").trim(); if (s) return s;
+        }
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
   }
-  return out;
+  return null;
 }
-function ipAllowed(request, ranges){
-  const ip = request.headers.get("CF-Connecting-IP") || "";
-  const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); if(!m) return false;
-  const a=+m[1],b=+m[2],c=+m[3],d=+m[4];
-  for(const r of ranges){ if(a===r.a && b===r.b && c>=r.cMin && c<=r.cMax && d>=r.dMin && d<=r.dMax) return true; }
-  return false;
+async function fetchCustomerMsisdn(env, id) {
+  const eps = [
+    `/admin/customers/customer/${id}`,
+    `/admin/customers/${id}`,
+    `/crm/leads/${id}`,
+    `/admin/customers/${id}/contacts`,
+    `/crm/leads/${id}/contacts`,
+  ];
+  for (const ep of eps) {
+    try { const data = await splynxGET(env, ep); const m = pickPhone(data); if (m) return m; } catch {}
+  }
+  return null;
 }
-
-// ---------- Splynx minimal ----------
-async function splynxGET(env, endpoint){ const r=await fetch(`${env.SPLYNX_API}${endpoint}`,{headers:{Authorization:`Basic ${env.SPLYNX_AUTH}`}}); if(!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`); return r.json(); }
-async function splynxPOSTForm(env, endpoint, form){ const r=await fetch(`${env.SPLYNX_API}${endpoint}`,{method:"POST",headers:{Authorization:`Basic ${env.SPLYNX_AUTH}`},body:form}); if(!r.ok) throw new Error(`Splynx POST ${endpoint} ${r.status}`); return r.json().catch(()=>({})); }
-function pickPhone(obj){ if(!obj) return null; const ok=s=>/^27\d{8,13}$/.test(String(s||"").trim()); const direct=[obj.phone_mobile,obj.mobile,obj.phone,obj.whatsapp,obj.msisdn,obj.primary_phone,obj.contact_number,obj.billing_phone]; for(const v of direct) if(ok(v)) return String(v).trim(); if(Array.isArray(obj)){ for(const it of obj){ const m=pickPhone(it); if(m) return m; } } else if(typeof obj==="object"){ for(const k of Object.keys(obj)){ const m=pickPhone(obj[k]); if(m) return m; } } return null; }
-async function fetchProfileForDisplay(env, id){
+async function fetchProfileForDisplay(env, id) {
   let cust=null, lead=null, contacts=null, info=null;
   try{ cust=await splynxGET(env, `/admin/customers/customer/${id}`);}catch{}
   if(!cust){ try{ lead=await splynxGET(env, `/crm/leads/${id}`);}catch{} }
   try{ contacts=await splynxGET(env, `/admin/customers/${id}/contacts`);}catch{}
   try{ info=await splynxGET(env, `/admin/customers/customer-info/${id}`);}catch{}
-  const src=cust||lead||{}; const phone=pickPhone({...src,contacts});
+  const src=cust||lead||{};
+  const phone=pickPhone({...src,contacts});
   const street=src.street??src.address??src.address_1??src.street_1??(src.addresses&&(src.addresses.street||src.addresses.address_1))??"";
   const city=src.city??(src.addresses&&src.addresses.city)??"";
   const zip=src.zip_code??src.zip??(src.addresses&&(src.addresses.zip||src.addresses.zip_code))??"";
-  const passport=(info&&(info.passport||info.id_number||info.identity_number))||src.passport||src.id_number||"";
-  return { id, full_name:src.full_name||src.name||"", email:src.email||src.billing_email||"", phone:phone||"", street, city, zip, passport };
-}
-
-// ---------- KV keys ----------
-const kvKey={ link:id=>`link:${id}`, otp:id=>`otp:${id}`, staff:id=>`staff:${id}` };
-
-// ---------- D1 (optional) ----------
-async function ensureTables(env){ if(!env.DB) return; await env.DB.exec(`CREATE TABLE IF NOT EXISTS onboard(id INTEGER PRIMARY KEY AUTOINCREMENT, splynx_id TEXT, linkid TEXT, status TEXT, updated INTEGER);`); }
-async function markStatus(env, splynx_id, linkid, status){ if(!env.DB) return; await ensureTables(env); const ts=now(); await env.DB.prepare(`INSERT INTO onboard (splynx_id,linkid,status,updated) VALUES (?1,?2,?3,?4)`).bind(String(splynx_id),String(linkid),String(status),ts).run(); }
-async function listByMode(env, mode){ if(!env.DB) return {items:[]}; await ensureTables(env); const stmt=env.DB.prepare(`SELECT splynx_id as id, linkid, updated FROM onboard WHERE status=?1 ORDER BY updated DESC LIMIT 100`).bind(mode); const {results}=await stmt.all(); return {items: results||[]}; }
-
-// ---------- WhatsApp OTP (template first; fallback to staff code only) ----------
-async function sendWhatsAppOTP(env, msisdn, code){
-  if(!env.WHATSAPP_TOKEN || !env.PHONE_NUMBER_ID) return { ok:false, sent:false, reason:"not_configured" };
-  const url=`https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
-  const headers={ "Content-Type":"application/json", "Authorization":`Bearer ${env.WHATSAPP_TOKEN}` };
-  const template = {
-    messaging_product:"whatsapp",
-    to: msisdn,
-    type:"template",
-    template:{
-      name: env.WHATSAPP_TEMPLATE_NAME || "vinetotp",
-      language:{ code: env.WHATSAPP_TEMPLATE_LANG || "en_US" },
-      components:[{ type:"body", parameters:[{ type:"text", text: code }]}]
-    }
+  const passport=(info&&(info.passport||info.id_number||info.identity_number))||src.passport||src.id_number||pickFrom(src,['passport','id_number','idnumber','national_id','identity_number'])||"";
+  return {
+    kind: cust ? "customer" : (lead ? "lead" : "unknown"),
+    id,
+    full_name: src.full_name || src.name || "",
+    email: src.email || src.billing_email || "",
+    phone: phone || "",
+    city, street, zip, passport,
+    partner: src.partner || src.location || "",
+    payment_method: src.payment_method || "",
   };
-  const r = await fetch(url,{method:"POST",headers,body:JSON.stringify(template)});
-  if (r.ok) return { ok:true, sent:true, kind:"template" };
-  return { ok:false, sent:false, kind:"template", status:r.status };
 }
 
-// ---------- Admin UI ----------
-function adminShell(activeTab="gen", urlObj){
-  const tab = esc(urlObj.searchParams.get("tab") || activeTab);
-  return `<!doctype html><html><head><meta charset="utf-8"/><title>Admin Dashboard</title><meta name="viewport" content="width=device-width,initial-scale=1"/>
+// ---------- Simple keys ----------
+const kv = {
+  onboard: id => `onboard/${id}`,           // session blob (progress, flags)
+  otp: id => `otp/${id}`,                   // whatsapp otp
+  staff: id => `staffotp/${id}`,            // staff code
+};
+
+// ---------- Admin UI (restore original look) ----------
+function renderAdminPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
+<title>Admin</title><meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-:root{--red:${BRAND.red};--black:${BRAND.black};--bd:#eee}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;margin:0}
-.wrap{max-width:1100px;margin:28px auto;padding:0 16px}
-.card{background:#fff;border:1px solid var(--bd);border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.05);padding:24px}
-h1{font-size:40px;margin:8px 0 20px;text-align:center;color:#b10015;font-weight:800}
-.logo{display:block;margin:0 auto 8px;height:64px}
-.tabs{display:grid;gap:14px;margin:8px 0 20px}
-.tabs .row1,.tabs .row2{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
-.pill{padding:10px 16px;border:2px solid var(--red);border-radius:999px;color:var(--red);cursor:pointer;background:#fff}
-.pill.active{background:var(--red);color:#fff}
-.row{display:grid;grid-template-columns:220px 1fr;gap:10px 16px;margin:10px 0}
-input,button{font:inherit}input{border:1px solid #ddd;border-radius:10px;padding:10px;width:100%}
-button{padding:12px 16px;border-radius:12px;border:0;background:var(--red);color:#fff;cursor:pointer}
-table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #f0f0f0;padding:10px;text-align:left}
-.btn{border:1px solid #ddd;background:#fff;color:#222}
-.hint{color:#666;font-size:13px}
-.link{color:#1a73e8}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid #ddd;background:#fafafa;font-size:12px}
+body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
+.card{background:#fff;max-width:1000px;margin:2em auto;border-radius:1.25em;box-shadow:0 2px 12px #0002;padding:1.4em 1.6em}
+.logo{display:block;margin:0 auto 1em;max-width:120px}
+h1,h2{color:#e2001a}
+.tabs{display:flex;gap:.5em;flex-wrap:wrap;margin:.2em 0 1em;justify-content:center}
+.tab{padding:.55em 1em;border-radius:.7em;border:2px solid #e2001a;color:#e2001a;cursor:pointer}
+.tab.active{background:#e2001a;color:#fff}
+.btn{background:#e2001a;color:#fff;border:0;border-radius:.7em;padding:.55em 1em;cursor:pointer}
+.btn-secondary{background:#eee;color:#222;border:0;border-radius:.7em;padding:.5em 1em;text-decoration:none;display:inline-block}
+.field{margin:.9em 0}
+input{width:100%;padding:.6em;border-radius:.5em;border:1px solid #ddd}
+.row{display:flex;gap:.75em}.row>*{flex:1}
+table{width:100%;border-collapse:collapse} th,td{padding:.6em .5em;border-bottom:1px solid #eee;text-align:left}
+.note{font-size:12px;color:#666} #out a{word-break:break-all}
 </style></head><body>
-<div class="wrap"><div class="card">
-  <img class="logo" src="${LOGO_LOWRES}" alt="Vinet"/>
-  <h1>Admin Dashboard</h1>
+<div class="card">
+  <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
+  <h1 style="text-align:center">Admin Dashboard</h1>
   <div class="tabs">
-    <div class="row1">
-      <div class="pill ${tab==='gen'?'active':''}" data-tab="gen">1. Generate onboarding link</div>
-      <div class="pill ${tab==='staff'?'active':''}" data-tab="staff">2. Generate verification code</div>
-    </div>
-    <div class="row2">
-      <div class="pill ${tab==='inprog'?'active':''}" data-tab="inprog">3. Pending (in-progress)</div>
-      <div class="pill ${tab==='pending'?'active':''}" data-tab="pending">4. Completed (awaiting approval)</div>
-      <div class="pill ${tab==='approved'?'active':''}" data-tab="approved">5. Approved</div>
-    </div>
+    <div class="tab active" data-tab="gen">1. Generate onboarding link</div>
+    <div class="tab" data-tab="staff">2. Generate verification code</div>
+    <div class="tab" data-tab="inprog">3. Pending (in-progress)</div>
+    <div class="tab" data-tab="pending">4. Completed (awaiting approval)</div>
+    <div class="tab" data-tab="approved">5. Approved</div>
   </div>
-  <div id="content">Loading…</div>
-</div></div>
-<script>(()=>{
-  const tabs=[...document.querySelectorAll('.pill')], content=document.getElementById('content');
-  tabs.forEach(t=>t.onclick=()=>{const u=new URL(location.href);u.searchParams.set('tab',t.dataset.tab);history.replaceState(null,'',u.toString());tabs.forEach(x=>x.classList.remove('active'));t.classList.add('active');load(t.dataset.tab);});
-  load("${tab}");
-  function node(html){const d=document.createElement('div');d.innerHTML=html;return d;}
-  async function load(which){
-    if(which==='gen'){
-      content.innerHTML='';
-      const v=node('<div class="row"><div>Splynx Lead/Customer ID</div><div><input id="id" placeholder="e.g. 319"/></div></div><div style="display:flex;gap:12px;justify-content:center"><button id="go">Generate</button></div><div id="out" class="hint" style="margin-top:10px;text-align:center"></div>');
-      v.querySelector('#go').onclick=async()=>{
-        const id=v.querySelector('#id').value.trim(); const out=v.querySelector('#out');
-        if(!id){ out.textContent='Please enter an ID.'; return; }
-        out.textContent='Working…';
-        try{
-          let r=await fetch('/api/admin/genlink',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});
-          if(!r.ok) r=await fetch('/api/admin/genlink?id='+encodeURIComponent(id));
-          const d=await r.json().catch(()=>({}));
-          out.innerHTML = d.url ? ('Onboarding link: <a class="link" href="'+d.url+'" target="_blank" rel="noreferrer">'+d.url+'</a>') : 'Error generating link.';
-        }catch{ out.textContent='Network error.'; }
-      };
-      content.appendChild(v); return;
-    }
-    if(which==='staff'){
-      content.innerHTML='';
-      const v=node('<div class="row"><div>Onboarding Link ID</div><div><input id="linkid" placeholder="e.g. 319_ab12cd"/></div></div><div style="text-align:center"><button id="go">Generate staff code</button></div><div id="out" class="hint" style="margin-top:10px;text-align:center"></div>');
-      v.querySelector('#go').onclick=async()=>{
-        const linkid=v.querySelector('#linkid').value.trim(); const out=v.querySelector('#out');
-        if(!linkid){ out.textContent='Enter linkid'; return; }
-        out.textContent='Working…';
-        try{
-          const r=await fetch('/api/admin/staff/gen',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid})});
-          const d=await r.json().catch(()=>({}));
-          out.innerHTML = d.ok ? ('Staff code: <b>'+d.code+'</b> (valid 15 min)') : (d.error||'Failed');
-        }catch{ out.textContent='Network error.'; }
-      };
-      content.appendChild(v); return;
-    }
-    if(['inprog','pending','approved'].includes(which)){
-      content.innerHTML='Loading…';
-      try{
-        const r=await fetch('/api/admin/list?mode='+which); const d=await r.json();
-        const rows=(d.items||[]).map(i=>'<tr><td>'+i.id+'</td><td>'+i.linkid+'</td><td>'+new Date(i.updated).toLocaleString()+'</td><td><a class="link" href="/admin/review?linkid='+encodeURIComponent(i.linkid)+'">Open</a></td></tr>').join('')||'<tr><td colspan="4">No records.</td></tr>';
-        content.innerHTML='<table><thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th>Action</th></tr></thead><tbody>'+rows+'</tbody></table>';
-      }catch{ content.innerHTML='Failed to load.'; }
-      return;
-    }
-  }
-})();</script>
+  <div id="content"></div>
+</div>
+<script src="/static/admin.js"></script>
 </body></html>`;
 }
-function adminReviewPage(linkid, publicBase){
-  return `<!doctype html><html><head><meta charset="utf-8"/><title>Review & Approve</title><meta name="viewport" content="width=device-width,initial-scale=1"/>
+function adminJs() {
+  return `(()=> {
+    const tabs=[...document.querySelectorAll('.tab')], content=document.getElementById('content');
+    tabs.forEach(t=>t.onclick=()=>{ tabs.forEach(x=>x.classList.remove('active')); t.classList.add('active'); load(t.dataset.tab); });
+    load('gen');
+    const node=html=>{const d=document.createElement('div'); d.innerHTML=html; return d;};
+
+    async function load(which){
+      if(which==='gen'){
+        content.innerHTML='';
+        const v=node('<div class="field" style="max-width:640px;margin:0 auto;"><label>Splynx Lead/Customer ID</label><div class="row"><input id="id" autocomplete="off"/><button class="btn" id="go">Generate</button></div><div id="out" class="field note" style="margin-top:.6em"></div></div>');
+        v.querySelector('#go').onclick=async()=>{
+          const id=v.querySelector('#id').value.trim(); const out=v.querySelector('#out');
+          if(!id){out.textContent='Please enter an ID.';return;}
+          out.textContent='Working...';
+          try{
+            const r=await fetch('/api/admin/genlink',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});
+            const d=await r.json().catch(()=>({}));
+            out.innerHTML=d.url?'<b>Onboarding link:</b> <a href="'+d.url+'" target="_blank">'+d.url+'</a>':'Error generating link.';
+          }catch{out.textContent='Network error.';}
+        };
+        content.appendChild(v); return;
+      }
+      if(which==='staff'){
+        content.innerHTML='';
+        const v=node('<div class="field" style="max-width:640px;margin:0 auto;"><label>Onboarding Link ID (e.g. 319_ab12cd)</label><div class="row"><input id="linkid" autocomplete="off"/><button class="btn" id="go">Generate staff code</button></div><div id="out" class="field note" style="margin-top:.6em"></div></div>');
+        v.querySelector('#go').onclick=async()=>{
+          const linkid=v.querySelector('#linkid').value.trim(); const out=v.querySelector('#out');
+          if(!linkid){out.textContent='Enter linkid';return;}
+          out.textContent='Working...';
+          try{
+            const r=await fetch('/api/staff/gen',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid})});
+            const d=await r.json().catch(()=>({}));
+            out.innerHTML=d.ok?'Staff code: <b>'+d.code+'</b> (valid 15 min)':(d.error||'Failed');
+          }catch{out.textContent='Network error.';}
+        };
+        content.appendChild(v); return;
+      }
+      if(['inprog','pending','approved'].includes(which)){
+        content.innerHTML='Loading...';
+        try{
+          const r=await fetch('/api/admin/list?mode='+which); const d=await r.json();
+          const rows=(d.items||[]).map(i=>'<tr><td>'+i.id+'</td><td>'+i.linkid+'</td><td>'+new Date(i.updated).toLocaleString()+'</td><td>'+(which==='pending'?'<a class="btn" href="/admin/review?linkid='+encodeURIComponent(i.linkid)+'">Review</a>':'<a class="btn-secondary" href="/onboard/'+i.linkid+'" target="_blank">Open</a>')+'</td></tr>').join('')||'<tr><td colspan="4">No records.</td></tr>';
+          content.innerHTML='<table style="max-width:900px;margin:0 auto"><thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+        }catch{content.innerHTML='Failed to load.';}
+        return;
+      }
+    }
+  })();`;
+}
+
+// ---------- EFT Info Page ----------
+async function renderEFTPage(id, env) {
+  // env.EFT_REFERENCE === "SPLYNX-ID" -> show the id passed in query (?id=319)
+  const reference = (env.EFT_REFERENCE === "SPLYNX-ID" && id) ? id : (env.EFT_REFERENCE || id || "");
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>EFT Payment Details</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fafafa;margin:0}
-.wrap{max-width:900px;margin:28px auto;padding:0 16px}
-.card{background:#fff;border:1px solid #eee;border-radius:16px;padding:20px;box-shadow:0 8px 24px rgba(0,0,0,.05)}
-h1{font-size:28px;margin:0 0 16px;color:#b10015}.sec{margin:16px 0}.pill{display:inline-block;border:1px solid #ddd;border-radius:999px;padding:2px 8px;font-size:12px;background:#f9f9f9}
-.list a{display:inline-block;margin:4px 0}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid #ddd;background:#fafafa;font-size:12px}
-.ok{color:green}.no{color:#b10015}
+body{font-family:Arial,sans-serif;background:#f7f7fa}
+.container{max-width:900px;margin:40px auto;background:#fff;padding:28px;border-radius:16px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
+h1{color:#e2001a;font-size:34px;margin:8px 0 18px}
+.grid{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+.grid .full{grid-column:1 / -1}
+label{font-weight:700;color:#333;font-size:14px}
+input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #ddd;border-radius:8px;background:#fafafa}
+button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius:10px;cursor:pointer;width:100%;font-weight:700}
+.note{font-size:13px;color:#555}.logo{display:block;margin:0 auto 8px;height:68px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
 </style></head><body>
-<div class="wrap"><div class="card">
-<h1>Review & Approve</h1>
-<div class="sec"><b>Link ID:</b> ${esc(linkid)}</div>
-<div id="data" class="sec">Loading…</div>
-</div></div>
-<script>
-(async()=>{
-  const r=await fetch('/api/admin/review-data?linkid='+encodeURIComponent(${JSON.stringify(linkid)}));
-  const d=await r.json().catch(()=>({}));
-  const el=document.getElementById('data');
-  if(!d.ok){ el.textContent = d.error||'Failed to load'; return; }
-  const prof = d.profile||{};
-  const uploads = d.uploads||[];
-  const ag = d.agreements||{};
-  const pub = ${JSON.stringify(publicBase)};
-  const idOk = d.uploads_status?.id ? '✅' : '❌';
-  const poaOk = d.uploads_status?.poa ? '✅' : '❌';
-  const upHtml = uploads.length
-     ? uploads.map(u=>{
-         const url = pub.replace(/\/$/,'') + '/' + u.key.split('/').map(encodeURIComponent).join('/');
-         return '<a href="'+url+'" target="_blank">'+u.name+' — '+u.size_human+'</a>';
-       }).join('<br/>')
-     : 'None';
-  const msaUrl = ag.msa ? (pub.replace(/\/$/,'') + '/' + ag.msa.split('/').map(encodeURIComponent).join('/')) : '';
-  const doUrl  = ag.debit ? (pub.replace(/\/$/,'') + '/' + ag.debit.split('/').map(encodeURIComponent).join('/')) : '';
-  el.innerHTML = \`
-    <div class="sec"><b>Splynx ID:</b> \${prof.id||''} • <span class="pill">\${d.status||'pending'}</span></div>
-    <div class="sec"><b>Customer</b><div class="list">
-      full_name: \${prof.full_name||''}<br/>email: \${prof.email||''}<br/>phone: \${prof.phone||''}<br/>passport: \${prof.passport||''}<br/>street: \${prof.street||''}<br/>city: \${prof.city||''}<br/>zip: \${prof.zip||''}
-    </div></div>
-    <div class="sec"><b>Uploads</b> <span class="badge">ID \${idOk}</span> <span class="badge">POA \${poaOk}</span><div class="list">\${upHtml}</div></div>
-    <div class="sec"><b>Agreements</b><div class="list">
-      \${msaUrl?'<a href="'+msaUrl+'" target="_blank">MSA (PDF)</a>':'<span class="pill">MSA not generated</span>'}<br/>
-      \${doUrl?'<a href="'+doUrl+'" target="_blank">Debit Order (PDF)</a>':'<span class="pill">Debit not generated</span>'}
-    </div></div>
-    <div class="sec">
-      <button onclick="action('approve')">Approve & Push</button>
-      <button style="background:#fff;color:#b10015;border:1px solid #b10015" onclick="action('reject')">Reject</button>
-      <button style="background:#fff;color:#222;border:1px solid #ccc" onclick="action('delete')">Delete</button>
-      <div id="msg" class="sec"></div>
-    </div>\`;
-  window.action = async (what)=>{
-    const m=document.getElementById('msg'); m.textContent='Working…';
-    const res=await fetch('/api/admin/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid:${JSON.stringify(linkid)}, action:what})});
-    const j=await res.json().catch(()=>({}));
-    m.textContent = j.ok ? 'Done' : ('Failed: '+(j.error||''));
-  };
-})();
-</script></body></html>`;
+<div class="container">
+  <img src="${LOGO_URL}" class="logo" alt="Vinet">
+  <h1>EFT Payment Details</h1>
+  <div class="grid">
+    <div><label>Bank</label><input readonly value="${esc(env.EFT_BANK_NAME || 'First National Bank (FNB/RMB)')}"></div>
+    <div><label>Account Name</label><input readonly value="${esc(env.EFT_ACCOUNT_NAME || 'Vinet Internet Solutions')}"></div>
+    <div><label>Account Number</label><input readonly value="${esc(env.EFT_ACCOUNT_NO || '62757054996')}"></div>
+    <div><label>Branch Code</label><input readonly value="${esc(env.EFT_BRANCH_CODE || '250655')}"></div>
+    <div class="full"><label style="font-weight:900">Reference</label><input style="font-weight:900" readonly value="${esc(reference)}"></div>
+  </div>
+  <p class="note" style="margin-top:16px">${esc(env.EFT_NOTES || 'Please remember that all accounts are payable on or before the 1st of every month.')}</p>
+  <div style="margin-top:14px"><button onclick="window.print()">Print</button></div>
+</div>
+</body></html>`;
 }
 
 // ---------- Onboarding UI ----------
-function renderOnboardPage(linkid, env){
-  const EFT = {
-    bank: env.EFT_BANK_NAME || "First National Bank (FNB/RMB)",
-    name: env.EFT_ACCOUNT_NAME || "Vinet Internet Solutions",
-    no: env.EFT_ACCOUNT_NO || "62757054996",
-    branch: env.EFT_BRANCH_CODE || "250655",
-    refTpl: env.EFT_REFERENCE || "SPLYNX-ID",
-    notes: env.EFT_NOTES || "Please remember that all accounts are payable on or before the 1st of every month."
-  };
-  const red = BRAND.red;
+function renderOnboardUI(linkid) {
   return `<!doctype html><html><head><meta charset="utf-8"/><title>Vinet Onboarding</title><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>:root{--red:${red};--bd:#eee}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#fff}
+<style>:root{--red:#ed1c24;--bd:#eee}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#fff}
 header{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 0 6px;border-bottom:1px solid #eee}
 header img{height:64px;margin:6px 0}header h1{font-size:18px;margin:6px 0 0}
 .wrap{max-width:880px;margin:0 auto;padding:12px 16px 32px}
@@ -282,7 +257,7 @@ button{padding:10px 14px;border:1px solid #ddd;border-radius:10px;background:#ff
 .tabbtn.active{background:var(--red);color:#fff}
 ul.links{margin:8px 0 0 18px}
 </style></head><body>
-<header><img src="${LOGO_LOWRES}" alt="Vinet"/><h1>Client Onboarding</h1></header>
+<header><img src="${LOGO_URL}" alt="Vinet"/><h1>Client Onboarding</h1></header>
 <div class="wrap">
   <div class="card"><div class="hint">Link ID: <code id="linkid">${esc(linkid)}</code></div><div id="status" class="hint" style="margin-top:6px"></div></div>
 
@@ -344,31 +319,33 @@ ul.links{margin:8px 0 0 18px}
 
 <script>
 const linkid = ${JSON.stringify(linkid)};
-const $ = sel => document.querySelector(sel);
-const S = n => ($('.step.active')?.classList.remove('active'), document.getElementById('s'+n).classList.add('active'));
-function Sig(el){ const c=el, ctx=c.getContext('2d'); let down=false,last=null;
-  c.addEventListener('pointerdown',e=>{down=true; last=[e.offsetX,e.offsetY]});
-  c.addEventListener('pointerup',()=>{down=false; last=null});
-  c.addEventListener('pointerleave',()=>{down=false; last=null});
-  c.addEventListener('pointermove',e=>{ if(!down)return; ctx.lineWidth=2; ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(last[0],last[1]); ctx.lineTo(e.offsetX,e.offsetY); ctx.stroke(); last=[e.offsetX,e.offsetY]; });
+const $ = s => document.querySelector(s);
+const S = n => { document.querySelector('.step.active')?.classList.remove('active'); document.getElementById('s'+n).classList.add('active'); };
+function Sig(el){ const c=el,ctx=c.getContext('2d'); let down=false,last=null;
+  c.addEventListener('pointerdown',e=>{down=true;last=[e.offsetX,e.offsetY]});
+  c.addEventListener('pointerup',()=>{down=false;last=null});
+  c.addEventListener('pointerleave',()=>{down=false;last=null});
+  c.addEventListener('pointermove',e=>{ if(!down) return; ctx.lineWidth=2; ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(last[0],last[1]); ctx.lineTo(e.offsetX,e.offsetY); ctx.stroke(); last=[e.offsetX,e.offsetY]; });
   return { clear:()=>ctx.clearRect(0,0,c.width,c.height), data:()=>c.toDataURL('image/png'), isEmpty:()=>{ const a=ctx.getImageData(0,0,c.width,c.height).data; for(let i=3;i<a.length;i+=4){ if(a[i]) return false; } return true; } };
 }
 const sigMSA = Sig(document.getElementById('sig_msa'));
 document.getElementById('clear_msa').onclick=()=>sigMSA.clear();
+
 let payChoice='eft'; let sigDebit=null;
 
+function setIf(sel, v){ const el=document.querySelector(sel); if(el && v!=null) el.value= v; }
+
 function renderEFT(){
-  const refTpl = ${JSON.stringify(EFT.refTpl)};
   const custId = ($('#customer_id').value||'').trim();
+  const refTpl = ${JSON.stringify("SPLYNX-ID")};
   const ref = (refTpl==='SPLYNX-ID' && custId) ? custId : (refTpl||custId||'');
   $('#payBody').innerHTML = \`
-    <div class="row"><div>Bank</div><div>${esc(EFT.bank)}</div></div>
-    <div class="row"><div>Account Name</div><div>${esc(EFT.name)}</div></div>
-    <div class="row"><div>Account Number</div><div>${esc(EFT.no)}</div></div>
-    <div class="row"><div>Branch Code</div><div>${esc(EFT.branch)}</div></div>
+    <div class="row"><div>Bank</div><div>${esc("${BRAND.site}") && ''}</div></div>\`;
+  // Fill from server /info/eft instead (better UX):
+  $('#payBody').innerHTML = \`
+    <div class="row"><div>Banking details</div><div><a href="/info/eft?id=\${encodeURIComponent(custId)}" target="_blank">Open EFT page</a></div></div>
     <div class="row"><div>Reference</div><div>\${esc(ref)}</div></div>
-    <div class="hint" style="margin-top:6px">${esc(EFT.notes)}</div>
-    <div style="margin-top:8px"><button onclick="window.print()">Print banking details</button></div>
+    <div class="hint">Print or save the EFT page for your records.</div>
   \`;
 }
 function renderDebit(){
@@ -388,32 +365,51 @@ function renderDebit(){
   \`;
   sigDebit = Sig(document.getElementById('sig_debit'));
   document.getElementById('clear_debit').onclick=()=>sigDebit.clear();
-  // load terms
   fetch('/api/terms?kind=debit').then(r=>r.text()).then(t=>$('#debit_terms').innerHTML=t).catch(()=>$('#debit_terms').textContent='Terms unavailable.');
 }
 $('#optEft').onclick=()=>{ payChoice='eft'; $('#optEft').classList.add('active'); $('#optDebit').classList.remove('active'); renderEFT(); };
 $('#optDebit').onclick=()=>{ payChoice='debit'; $('#optDebit').classList.add('active'); $('#optEft').classList.remove('active'); renderDebit(); };
 
-// Autofill profile after verification
-function ua(){ return navigator.userAgent || '' }
-async function getJSON(url, opts){ const r=await fetch(url,opts); try{return await r.json()}catch{return{}}}
+// OTP send (template only; show staff-code message on failure)
 $('#btnSend').onclick = async () => {
   $('#otpMsg').textContent='Sending WhatsApp code…';
-  const d = await getJSON('/api/otp/send', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid})});
-  if(d.ok && d.sent){ $('#otpMsg').textContent='Code sent via WhatsApp.'; }
-  else { $('#otpMsg').innerHTML='Couldn’t send via WhatsApp. Please <b>ask Vinet for a staff code</b> and enter it above.'; }
+  const r = await fetch('/api/otp/send', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid }) });
+  const j = await r.json().catch(()=>({}));
+  if (j.ok && j.sent) $('#otpMsg').textContent = 'Code sent via WhatsApp.';
+  else $('#otpMsg').innerHTML = 'Couldn’t send via WhatsApp. Please <b>ask Vinet for a staff code</b> and enter it above.';
 };
+
+// Verify (accepts {otp} or {code})
 $('#btnVerify').onclick = async () => {
-  const code = ($('#otp').value||'').trim(); if(!code){ $('#otpMsg').textContent='Enter code'; return; }
-  const d = await getJSON('/api/otp/verify', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid, code})});
-  if(d.ok){ $('#otpMsg').textContent='Verified.';
-    const p = await getJSON('/api/profile?linkid='+encodeURIComponent(linkid));
-    if(p && p.id){ $('#full_name').value=p.full_name||''; $('#id_number').value=p.passport||''; $('#customer_id').value=p.id||''; $('#email').value=p.email||''; $('#phone').value=p.phone||''; $('#street').value=p.street||''; $('#city').value=p.city||''; $('#zip').value=p.zip||''; $('#status').textContent='Verified at '+new Date().toLocaleString(); }
-    renderEFT(); // ensure EFT shows proper reference with ID
+  const value = ($('#otp').value||'').trim();
+  if (!value) { $('#otpMsg').textContent='Enter code'; return; }
+  const res = await fetch('/api/otp/verify', {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ linkid, otp: value })
+  });
+  const j = await res.json().catch(()=>({}));
+  if (j.ok) {
+    $('#otpMsg').textContent='Verified.';
+    try {
+      const p = await (await fetch('/api/profile?linkid='+encodeURIComponent(linkid))).json();
+      setIf('#full_name', p.full_name);
+      setIf('#id_number', p.passport);
+      setIf('#customer_id', p.id);
+      setIf('#email', p.email);
+      setIf('#phone', p.phone);
+      setIf('#street', p.street);
+      setIf('#city', p.city);
+      setIf('#zip', p.zip);
+      $('#status').textContent='Verified at '+new Date().toLocaleString();
+    } catch {}
+    renderEFT();
     S(2);
-  } else { $('#otpMsg').textContent='Invalid code'; }
+  } else {
+    $('#otpMsg').textContent= j.error || 'Invalid code';
+  }
 };
-// Navigation
+
+// Step navigation
 $('#to3').onclick = () => { S(3); renderEFT(); };
 $('#to4').onclick = async () => {
   if (payChoice==='debit') {
@@ -424,6 +420,7 @@ $('#to4').onclick = async () => {
   }
   S(4);
 };
+
 // Uploads
 $('#skipUploads').onclick = async () => {
   await fetch('/api/flag-uploads',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({linkid, pending:true})});
@@ -438,34 +435,47 @@ $('#to5').onclick = async () => {
   document.getElementById('msa_terms').innerHTML = msa || 'Terms unavailable.';
   S(5);
 };
+
 // Generate PDFs
 $('#gen').onclick = async () => {
   if (!document.getElementById('agree_msa').checked) { alert('Please agree to the MSA terms.'); return; }
   if (sigMSA.isEmpty()) { alert('Please sign the MSA.'); return; }
+
+  const ua = navigator.userAgent || '';
   const common = {
-    full_name: $('#full_name').value.trim(), id_number: $('#id_number').value.trim(), customer_id: $('#customer_id').value.trim(),
-    email: $('#email').value.trim(), phone: $('#phone').value.trim(),
-    street: $('#street').value.trim(), city: $('#city').value.trim(), zip: $('#zip').value.trim(),
-    date: new Date().toISOString(), user_agent: ua(), linkid
+    full_name: ($('#full_name').value||'').trim(),
+    id_number: ($('#id_number').value||'').trim(),
+    customer_id: ($('#customer_id').value||'').trim(),
+    email: ($('#email').value||'').trim(),
+    phone: ($('#phone').value||'').trim(),
+    street: ($('#street').value||'').trim(),
+    city: ($('#city').value||'').trim(),
+    zip: ($('#zip').value||'').trim(),
+    date: new Date().toISOString(), linkid, user_agent: ua
   };
   let msaLink='', doLink='';
-  let msa = await fetch('/api/pdf/msa', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ...common, signature: sigMSA.data(), agree: true }) });
+
+  // MSA
+  const msa = await fetch('/api/pdf/msa', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ...common, signature: sigMSA.data(), agree: true }) });
   if (msa.ok) { msaLink = '/api/doc?linkid='+encodeURIComponent(linkid)+'&type=msa'; }
+
+  // Debit (only if debit tab active)
   if (document.getElementById('optDebit').classList.contains('active')) {
     const body = {
       ...common,
-      account_holder: $('#account_holder').value.trim(),
-      holder_id: $('#holder_id').value.trim(),
-      bank: $('#bank').value.trim(),
-      account_no: $('#account_no').value.trim(),
-      account_type: $('#account_type').value.trim(),
-      debit_day: $('#debit_day').value.trim(),
-      signature: sigDebit.data(),
+      account_holder: ($('#account_holder')?.value||'').trim(),
+      holder_id: ($('#holder_id')?.value||'').trim(),
+      bank: ($('#bank')?.value||'').trim(),
+      account_no: ($('#account_no')?.value||'').trim(),
+      account_type: ($('#account_type')?.value||'').trim(),
+      debit_day: ($('#debit_day')?.value||'').trim(),
+      signature: sigDebit?.data(),
       agree: true
     };
     const deb = await fetch('/api/pdf/debit', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
     if (deb.ok) { doLink = '/api/doc?linkid='+encodeURIComponent(linkid)+'&type=debit'; }
   }
+
   const links = [];
   if (msaLink) links.push('<a href="'+msaLink+'" target="_blank">Master Service Agreement (PDF)</a>');
   if (doLink)  links.push('<a href="'+doLink+'" target="_blank">Debit Order Agreement (PDF)</a>');
@@ -477,26 +487,21 @@ $('#gen').onclick = async () => {
 </body></html>`;
 }
 
-// ---------- Terms (HTML for on-page boxes) ----------
-async function termsHandler(env, url){
-  const kind = (url.searchParams.get("kind") || "").toLowerCase();
+// ---------- Terms for boxes ----------
+async function termsHTML(env, kind) {
   const txt = await fetchText(kind==="debit" ? env.TERMS_DEBIT_URL : env.TERMS_SERVICE_URL);
-  return new Response(`<pre style="white-space:pre-wrap;margin:0;font-size:13px">${esc(txt)}</pre>`,{headers:{"content-type":"text/html; charset=utf-8"}});
+  return `<pre style="white-space:pre-wrap;margin:0;font-size:${kind==='debit'?'13px':'12px'}">${esc(txt)}</pre>`;
 }
 
-// ---------- PDF helpers ----------
+// ---------- PDFs ----------
 const A4 = { w: 595.28, h: 841.89 };
 async function embedLogo(doc){ try{ const bytes=await fetchArrayBuffer(LOGO_HIGHRES); return await doc.embedPng(bytes).catch(async()=>await doc.embedJpg(bytes)); }catch{ return null; } }
-function dashedLine(page,x,y,w,thickness=0.7){ // fixed pattern
-  const dash=6,gap=4; let cur=x; while(cur<x+w){ const seg=Math.min(dash,x+w-cur); page.drawLine({ start:{x:cur,y}, end:{x:cur+seg,y}, thickness, color: rgb(0.7,0.7,0.7) }); cur+=dash+gap; }
-}
+function dashedLine(page,x,y,w,thickness=0.7){ const dash=6,gap=4; let cur=x; while(cur<x+w){ const seg=Math.min(dash,x+w-cur); page.drawLine({ start:{x:cur,y}, end:{x:cur+seg,y}, thickness, color: rgb(0.7,0.7,0.7) }); cur+=dash+gap; } }
 function drawHeader(page, fonts, logoImg, title, redRGB){
   const { helv, helvBold } = fonts;
-  // Title left in red
   page.drawText(title, { x: 40, y: A4.h-60, size: 16, font: helvBold, color: redRGB });
-  // Logo top-right (1.5x)
   if (logoImg) {
-    const scale = 0.27; // 50% bigger than previous ~0.18
+    const scale = 0.27; // ~50% bigger than typical small header logo
     const w = logoImg.width*scale, h = logoImg.height*scale;
     page.drawImage(logoImg, { x: A4.w-40-w, y: A4.h-40-h, width:w, height:h });
     page.drawText(`${BRAND.site} • ${BRAND.phone}`, { x: A4.w-40-w, y: A4.h-46-h-10, size: 10, font: helv, color: rgb(0.2,0.2,0.2) });
@@ -506,54 +511,50 @@ function drawHeader(page, fonts, logoImg, title, redRGB){
   dashedLine(page, 40, A4.h-70, A4.w-80, 0.7);
 }
 function drawKV(page, fonts, x, y, kv, opts={colW:140, lineH:16, size:11}){
-  const { helv, helvBold } = fonts;
-  let yy=y;
+  const { helv, helvBold } = fonts; let yy=y;
   for (const [k,v] of kv) {
-    page.drawText(String(k), { x, y: yy, size: opts.size, font: helvBold, color: rgb(0,0,0) });
-    page.drawText(String(v||""), { x: x+opts.colW, y: yy, size: opts.size, font: helv, color: rgb(0,0,0) });
+    page.drawText(String(k), { x, y:yy, size:opts.size, font:helvBold, color:rgb(0,0,0) });
+    page.drawText(String(v||""), { x:x+opts.colW, y:yy, size:opts.size, font:helv, color:rgb(0,0,0) });
     yy -= opts.lineH;
   }
   return yy;
 }
-function drawTwoCols(page, fonts, xL, xR, y, leftItems, rightItems, opts={lineH:16, size:11, leftColW:120, rightColW:140}){
-  const { helv, helvBold } = fonts; let yl=y, yr=y;
-  for (const [k,v] of leftItems) { page.drawText(String(k),{x:xL,y:yl,size:opts.size,font:helvBold,color:rgb(0,0,0)}); page.drawText(String(v||""),{x:xL+opts.leftColW,y:yl,size:opts.size,font:helv,color:rgb(0,0,0)}); yl -= opts.lineH; }
-  for (const [k,v] of rightItems) { page.drawText(String(k),{x:xR,y:yr,size:opts.size,font:helvBold,color:rgb(0,0,0)}); page.drawText(String(v||""),{x:xR+opts.rightColW,y:yr,size:opts.size,font:helv,color:rgb(0,0,0)}); yr -= opts.lineH; }
+function drawTwoCols(page, fonts, xL, xR, y, leftItems, rightItems, opts={lineH:16, size:11, leftColW:120, rightColW:120}){
+  const { helv,helvBold } = fonts; let yl=y, yr=y;
+  for (const [k,v] of leftItems) { page.drawText(String(k),{x:xL,y:yl,size:opts.size,font:helvBold}); page.drawText(String(v||""),{x:xL+opts.leftColW,y:yl,size:opts.size,font:helv}); yl -= opts.lineH; }
+  for (const [k,v] of rightItems){ page.drawText(String(k),{x:xR,y:yr,size:opts.size,font:helvBold}); page.drawText(String(v||""),{x:xR+opts.rightColW,y:yr,size:opts.size,font:helv}); yr -= opts.lineH; }
   return Math.min(yl, yr);
 }
-function flowTwoColumnText(doc, fonts, logo, title, rawText, size, includeHeaderEachPage=true){
+function flowTwoColumnText(doc, fonts, logo, title, rawText, size){
   const words = String(rawText||"").split(/\s+/);
   const colGap = 20, marginX = 40, marginTop = 100, marginBottom = 120;
   const colWidth = (A4.w - (marginX*2) - colGap) / 2;
   const lineH = size + 3;
-  let page = doc.addPage([A4.w, A4.h]); if(includeHeaderEachPage) drawHeader(page, fonts, logo, title, rgb(0.929,0.109,0.141));
+  let page = doc.addPage([A4.w, A4.h]); drawHeader(page, fonts, logo, title, rgb(0.929,0.109,0.141));
   let x = marginX, y = A4.h - marginTop, col = 0;
-  const pages=[page];
   const { helv } = fonts;
   let line = "";
-  function newPage(){ page = doc.addPage([A4.w, A4.h]); if(includeHeaderEachPage) drawHeader(page, fonts, logo, title, rgb(0.929,0.109,0.141)); pages.push(page); x = marginX; y = A4.h - marginTop; col = 0; line=""; }
-  function newColumn(){ col = 1; x = marginX + colWidth + colGap; y = A4.h - marginTop; line=""; }
+  function newPage(){ page = doc.addPage([A4.w, A4.h]); drawHeader(page, fonts, logo, title, rgb(0.929,0.109,0.141)); x=marginX; y=A4.h-marginTop; col=0; line=""; }
+  function newColumn(){ col=1; x=marginX+colWidth+colGap; y=A4.h-marginTop; line=""; }
   for(const w of words){
-    const test = (line?line+" ":"")+w;
-    const width = helv.widthOfTextAtSize(test, size);
-    if (width > colWidth) {
+    const test=(line?line+" ":"")+w;
+    const width=helv.widthOfTextAtSize(test, size);
+    if(width>colWidth){
       page.drawText(line, { x, y, size, font: helv, color: rgb(0,0,0) });
       y -= lineH; line = w;
-      if (y < marginBottom) { if (col === 0) newColumn(); else newPage(); }
+      if (y < marginBottom) { if (col===0) newColumn(); else newPage(); }
     } else { line = test; }
   }
   if (line) { page.drawText(line, { x, y, size, font: helv, color: rgb(0,0,0) }); y -= lineH; }
-  return { pages, lastY: y, col, x, colWidth, marginBottom };
+  return { page, y };
 }
-
 async function buildPDF(docType, data, env, request){
   const doc = await PDFDocument.create();
   const helv = await doc.embedFont(StandardFonts.Helvetica);
   const helvBold = await doc.embedFont(StandardFonts.HelveticaBold);
   const fonts = { helv, helvBold };
   const logo = await embedLogo(doc);
-  const redRGB = rgb(0.929,0.109,0.141); // #ed1c24
-
+  const redRGB = rgb(0.929,0.109,0.141);
   const title = docType==="debit" ? "Vinet Debit Order Instruction" : "Vinet Internet Solutions Service Agreement";
 
   // First page
@@ -562,7 +563,7 @@ async function buildPDF(docType, data, env, request){
   let y = A4.h-100;
 
   if (docType==="debit"){
-    // Two columns: left client, right debit details
+    // Left client, right debit details
     const left = [
       ["Client code:", data.customer_id],
       ["Full Name:", data.full_name],
@@ -582,19 +583,17 @@ async function buildPDF(docType, data, env, request){
       ["Account Type:", data.account_type || "—"],
       ["Debit Order Date:", data.debit_day || "1"],
     ];
-    // draw both sides
-    const yAfterLeft = drawKV(page, fonts, 40, A4.h-118, left, { colW:120, lineH:16, size:11 });
-    const yAfterRight = drawKV(page, fonts, A4.w/2+20, y, right, { colW:150, lineH:16, size:11 });
-    y = Math.min(yAfterLeft, yAfterRight) - 10;
+    const yL = drawKV(page, fonts, 40, A4.h-118, left, { colW:120, lineH:16, size:11 });
+    const yR = drawKV(page, fonts, A4.w/2+20, y, right, { colW:150, lineH:16, size:11 });
+    y = Math.min(yL, yR) - 10;
     dashedLine(page, 40, y, A4.w-80, 0.7); y -= 14;
 
-    // Terms single column 8pt
-    const flow = flowTwoColumnText(doc, fonts, logo, title, data.terms_debit || "", 8, true);
-    page = flow.pages[flow.pages.length-1];
-    y = flow.lastY;
+    // Terms single column 8pt (still use the 2-col flow to paginate nicely, but it's fine)
+    const flowed = flowTwoColumnText(doc, fonts, logo, title, data.terms_debit||"", 8);
+    page = flowed.page; y = flowed.y;
 
   } else {
-    // MSA: info left/right per spec
+    // MSA: info left/right
     const left = [
       ["Client code:", data.customer_id],
       ["Full Name:", data.full_name],
@@ -611,18 +610,17 @@ async function buildPDF(docType, data, env, request){
     dashedLine(page, 40, y, A4.w-80, 0.7); y -= 14;
 
     // Terms two columns 7pt
-    const flow = flowTwoColumnText(doc, fonts, logo, title, data.terms_service || "", 7, true);
-    page = flow.pages[flow.pages.length-1];
-    y = flow.lastY;
+    const flowed = flowTwoColumnText(doc, fonts, logo, title, data.terms_service||"", 7);
+    page = flowed.page; y = flowed.y;
   }
 
-  // Signature block on last page only
+  // Signature block at bottom of last page
   if (y < 140) { page = doc.addPage([A4.w, A4.h]); drawHeader(page, fonts, logo, title, redRGB); y = A4.h - 140; }
   dashedLine(page, 40, 120, A4.w-80, 0.5);
   const rowY = 110;
-  page.drawText("Name", { x: 40, y: rowY, size: 11, font: helvBold, color: rgb(0,0,0) });
-  page.drawText(String(data.full_name||""), { x: 40, y: rowY-16, size: 11, font: helv, color: rgb(0,0,0) });
-  page.drawText("Signature", { x: A4.w/2-30, y: rowY, size: 11, font: helvBold, color: rgb(0,0,0) });
+  page.drawText("Name", { x: 40, y: rowY, size: 11, font: helvBold });
+  page.drawText(String(data.full_name||""), { x: 40, y: rowY-16, size: 11, font: helv });
+  page.drawText("Signature", { x: A4.w/2-30, y: rowY, size: 11, font: helvBold });
   if (data.signature) {
     try {
       const png = await doc.embedPng(Uint8Array.from(atob(data.signature.split(",")[1]||""), c=>c.charCodeAt(0)));
@@ -630,28 +628,25 @@ async function buildPDF(docType, data, env, request){
       page.drawImage(png, { x: A4.w/2-60, y: rowY-16-h-2, width:w, height:h });
     } catch {}
   }
-  page.drawText("Date (DD/MM/YYYY)", { x: A4.w-190, y: rowY, size: 11, font: helvBold, color: rgb(0,0,0) });
-  page.drawText(ddmmyyyy(data.date), { x: A4.w-190, y: rowY-16, size: 11, font: helv, color: rgb(0,0,0) });
+  page.drawText("Date (DD/MM/YYYY)", { x: A4.w-190, y: rowY, size: 11, font: helvBold });
+  page.drawText(ddmmyyyy(data.date), { x: A4.w-190, y: rowY-16, size: 11, font: helv });
 
-  // Security Audit page WITH header
+  // Security audit page with header
   const audit = doc.addPage([A4.w, A4.h]);
   drawHeader(audit, fonts, logo, "VINET — Agreement Security Summary", redRGB);
-  const headers = [
+  const kvs = [
     ["Link ID:", data.linkid],
     ["Splynx ID:", data.customer_id],
-    ["IP Address:", (request.headers.get("CF-Connecting-IP")||"")],
-    ["Location:", request.headers.get("CF-IPCity") ? `${request.headers.get("CF-IPCity")}, ${request.headers.get("CF-IPCountry")||""}` : ""],
-    ["Cloudflare PoP:", (request.headers.get("CF-Ray")||"").split("-").pop() || ""],
-    ["User-Agent:", request.headers.get("User-Agent") || ""],
-    ["Timestamp:", ddmmyyyy(data.date)]
+    ["IP Address:", (data.ip||"")],
+    ["User-Agent:", (data.user_agent||"")],
+    ["Timestamp:", ddmmyyyy(data.date)],
   ];
-  drawKV(audit, fonts, 40, A4.h-110, headers, { colW:120, lineH:18, size:11 });
+  drawKV(audit, fonts, 40, A4.h-110, kvs, { colW:120, lineH:18, size:11 });
 
-  const bytes = await doc.save();
-  return new Uint8Array(bytes);
+  return new Uint8Array(await doc.save());
 }
 
-// ---------- R2 public URL helper ----------
+// ---------- R2 public ----------
 function r2Public(env, key){
   const base = (env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org").replace(/\/$/,"");
   return base + "/" + key.split("/").map(encodeURIComponent).join("/");
@@ -659,199 +654,256 @@ function r2Public(env, key){
 
 // ---------- Worker ----------
 export default {
-  async fetch(request, env, ctx){
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    const json = (o,s=200)=>new Response(JSON.stringify(o),{status:s,headers:{'content-type':'application/json'}});
+    const getIP = () => request.headers.get("CF-Connecting-IP") || "";
+    const getUA = () => request.headers.get("user-agent") || "";
 
-    // Admin IP gating
-    const adminRanges = parseAdminIPs(env.ADMIN_IPS || "160.226.128.0/20");
-    const isAdminRoute = (path==="/admin" || path.startsWith("/api/admin") || path.startsWith("/admin/"));
-    if (isAdminRoute && !ipAllowed(request, adminRanges)) return new Response("Forbidden", { status: 403 });
+    // Admin UI
+    if (path === "/admin" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      return new Response(renderAdminPage(), { headers: { "content-type":"text/html; charset=utf-8" } });
+    }
+    if (path === "/static/admin.js" && method === "GET") {
+      return new Response(adminJs(), { headers: { "content-type":"application/javascript; charset=utf-8" } });
+    }
 
-    // Admin pages
-    if (path === "/admin" && method === "GET") return new Response(adminShell("gen", url), { headers: { "content-type":"text/html; charset=utf-8" } });
+    // Admin: generate link
+    if (path === "/api/admin/genlink" && method !== "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { id } = await request.json().catch(()=>({}));
+      if (!id) return json({ ok:false, error:"Missing id" }, 400);
+      const token = rand(6);
+      const linkid = `${String(id).trim()}_${token}`;
+      await env.ONBOARD_KV.put(kv.onboard(linkid), JSON.stringify({ id, created: now(), progress: 0 }), { expirationTtl: 86400 });
+      return json({ ok:true, url:`${env.API_URL || url.origin}/onboard/${linkid}`, linkid });
+    }
+
+    // Admin: staff code
+    if (path === "/api/staff/gen" && method === "POST") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const { linkid } = await request.json().catch(()=>({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      if (!sess) return json({ ok:false, error:"Unknown linkid" }, 404);
+      const code = String(Math.floor(100000 + Math.random()*900000));
+      await env.ONBOARD_KV.put(kv.staff(linkid), code, { expirationTtl: 900 });
+      return json({ ok:true, linkid, code });
+    }
+
+    // Admin: list
+    if (path === "/api/admin/list" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+      const mode = url.searchParams.get("mode") || "pending";
+      const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
+      const items=[];
+      for (const k of (list.keys||[])) {
+        const s = await env.ONBOARD_KV.get(k.name, "json");
+        if (!s) continue;
+        const linkid = k.name.split("/")[1];
+        const updated = s.last_time || s.created || 0;
+        if (mode === "inprog" && !s.agreement_signed) items.push({ linkid, id:s.id, updated });
+        if (mode === "pending" && s.status === "pending") items.push({ linkid, id:s.id, updated });
+        if (mode === "approved" && s.status === "approved") items.push({ linkid, id:s.id, updated });
+      }
+      items.sort((a,b)=>b.updated-a.updated);
+      return json({ items });
+    }
+
+    // Admin: review page (simple)
     if (path === "/admin/review" && method === "GET") {
+      if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
       const linkid = url.searchParams.get("linkid") || "";
       if (!linkid) return new Response("Missing linkid", { status: 400 });
-      return new Response(adminReviewPage(linkid, (env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org")), { headers: { "content-type":"text/html; charset=utf-8" } });
-    }
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      if (!sess) return new Response("Not found", { status: 404 });
 
-    // Admin APIs
-    if (path === "/api/admin/genlink" && (method === "POST" || method === "GET")) {
-      let id=null; if(method==="POST"){ try{ const b=await request.json(); id=b.id; }catch{} } if(!id) id=url.searchParams.get("id");
-      if(!id) return JSONRes({ ok:false, error:"Missing id" },400);
-      const base=env.API_URL || `${url.protocol}//${url.host}`;
-      const linkid = `${String(id).trim()}_${rand(6)}`;
-      const ttlH = parseInt(env.LINK_TTL_HOURS||"168",10); const ttl = Math.min(Math.max(ttlH,1),24*30)*3600;
-      await env.ONBOARD_KV.put(kvKey.link(linkid), JSON.stringify({ id:String(id).trim(), created: now() }), { expirationTtl: ttl });
-      await markStatus(env, String(id).trim(), linkid, "inprog");
-      return JSONRes({ ok:true, url:`${base}/onboard/${linkid}`, linkid });
-    }
-    if (path === "/api/admin/staff/gen" && method === "POST") {
-      const { linkid } = await request.json();
-      const code = String(Math.floor(100000 + Math.random()*900000));
-      await env.ONBOARD_KV.put(kvKey.staff(linkid), code, { expirationTtl: 60*15 });
-      return JSONRes({ ok:true, code });
-    }
-    if (path === "/api/admin/list" && method === "GET") {
-      const mode = url.searchParams.get("mode") || "inprog";
-      const d = await listByMode(env, mode); return JSONRes(d);
-    }
-
-    // Admin review JSON for page
-    if (path === "/api/admin/review-data" && method === "GET") {
-      const linkid = url.searchParams.get("linkid") || "";
-      const stored = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if (!stored?.id) return JSONRes({ ok:false, error:"Invalid link" }, 400);
-      const profile = await fetchProfileForDisplay(env, stored.id);
-      // uploads
-      const uploads=[];
-      if (env.R2_UPLOADS){
-        const l = await env.R2_UPLOADS.list({ prefix: `uploads/${linkid}/` });
-        for (const o of (l.objects||[])){
-          uploads.push({ key:o.key, name:o.key.split('/').pop(), size:o.size, size_human:(o.size/1024).toFixed(1)+' KB' });
-        }
+      // List public R2 files
+      let uploads = [];
+      if (env.R2_UPLOADS) {
+        const l = await env.R2_UPLOADS.list({ prefix:`uploads/${linkid}/` });
+        uploads = (l.objects||[]).map(o=>({ key:o.key, name:o.key.split('/').pop(), size:o.size }));
       }
+      const filesHTML = uploads.length
+        ? `<ul style="list-style:none;padding:0">${uploads.map(u=>`<li style="margin:.35em 0;padding:.4em .6em;border:1px solid #eee;border-radius:.5em"><a href="${r2Public(env,u.key)}" target="_blank">${esc(u.name)}</a> • ${Math.round((u.size||0)/1024)} KB</li>`).join("")}</ul>`
+        : `<div class="note">No files</div>`;
+
+      // MSA/debit links
+      let msaKey = `agreements/${linkid}/MSA.pdf`, debitKey = `agreements/${linkid}/Debit.pdf`;
+      const msaHead = await env.R2_UPLOADS.head(msaKey).catch(()=>null);
+      const debHead = await env.R2_UPLOADS.head(debitKey).catch(()=>null);
+      const msaLink = msaHead ? r2Public(env, msaKey) : "";
+      const debLink = debHead ? r2Public(env, debitKey) : "";
       const haveID = uploads.some(u=>/id/i.test(u.name));
       const havePOA = uploads.some(u=>/poa|address/i.test(u.name));
-      const uploads_status = { id: haveID, poa: havePOA, pending: !!stored.uploads_pending };
 
-      // agreements
-      const agreements={};
-      if (env.R2_UPLOADS){
-        if (await env.R2_UPLOADS.head(`agreements/${linkid}/MSA.pdf`).catch(()=>null)) agreements.msa=`agreements/${linkid}/MSA.pdf`;
-        if (await env.R2_UPLOADS.head(`agreements/${linkid}/Debit.pdf`).catch(()=>null)) agreements.debit=`agreements/${linkid}/Debit.pdf`;
-      }
-      return JSONRes({ ok:true, profile, uploads, agreements, uploads_status, status:"pending" });
+      return new Response(`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Review</title>
+<style>body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}.card{background:#fff;max-width:900px;margin:2em auto;border-radius:1em;box-shadow:0 2px 12px #0002;padding:1.2em 1.4em}h1,h2{color:#e2001a}.btn{background:#e2001a;color:#fff;border:0;border-radius:.7em;padding:.55em 1em;cursor:pointer}.btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:.7em;padding:.5em 1em}.note{color:#666;font-size:12px}.badge{display:inline-block;border:1px solid #ddd;border-radius:999px;padding:2px 8px;background:#fafafa;font-size:12px;margin-left:6px}</style></head><body>
+<div class="card">
+  <h1>Review & Approve</h1>
+  <div class="note">Splynx ID: <b>${esc(sess.id||'')}</b> • LinkID: <code>${esc(linkid)}</code> • Status: <b>${esc(sess.status||'n/a')}</b> • Uploads: <span class="badge">ID ${haveID?'✅':'❌'}</span> <span class="badge">POA ${havePOA?'✅':'❌'}</span></div>
+  <h2>Uploads</h2>${filesHTML}
+  <h2>Agreements</h2>
+  <div class="note">${msaLink?`<a href="${msaLink}" target="_blank">MSA (PDF)</a>`:'MSA not generated'}<br/>${debLink?`<a href="${debLink}" target="_blank">Debit Order (PDF)</a>`:'Debit not generated'}</div>
+</div></body></html>`, { headers: { "content-type":"text/html; charset=utf-8" } });
     }
 
-    // Admin action (stub)
-    if (path === "/api/admin/action" && method === "POST") { return JSONRes({ ok:true }); }
-
-    // Admin: serve stored files from R2 (not used for public; admin gate already enforced)
-    if (path === "/api/admin/get" && method === "GET") {
-      const key = url.searchParams.get("key") || "";
-      if (!key || !env.R2_UPLOADS) return new Response("Not found", { status: 404 });
-      const o = await env.R2_UPLOADS.get(key);
-      if (!o) return new Response("Not found", { status: 404 });
-      return new Response(o.body, { headers: { "content-type": key.endsWith(".pdf") ? "application/pdf" : (o.httpMetadata?.contentType || "application/octet-stream"), "content-disposition": `inline; filename="${key.split('/').pop()}"` } });
+    // Info: EFT page
+    if (path === "/info/eft" && method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      return new Response(await renderEFTPage(id, env), { headers: { "content-type":"text/html; charset=utf-8" } });
     }
 
-    // Public: onboarding
+    // Public onboarding
     if (path.startsWith("/onboard/") && method === "GET") {
-      const linkid = decodeURIComponent(path.split("/").pop() || "");
-      const valid = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if (!valid?.id) return new Response("Invalid or expired link.", { status: 404 });
-      return new Response(renderOnboardPage(linkid, env), { headers: { "content-type":"text/html; charset=utf-8" } });
+      const linkid = decodeURIComponent(path.split("/").pop()||"");
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      if (!sess) return new Response("Link expired or invalid", { status: 404 });
+      return new Response(renderOnboardUI(linkid), { headers: { "content-type":"text/html; charset=utf-8" } });
     }
 
-    // OTP
+    // OTP send (template only)
     if (path === "/api/otp/send" && method === "POST") {
-      const { linkid } = await request.json();
-      const stored = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if (!stored?.id) return JSONRes({ ok:false, error:"Invalid link" },400);
-      const prof = await fetchProfileForDisplay(env, stored.id);
-      const msisdn = prof.phone;
+      const { linkid } = await request.json().catch(()=>({}));
+      if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+      const splynxId = (linkid.split("_")[0] || "").trim();
+      let msisdn=null;
+      try{ msisdn = await fetchCustomerMsisdn(env, splynxId); }catch{}
+      if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
       const code = String(Math.floor(100000 + Math.random()*900000));
-      await env.ONBOARD_KV.put(kvKey.otp(linkid), code, { expirationTtl: 60*10 });
-      let sent = { ok:false, note:"no msisdn" }; if (msisdn) sent = await sendWhatsAppOTP(env, msisdn, code);
-      // if fail → tell client to ask for staff code (UI message handles it)
-      return JSONRes({ ok: !!msisdn, sent: sent.ok && sent.sent, msisdn: msisdn || null });
-    }
-    if (path === "/api/otp/verify" && method === "POST") {
-      const { linkid, code } = await request.json();
-      const otp = await env.ONBOARD_KV.get(kvKey.otp(linkid));
-      const staff = await env.ONBOARD_KV.get(kvKey.staff(linkid));
-      if (otp && code && code.trim()===otp) return JSONRes({ ok:true, kind:"otp" });
-      if (staff && code && code.trim()===staff) return JSONRes({ ok:true, kind:"staff" });
-      return JSONRes({ ok:false });
+      await env.ONBOARD_KV.put(kv.otp(linkid), code, { expirationTtl: 600 });
+
+      const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
+      const payload = {
+        messaging_product:"whatsapp",
+        to: msisdn, // must be 27xxxxxxxxx
+        type:"template",
+        template:{
+          name: env.WHATSAPP_TEMPLATE_NAME || "vinetotp",
+          language:{ code: env.WHATSAPP_TEMPLATE_LANG || "en_US" },
+          components:[{ type:"body", parameters:[{ type:"text", text: code }]}]
+        }
+      };
+      const r = await fetch(endpoint, {
+        method:"POST",
+        headers:{ "Authorization":`Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type":"application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(()=> "");
+        return json({ ok:false, error:"whatsapp_template_failed", details:t.slice(0,2000) });
+      }
+      return json({ ok:true, sent:true });
     }
 
-    // Profile after OTP
+    // OTP verify (accept both otp/code, advance to step 2)
+    if (path === "/api/otp/verify" && method === "POST") {
+      const body = await request.json().catch(()=>({}));
+      const linkid = body.linkid || "";
+      const code = (body.otp || body.code || "").toString().trim();
+      const kind = (body.kind || "").toLowerCase(); // "staff" or ""
+
+      if (!linkid || !code) return json({ ok:false, error:"Missing params" }, 400);
+      const expected = await env.ONBOARD_KV.get(kind==="staff" ? kv.staff(linkid) : kv.otp(linkid));
+      if (!(expected && expected === code)) return json({ ok:false, error:"Invalid code" }, 200);
+
+      const sess = (await env.ONBOARD_KV.get(kv.onboard(linkid), "json")) || {};
+      const next = { ...sess, otp_verified:true, progress: Math.max(sess.progress||0, 1), last_time: now() };
+      await env.ONBOARD_KV.put(kv.onboard(linkid), JSON.stringify(next), { expirationTtl: 86400 });
+      if (kind==="staff") await env.ONBOARD_KV.delete(kv.staff(linkid));
+      return json({ ok:true });
+    }
+
+    // Profile (prefill)
     if (path === "/api/profile" && method === "GET") {
       const linkid = url.searchParams.get("linkid") || "";
-      const stored = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if (!stored?.id) return JSONRes({});
-      const prof = await fetchProfileForDisplay(env, stored.id);
-      return JSONRes(prof || {});
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      const id = sess?.id || (linkid.split("_")[0] || "");
+      if (!id) return json({});
+      const prof = await fetchProfileForDisplay(env, id).catch(()=>null);
+      return json(prof||{});
     }
 
-    // Uploads (optional) -> store to R2 and forward to Splynx
+    // Uploads to R2
     if (path === "/api/upload" && method === "POST") {
       const form = await request.formData();
       const linkid = form.get("linkid");
-      const stored = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      const id = stored?.id;
-      if (!id) return JSONRes({ ok:false, error:"Invalid link" }, 400);
-      let okAny=false, saved=[];
-      async function handleOne(field){
-        const f=form.get(field); if(!f || typeof f==="string") return;
-        if (f.size > 5*1024*1024) throw new Error(`${field} too large`);
-        // R2 save
-        if (env.R2_UPLOADS){
-          const key = `uploads/${linkid}/${now()}_${f.name}`;
-          await env.R2_UPLOADS.put(key, await f.arrayBuffer(), { httpMetadata: { contentType: f.type || "application/octet-stream" } });
-          saved.push({ key, url: r2Public(env, key) });
-        }
-        // Splynx forward (best-effort)
-        try{ const fd=new FormData(); fd.append("file", f, f.name); await splynxPOSTForm(env, `/crm/lead-documents/upload-file?lead_id=${encodeURIComponent(id)}`, fd); }catch{}
-        okAny=true;
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      if (!sess) return json({ ok:false, error:"Invalid link" }, 400);
+
+      async function putOne(field,label){
+        const f = form.get(field);
+        if (!f || typeof f === "string") return null;
+        if (f.size > 5*1024*1024) throw new Error(`${label} too large`);
+        const key = `uploads/${linkid}/${Date.now()}_${f.name}`;
+        await env.R2_UPLOADS.put(key, await f.arrayBuffer(), { httpMetadata:{ contentType: f.type || "application/octet-stream" } });
+        return { label, key, name:f.name, size:f.size, url: r2Public(env,key) };
       }
-      try{ await handleOne("id"); await handleOne("poa"); return JSONRes({ ok:true, uploaded: okAny, saved }); }
-      catch(e){ return JSONRes({ ok:false, error:String(e) }, 500); }
+      const saved = [];
+      try { const a=await putOne("id","ID"); if(a) saved.push(a); } catch(e){ return json({ ok:false, error:String(e) }, 400); }
+      try { const b=await putOne("poa","POA"); if(b) saved.push(b); } catch(e){ return json({ ok:false, error:String(e) }, 400); }
+
+      const next = { ...(sess||{}), uploads:[...(sess?.uploads||[]), ...saved], last_time: now() };
+      await env.ONBOARD_KV.put(kv.onboard(linkid), JSON.stringify(next), { expirationTtl: 86400 });
+      return json({ ok:true, saved });
     }
 
-    // Mark uploads pending/complete
+    // Uploads status flag
     if (path === "/api/flag-uploads" && method === "POST") {
-      const { linkid, pending } = await request.json();
-      const k = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if (!k) return JSONRes({ok:false},400);
-      k.uploads_pending = !!pending;
-      await env.ONBOARD_KV.put(kvKey.link(linkid), JSON.stringify(k));
-      return JSONRes({ok:true});
+      const { linkid, pending } = await request.json().catch(()=>({}));
+      const sess = await env.ONBOARD_KV.get(kv.onboard(linkid), "json");
+      if (!sess) return json({ ok:false }, 400);
+      await env.ONBOARD_KV.put(kv.onboard(linkid), JSON.stringify({ ...sess, uploads_pending: !!pending, last_time: now() }), { expirationTtl: 86400 });
+      return json({ ok:true });
     }
 
-    // Terms for UI boxes
-    if (path === "/api/terms" && method === "GET") return termsHandler(env, url);
+    // Terms for boxes
+    if (path === "/api/terms" && method === "GET") {
+      const kind = (url.searchParams.get("kind")||"").toLowerCase();
+      const html = await termsHTML(env, kind==="debit"?"debit":"service");
+      return new Response(html, { headers: { "content-type":"text/html; charset=utf-8" } });
+    }
 
-    // PDFs — require agree + signature
+    // PDFs
     if (path === "/api/pdf/msa" && method === "POST") {
       try{
         const body = await request.json();
         if (!body.agree) return new Response("Please agree to the MSA terms.", { status: 400 });
         if (!body.signature) return new Response("MSA signature required.", { status: 400 });
-        const pdfBytes = await buildPDF("msa", { ...body, terms_service: await fetchText(env.TERMS_SERVICE_URL) }, env, request);
-        if (env.R2_UPLOADS) await env.R2_UPLOADS.put(`agreements/${body.linkid}/MSA.pdf`, pdfBytes, { httpMetadata: { contentType: "application/pdf" } });
-        await markStatus(env, body.customer_id || "unknown", body.linkid || "", "pending");
-        return new Response(pdfBytes, { headers: { "content-type":"application/pdf" } });
-      }catch(e){ console.log("MSA gen failed", e?.stack || e); return new Response("MSA generation error", { status: 500 }); }
+        const bytes = await buildPDF("msa", { ...body, ip:getIP(), terms_service: await fetchText(env.TERMS_SERVICE_URL) }, env, request);
+        await env.R2_UPLOADS.put(`agreements/${body.linkid}/MSA.pdf`, bytes, { httpMetadata:{ contentType:"application/pdf" } });
+        const sess = await env.ONBOARD_KV.get(kv.onboard(body.linkid), "json");
+        await env.ONBOARD_KV.put(kv.onboard(body.linkid), JSON.stringify({ ...(sess||{}), agreement_signed:true, status:"pending", last_time: now() }), { expirationTtl: 86400 });
+        return new Response(bytes, { headers:{ "content-type":"application/pdf" } });
+      }catch(e){ return new Response("MSA generation error", { status: 500 }); }
     }
     if (path === "/api/pdf/debit" && method === "POST") {
       try{
         const b = await request.json();
-        const required = ["account_holder","holder_id","bank","account_no","account_type","debit_day"];
-        for (const k of required){ if(!b[k] || String(b[k]).trim()==="") return new Response(`Missing ${k}`,{status:400}); }
+        const reqs = ["account_holder","holder_id","bank","account_no","account_type","debit_day"];
+        for (const k of reqs) if (!b[k] || String(b[k]).trim()==="") return new Response(`Missing ${k}`, { status: 400 });
         if (!b.agree) return new Response("Please agree to the debit order terms.", { status: 400 });
         if (!b.signature) return new Response("Debit order signature required.", { status: 400 });
-        const pdfBytes = await buildPDF("debit", { ...b, terms_debit: await fetchText(env.TERMS_DEBIT_URL) }, env, request);
-        if (env.R2_UPLOADS) await env.R2_UPLOADS.put(`agreements/${b.linkid}/Debit.pdf`, pdfBytes, { httpMetadata: { contentType: "application/pdf" } });
-        await markStatus(env, b.customer_id || "unknown", b.linkid || "", "pending");
-        return new Response(pdfBytes, { headers: { "content-type":"application/pdf" } });
-      }catch(e){ console.log("Debit gen failed", e?.stack || e); return new Response("Debit generation error", { status: 500 }); }
+        const bytes = await buildPDF("debit", { ...b, ip:getIP(), terms_debit: await fetchText(env.TERMS_DEBIT_URL) }, env, request);
+        await env.R2_UPLOADS.put(`agreements/${b.linkid}/Debit.pdf`, bytes, { httpMetadata:{ contentType:"application/pdf" } });
+        const sess = await env.ONBOARD_KV.get(kv.onboard(b.linkid), "json");
+        await env.ONBOARD_KV.put(kv.onboard(b.linkid), JSON.stringify({ ...(sess||{}), last_time: now() }), { expirationTtl: 86400 });
+        return new Response(bytes, { headers:{ "content-type":"application/pdf" } });
+      }catch(e){ return new Response("Debit generation error", { status: 500 }); }
     }
 
-    // Public doc streaming for client
+    // Public stream
     if (path === "/api/doc" && method === "GET") {
       const linkid = url.searchParams.get("linkid")||"";
       const type = (url.searchParams.get("type")||"").toLowerCase();
-      const valid = await env.ONBOARD_KV.get(kvKey.link(linkid), { type:"json" });
-      if(!valid) return new Response("Not found", {status:404});
       const key = type==="msa" ? `agreements/${linkid}/MSA.pdf` : type==="debit" ? `agreements/${linkid}/Debit.pdf` : "";
-      if(!key) return new Response("Not found", {status:404});
-      const obj = await env.R2_UPLOADS.get(key);
-      if(!obj) return new Response("Not found", {status:404});
-      return new Response(obj.body, { headers:{ "content-type":"application/pdf", "content-disposition":`inline; filename="${type.toUpperCase()}.pdf"` }});
+      if (!key) return new Response("Not found", { status:404 });
+      const o = await env.R2_UPLOADS.get(key);
+      if (!o) return new Response("Not found", { status:404 });
+      return new Response(o.body, { headers:{ "content-type":"application/pdf", "content-disposition":`inline; filename="${type.toUpperCase()}.pdf"` } });
     }
 
     return new Response("Not Found", { status: 404 });
