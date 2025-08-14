@@ -745,405 +745,416 @@ function renderOnboardUI(linkid) {
 </body></html>`;
 }
 
-// ---------- PDF RENDERERS ----------
-async function renderMSAPdf(env, linkid) {
-  const cacheKey = `pdf:msa:${linkid}`;
-  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
-  if (cached)
-    return new Response(cached, {
-      headers: {
-        "content-type": "application/pdf",
-        "cache-control": "public, max-age=86400",
-      },
-    });
+// ---------- PDF RENDERERS (updated) ----------
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed || !sess.agreement_sig_key)
-    return new Response("MSA not available for this link.", { status: 409 });
+// brand
+const VINET_RED = rgb(237/255, 28/255, 36/255);
+const VINET_DARK = rgb(3/255, 3/255, 3/255);
+const LIGHT_GREY = rgb(230/255, 230/255, 230/255);
 
-  const edits = sess.edits || {};
-  const idOnly = String(linkid).split("_")[0];
-  const termsUrl = env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
-  const terms = (await fetchTextCached(termsUrl, env, "terms:msa")) || "Terms unavailable.";
+// Prefer the high‑res PNG (faster embed than JPG for logos with transparency)
+const LOGO_PNG_HIRES = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
+const CONTACT_LINE = "www.vinet.co.za  •  021 007 0200";
 
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  let page = pdf.addPage([595, 842]); // A4
-  const W = 595,
-    H = 842,
-    M = 40;
-
-  // Header
-  const logoImg = await embedLogo(pdf, env);
-  let y = H - 40;
-  if (logoImg) {
-    const targetH = 42;
-    const sc = logoImg.scale(1);
-    const ratio = targetH / sc.height;
-    const w = sc.width * ratio;
-    page.drawImage(logoImg, { x: W - M - w, y: y - targetH, width: w, height: targetH });
-  }
-  const website = env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT;
-  const phone = env.HEADER_PHONE || HEADER_PHONE_DEFAULT;
-
-  page.drawText("Vinet Internet Solutions Service Agreement", {
-    x: M,
-    y: y - 8,
-    size: 18,
-    font: bold,
-    color: VINET_RED,
-  });
-  y -= 28;
-  page.drawText(`${website}  |  ${phone}`, {
-    x: M,
-    y,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
-  y -= 14;
-  drawDashedLine(page, M, y, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-  y -= 18;
-
-  // Two-column personal block
-  const colW = (W - M * 2) / 2;
-  let yL = y,
-    yR = y;
-
-  const row = (x, yy, k, v) => {
-    page.drawText(k, { x, y: yy, size: 10, font: bold, color: VINET_BLACK });
-    page.drawText(String(v || ""), {
-      x: x + 120,
-      y: yy,
-      size: 10,
-      font,
-      color: VINET_BLACK,
-    });
-    return yy - 14;
-  };
-
-  // Left
-  yL = row(M, yL, "Client code:", idOnly);
-  yL = row(M, yL, "Full Name:", edits.full_name);
-  yL = row(M, yL, "ID / Passport:", edits.passport);
-  yL = row(M, yL, "Email:", edits.email);
-
-  // Right
-  const xR = M + colW + 12;
-  yR = row(xR, yR, "Phone:", edits.phone);
-  yR = row(xR, yR, "Street:", edits.street);
-  yR = row(xR, yR, "City:", edits.city);
-  yR = row(xR, yR, "ZIP:", edits.zip);
-
-  const infoBottom = Math.min(yL, yR) - 8;
-  drawDashedLine(page, M, infoBottom, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-
-  // Terms: 2 columns, 7pt, across pages
-  const sizeT = 7;
-  const colGap = 16;
-  const colWidth = (W - M * 2 - colGap) / 2;
-  const lineH = 9.6;
-  const lines = await getWrappedLinesCached(env, terms, font, sizeT, colWidth, "msa");
-
-  let xCol = M,
-    yCol = infoBottom - 14;
-  let col = 0; // 0 left, 1 right
-  const paintHeader = (pg) => {
-    let hy = H - 40;
-    if (logoImg) {
-      const targetH = 32;
-      const sc = logoImg.scale(1);
-      const ratio = targetH / sc.height;
-      const lw = sc.width * ratio;
-      pg.drawImage(logoImg, { x: W - M - lw, y: hy - targetH, width: lw, height: targetH });
-    }
-    pg.drawText("Vinet Internet Solutions Service Agreement", {
-      x: M,
-      y: hy - 8,
-      size: 16,
-      font: bold,
-      color: VINET_RED,
-    });
-    hy -= 24;
-    pg.drawText(`${website}  |  ${phone}`, {
-      x: M,
-      y: hy,
-      size: 9,
-      font,
-      color: VINET_BLACK,
-    });
-    hy -= 12;
-    drawDashedLine(pg, M, hy, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-    return hy - 14;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    if (yCol < 90) {
-      if (col === 0) {
-        col = 1;
-        xCol = M + colWidth + colGap;
-        yCol = infoBottom - 14;
-      } else {
-        page = pdf.addPage([W, H]);
-        const newTop = paintHeader(page);
-        xCol = M;
-        yCol = newTop;
-        col = 0;
-      }
-    }
-    page.drawText(lines[i], { x: xCol, y: yCol, size: sizeT, font, color: VINET_BLACK });
-    yCol -= lineH;
-  }
-
-  // Footer/signature on last page
-  const sigY = 90;
-  page.drawText("Name:", { x: M, y: sigY, size: 10, font: bold, color: VINET_BLACK });
-  page.drawText(String(edits.full_name || ""), {
-    x: M + 45,
-    y: sigY,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
-
-  page.drawText("Signature:", {
-    x: M + (W / 2 - 50),
-    y: sigY,
-    size: 10,
-    font: bold,
-    color: VINET_BLACK,
-  });
-  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-  if (sigBytes) {
-    const sigImg = await pdf.embedPng(sigBytes);
-    const w = 160;
-    const sc = sigImg.scale(1);
-    const h = (sc.height / sc.width) * w;
-    page.drawImage(sigImg, { x: M + (W / 2 - 50) + 70, y: sigY - h + 8, width: w, height: h });
-  }
-
-  page.drawText("Date (DD/MM/YYYY):", {
-    x: W - M - 160,
-    y: sigY,
-    size: 10,
-    font: bold,
-    color: VINET_BLACK,
-  });
-  page.drawText(localDateZA().split("-").reverse().join("/"), {
-    x: W - M - 30 - 100,
-    y: sigY - 14,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
-
-  // Security Audit page header
-  const audit = pdf.addPage([W, H]);
-  let ay = H - 40;
-  if (logoImg) {
-    const targetH = 36;
-    const sc = logoImg.scale(1);
-    const ratio = targetH / sc.height;
-    const lw = sc.width * ratio;
-    audit.drawImage(logoImg, { x: W - M - lw, y: ay - targetH, width: lw, height: targetH });
-  }
-  audit.drawText("Security Audit", { x: M, y: ay - 8, size: 16, font: bold, color: VINET_RED });
-  ay -= 26;
-  drawDashedLine(audit, M, ay, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-
-  const bytes = await pdf.save();
-  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
-  return new Response(bytes, {
-    headers: {
-      "content-type": "application/pdf",
-      "cache-control": "public, max-age=86400",
-    },
-  });
+// Cache logo bytes in KV so we don’t fetch every time
+async function getLogoBytes(env) {
+  const k = "cache:logo:vinet:png";
+  let bytes = await env.ONBOARD_KV.get(k, "arrayBuffer");
+  if (bytes) return bytes;
+  const r = await fetch(LOGO_PNG_HIRES, { cf: { cacheEverything: true, cacheTtl: 3600 } });
+  if (!r.ok) return null;
+  bytes = await r.arrayBuffer();
+  await env.ONBOARD_KV.put(k, bytes, { expirationTtl: 60 * 60 * 24 });
+  return bytes;
 }
 
-async function renderDebitPdf(env, linkid) {
-  const cacheKey = `pdf:debit:${linkid}`;
-  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
-  if (cached)
-    return new Response(cached, {
-      headers: {
-        "content-type": "application/pdf",
-        "cache-control": "public, max-age=86400",
-      },
+// Replace characters Helvetica/WinAnsi can’t encode
+function sanitizeWinAnsi(text) {
+  if (!text) return "";
+  return String(text)
+    // quotes/dashes/bullets/nbsp etc.
+    .replace(/[\u2018\u2019\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201F\u2033]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g, "-")
+    .replace(/[\u2022\u25CF\u2043]/g, "•")
+    .replace(/\u00A0/g, " ")
+    .replace(/\u200B/g, "")
+    .replace(/\r/g, "");
+}
+
+// Simple dashed divider (pdf-lib doesn’t expose dashed strokes on drawLine)
+function dashedDivider(page, x, y, width, dash = 6, gap = 4, thickness = 1, color = LIGHT_GREY) {
+  let cur = 0;
+  while (cur < width) {
+    const seg = Math.min(dash, width - cur);
+    page.drawLine({
+      start: { x: x + cur, y },
+      end: { x: x + cur + seg, y },
+      thickness,
+      color
     });
+    cur += dash + gap;
+  }
+}
+
+// Word-wrap one block into lines (returns next y)
+function wrapBlock(page, text, x, y, width, size, font, lineH, color = VINET_DARK) {
+  const words = sanitizeWinAnsi(text).split(/\s+/);
+  let line = "";
+  for (const w of words) {
+    const test = (line ? line + " " : "") + w;
+    if (font.widthOfTextAtSize(test, size) > width) {
+      if (line) {
+        page.drawText(line, { x, y, size, font, color });
+        y -= lineH;
+        line = w;
+      } else {
+        // single long word fallback
+        page.drawText(test, { x, y, size, font, color });
+        y -= lineH;
+        line = "";
+      }
+    } else {
+      line = test;
+    }
+  }
+  if (line) {
+    page.drawText(line, { x, y, size, font, color });
+    y -= lineH;
+  }
+  return y;
+}
+
+// Header used on both PDFs
+async function drawHeader(env, pdf, page, titleText, opts = {}) {
+  const { margin = 42, logoScale = 1.5 } = opts;
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const yTop = page.getSize().height - margin;
+  const logoBytes = await getLogoBytes(env);
+  if (logoBytes) {
+    const logo = await pdf.embedPng(logoBytes);
+    const baseW = 120 * logoScale;           // bigger logo
+    const ratio = logo.height / logo.width;
+    const baseH = baseW * ratio;
+    page.drawImage(logo, {
+      x: page.getSize().width - margin - baseW,
+      y: yTop - baseH,
+      width: baseW,
+      height: baseH,
+    });
+    // contact line under logo
+    page.drawText(CONTACT_LINE, {
+      x: page.getSize().width - margin - baseW,
+      y: yTop - baseH - 14,
+      size: 9,
+      font,
+      color: VINET_DARK,
+    });
+  }
+
+  // title on the left in Vinet red
+  page.drawText(titleText, { x: margin, y: yTop - 6, size: 18, font: bold, color: VINET_RED });
+
+  // dashed divider slightly lower than before
+  dashedDivider(page, margin, yTop - 30, page.getSize().width - margin * 2, 7, 5, 1, LIGHT_GREY);
+  return yTop - 48; // return next content y
+}
+
+function drawLabeledRow(page, boldFont, font, label, value, x, y, size = 10, gap = 90) {
+  page.drawText(sanitizeWinAnsi(label), { x, y, size, font: boldFont, color: VINET_DARK });
+  page.drawText(sanitizeWinAnsi(value ?? ""), { x: x + gap, y, size, font, color: VINET_DARK });
+  return y - 14;
+}
+
+function drawFramedText(page, x, y, width, height, color = LIGHT_GREY) {
+  // draw a light frame (rectangle)
+  page.drawRectangle({ x, y: y - height, width, height, borderColor: color, borderWidth: 1 });
+}
+
+function formatDateYMD(d = new Date()) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// ---------- DEBIT ORDER (new layout) ----------
+async function renderDebitPdf(env, linkid) {
+  const cacheKey = `pdf:debit:v2:${linkid}`;
+  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+  if (cached) {
+    return new Response(cached, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+  }
 
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.debit_sig_key)
-    return new Response("Debit Order not available for this link.", { status: 409 });
+  if (!sess || !sess.debit_sig_key) return new Response("Debit Order not available for this link.", { status: 409 });
 
   const d = sess.debit || {};
-  const edits = sess.edits || {};
+  const e = sess.edits || {};
   const idOnly = String(linkid).split("_")[0];
-  const termsUrl = env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS_URL;
-  const terms = (await fetchTextCached(termsUrl, env, "terms:debit")) || "Terms unavailable.";
+
+  const termsUrl = env.TERMS_DEBIT_URL || "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
+  let terms = await fetchTextCached(termsUrl, env, "terms:debit");
+  terms = sanitizeWinAnsi(terms || "Terms unavailable.");
+
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([595, 842]); // A4 portrait
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const M = 42;
+  let y = await drawHeader(env, pdf, page, "Vinet Debit Order Instruction", { margin: M, logoScale: 1.6 });
+
+  // Left block (client)
+  const colGap = 24;
+  const colW = (page.getSize().width - M * 2 - colGap) / 2;
+
+  let yL = y;
+  yL = drawLabeledRow(page, bold, font, "Client code:", idOnly, M, yL);
+  yL = drawLabeledRow(page, bold, font, "Full Name:", e.full_name, M, yL);
+  yL = drawLabeledRow(page, bold, font, "ID / Passport:", e.passport, M, yL);
+  yL = drawLabeledRow(page, bold, font, "Email:", e.email, M, yL);
+  yL = drawLabeledRow(page, bold, font, "Phone:", e.phone, M, yL);
+  yL = drawLabeledRow(page, bold, font, "Street:", e.street, M, yL);
+  yL = drawLabeledRow(page, bold, font, "City:", e.city, M, yL);
+  yL = drawLabeledRow(page, bold, font, "ZIP:", e.zip, M, yL);
+
+  // Right block (debit details)
+  let yR = y;
+  page.drawText("Debit Order Details", { x: M + colW + colGap, y: yR, size: 12, font: bold, color: VINET_DARK });
+  yR -= 18;
+  yR = drawLabeledRow(page, bold, font, "Account Holder Name:", d.account_holder, M + colW + colGap, yR);
+  yR = drawLabeledRow(page, bold, font, "Account Holder ID :", d.id_number, M + colW + colGap, yR);
+  yR = drawLabeledRow(page, bold, font, "Bank:", d.bank_name, M + colW + colGap, yR);
+  yR = drawLabeledRow(page, bold, font, "Bank Account No:", d.account_number, M + colW + colGap, yR);
+  yR = drawLabeledRow(page, bold, font, "Account Type:", d.account_type, M + colW + colGap, yR);
+  yR = drawLabeledRow(page, bold, font, "Debit Order Date:", d.debit_day, M + colW + colGap, yR);
+
+  // Close the info section with a divider
+  const infoBottom = Math.min(yL, yR) - 6;
+  dashedDivider(page, M, infoBottom, page.getSize().width - 2 * M, 7, 5, 1, LIGHT_GREY);
+
+  // Terms box (small top padding and framed)
+  let yT = infoBottom - 16;
+  const termsSize = 8.5;        // small text as requested
+  const lineH = 11;
+  const boxHeight = 260;        // visual frame height (auto wrap inside)
+  drawFramedText(page, M, yT, page.getSize().width - 2 * M, boxHeight, LIGHT_GREY);
+  const innerPad = 10;
+  let yText = yT - innerPad;
+  yText = wrapBlock(page, "Debit Order Terms", M + innerPad, yText, page.getSize().width - 2 * (M + innerPad), 10, bold, 14, VINET_DARK);
+  yText = wrapBlock(page, terms, M + innerPad, yText, page.getSize().width - 2 * (M + innerPad), termsSize, font, lineH, VINET_DARK);
+
+  // Signature row (name left, signature center, date right)
+  let ySig = yT - boxHeight - 26;
+  const sigLabelY = ySig;
+  const thirdW = (page.getSize().width - 2 * M) / 3;
+
+  // labels
+  page.drawText("Name:", { x: M, y: sigLabelY, size: 10, font: bold, color: VINET_DARK });
+  page.drawText(sanitizeWinAnsi(e.full_name || ""), { x: M + 44, y: sigLabelY, size: 10, font, color: VINET_DARK });
+
+  page.drawText("Signature:", { x: M + thirdW + 10, y: sigLabelY, size: 10, font: bold, color: VINET_DARK });
+
+  page.drawText("Date (YYYY‑MM‑DD):", { x: M + 2 * thirdW + 10, y: sigLabelY, size: 10, font: bold, color: VINET_DARK });
+  page.drawText(formatDateYMD(new Date()), { x: M + 2 * thirdW + 10, y: sigLabelY - 14, size: 10, font, color: VINET_DARK });
+
+  // signature image centered above “Signature”
+  const sigObj = await env.R2_UPLOADS.get(sess.debit_sig_key);
+  if (sigObj) {
+    const sigBytes = await sigObj.arrayBuffer();
+    const sigImg = await pdf.embedPng(sigBytes);
+    const sigW = thirdW - 40;
+    const scale = sigImg.scale(1);
+    const sigH = (scale.height / scale.width) * sigW;
+    const sigX = M + thirdW + 10;
+    const sigY = sigLabelY + 32; // above the label
+    page.drawImage(sigImg, { x: sigX, y: sigY, width: sigW, height: sigH });
+    // underline (visual cue)
+    dashedDivider(page, sigX, sigLabelY - 2, sigW, 7, 5, 0.8, LIGHT_GREY);
+  }
+
+  // -------- Page 2: Security audit --------
+  const page2 = pdf.addPage([595, 842]);
+  let y2 = await drawHeader(env, pdf, page2, "VINET — Agreement Security Summary", { margin: M, logoScale: 1.4 });
+  const small = 10;
+  const lh = 14;
+
+  const secRows = [
+    ["Link ID", linkid],
+    ["Splynx ID", String(sess.id ?? "")],
+    ["IP Address", String(sess.last_ip ?? "")],
+    ["User‑Agent", sanitizeWinAnsi(sess.last_ua || "")],
+    ["Timestamp", formatDateYMD(new Date(sess.last_time || Date.now()))],
+  ];
+  for (const [k, v] of secRows) {
+    page2.drawText(k + ":", { x: M, y: y2, size: small, font: bold, color: VINET_DARK });
+    page2.drawText(sanitizeWinAnsi(v || ""), { x: M + 130, y: y2, size: small, font, color: VINET_DARK });
+    y2 -= lh;
+  }
+
+  const bytes = await pdf.save();
+  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: 60 * 60 * 24 * 7 });
+  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+}
+
+// ---------- MSA (2-column, sanitized text) ----------
+async function renderMSAPdf(env, linkid) {
+  const cacheKey = `pdf:msa:v2:${linkid}`;
+  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+  if (cached) {
+    return new Response(cached, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+  }
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_signed || !sess.agreement_sig_key) {
+    return new Response("MSA not available for this link.", { status: 409 });
+  }
+
+  const e = sess.edits || {};
+  const idOnly = String(linkid).split("_")[0];
+  const termsUrl = env.TERMS_SERVICE_URL || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
+  let terms = await fetchTextCached(termsUrl, env, "terms:msa");
+  terms = sanitizeWinAnsi(terms || "Terms unavailable.");
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  let page = pdf.addPage([595, 842]); // A4 portrait
-  const W = 595,
-    H = 842,
-    M = 40;
 
-  // Header
-  const logoImg = await embedLogo(pdf, env);
-  let y = H - 40;
-  if (logoImg) {
-    const targetH = 42; // bigger
-    const sc = logoImg.scale(1);
-    const ratio = targetH / sc.height;
-    const w = sc.width * ratio;
-    page.drawImage(logoImg, { x: W - M - w, y: y - targetH, width: w, height: targetH });
-  }
-  const website = env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT;
-  const phone = env.HEADER_PHONE || HEADER_PHONE_DEFAULT;
+  const M = 42;
+  const pageSize = [595, 842];
+  const colGap = 18;
+  const colW = (pageSize[0] - 2 * M - colGap) / 2;
+  const sizeBody = 7;           // small per spec
+  const lineH = 10;
 
-  page.drawText("Vinet Debit Order Instruction", {
-    x: M,
-    y: y - 8,
-    size: 18,
-    font: bold,
-    color: VINET_RED,
-  });
-  y -= 28;
-  page.drawText(`${website}  |  ${phone}`, {
-    x: M,
-    y,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
-  y -= 14;
-  drawDashedLine(page, M, y, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-  y -= 20;
+  // function to start a new page with header + personal info (only page 1 needs the info block)
+  async function newPage(title, withInfo = false) {
+    const p = pdf.addPage(pageSize);
+    let y = await drawHeader(env, pdf, p, title, { margin: M, logoScale: 1.6 });
 
-  // Left column: client details
-  const colW = (W - M * 2) / 2;
-  let yL = y;
-  const rowL = (k, v) => {
-    page.drawText(k, { x: M, y: yL, size: 10, font: bold, color: VINET_BLACK });
-    page.drawText(String(v || ""), { x: M + 120, y: yL, size: 10, font, color: VINET_BLACK });
-    yL -= 14;
-  };
-  rowL("Client code:", idOnly);
-  rowL("Full Name:", edits.full_name);
-  rowL("ID / Passport:", edits.passport);
-  rowL("Email:", edits.email);
-  rowL("Phone:", edits.phone);
-  rowL("Street:", edits.street);
-  rowL("City:", edits.city);
-  rowL("ZIP:", edits.zip);
+    if (withInfo) {
+      // two info columns (swapped vs debit)
+      let yL = y;
+      yL = drawLabeledRow(p, bold, font, "Client code:", idOnly, M, yL);
+      yL = drawLabeledRow(p, bold, font, "Full Name:", e.full_name, M, yL);
+      yL = drawLabeledRow(p, bold, font, "ID / Passport:", e.passport, M, yL);
+      yL = drawLabeledRow(p, bold, font, "Email:", e.email, M, yL);
 
-  // Right column: debit details
-  let xR = M + colW + 12;
-  let yR = y;
-  page.drawText("Debit Order Details", {
-    x: xR,
-    y: yR,
-    size: 12,
-    font: bold,
-    color: VINET_BLACK,
-  });
-  yR -= 16;
-  const rowR = (k, v) => {
-    page.drawText(k, { x: xR, y: yR, size: 10, font: bold, color: VINET_BLACK });
-    page.drawText(String(v || ""), { x: xR + 140, y: yR, size: 10, font, color: VINET_BLACK });
-    yR -= 14;
-  };
-  rowR("Account Holder Name:", d.account_holder);
-  rowR("Account Holder ID:", d.id_number);
-  rowR("Bank:", d.bank_name);
-  rowR("Bank Account No:", d.account_number);
-  rowR("Account Type:", d.account_type);
-  rowR("Debit Order Date:", d.debit_day);
+      let yR = y;
+      yR = drawLabeledRow(p, bold, font, "Phone:", e.phone, M + colW + colGap, yR);
+      yR = drawLabeledRow(p, bold, font, "Street:", e.street, M + colW + colGap, yR);
+      yR = drawLabeledRow(p, bold, font, "City:", e.city, M + colW + colGap, yR);
+      yR = drawLabeledRow(p, bold, font, "ZIP:", e.zip, M + colW + colGap, yR);
 
-  // Lower divider
-  const infoBottom = Math.min(yL, yR) - 8;
-  drawDashedLine(page, M, infoBottom, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
-
-  // Terms (8pt, single column)
-  let yT = infoBottom - 14;
-  const sizeT = 8;
-  const lineH = 11.2;
-  const colWidth = W - M * 2;
-  const lines = await getWrappedLinesCached(env, terms, font, sizeT, colWidth, "debit");
-
-  for (const ln of lines) {
-    if (yT < 120) break; // keep footer area clear
-    page.drawText(ln, { x: M, y: yT, size: sizeT, font, color: VINET_BLACK });
-    yT -= lineH;
+      const infoBottom = Math.min(yL, yR) - 6;
+      dashedDivider(p, M, infoBottom, pageSize[0] - 2 * M, 7, 5, 1, LIGHT_GREY);
+      y = infoBottom - 14;
+    }
+    return { p, y };
   }
 
-  // Footer: Name | Signature | Date
-  const footY = 90;
-  page.drawText("Name:", { x: M, y: footY, size: 10, font: bold, color: VINET_BLACK });
-  page.drawText(String(edits.full_name || ""), {
-    x: M + 45,
-    y: footY,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
+  let { p: page1, y } = await newPage("Vinet Internet Solutions Service Agreement", true);
 
-  page.drawText("Signature:", {
-    x: M + (W / 2 - 50),
-    y: footY,
-    size: 10,
-    font: bold,
-    color: VINET_BLACK,
-  });
-  const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
-  if (sigBytes) {
+  // 2-column text flow across up to 4 pages
+  let page = page1;
+  let curY = y;
+  let col = 0; // 0 left, 1 right
+  const marginTop = y;
+  const bottomMargin = 80;
+  const startX = () => M + (col === 0 ? 0 : (colW + colGap));
+
+  function pushText(block) {
+    let remaining = sanitizeWinAnsi(block);
+    while (remaining) {
+      // available height in current column
+      const limitY = bottomMargin;
+      if (curY <= limitY) {
+        // next column or new page
+        if (col === 0) { col = 1; curY = marginTop; }
+        else {
+          // new page (no personal info on subsequent pages)
+          col = 0; curY = marginTop;
+          ({ p: page, y: curY } = { p: pdf.addPage(pageSize), y: (async () => 0)() }); // placeholder
+        }
+      }
+      if (curY === 0) {
+        // actually draw header on new page
+        (async () => {})(); // noop
+      }
+      // ensure header for subsequent pages
+      if (typeof curY.then === "function") {
+        // resolve promised y for header
+        // eslint-disable-next-line no-unused-vars
+        (async () => {
+          const head = await drawHeader(env, pdf, page, "Vinet Internet Solutions Service Agreement", { margin: M, logoScale: 1.2 });
+          curY = head;
+        })();
+      }
+      // compute how many words fit in this line
+      const x = startX();
+      const words = remaining.split(/\s+/);
+      let line = "";
+      let idx = 0;
+      while (idx < words.length) {
+        const next = (line ? line + " " : "") + words[idx];
+        if (font.widthOfTextAtSize(next, sizeBody) > colW) break;
+        line = next; idx++;
+      }
+      if (!line) { // very long word fallback
+        line = words[0]; idx = 1;
+      }
+      page.drawText(line, { x, y: curY, size: sizeBody, font, color: VINET_DARK });
+      curY -= lineH;
+      remaining = words.slice(idx).join(" ");
+      if (!remaining) curY -= 2; // little gap between paragraphs
+    }
+  }
+
+  // Split terms by paragraphs to keep readable grouping
+  const paras = terms.split(/\n{2,}/);
+  for (const para of paras) pushText(para);
+
+  // Final page footer with signature row (force new page if not enough room)
+  if (curY < 150) {
+    const np = pdf.addPage(pageSize);
+    const ynp = await drawHeader(env, pdf, np, "Vinet Internet Solutions Service Agreement", { margin: M, logoScale: 1.2 });
+    page = np; curY = ynp;
+  }
+  curY -= 20;
+  const nameX = M, sigX = M + colW, dateX = pageSize[0] - M - 140;
+
+  page.drawText("Name:", { x: nameX, y: curY, size: 10, font: bold, color: VINET_DARK });
+  page.drawText(sanitizeWinAnsi(e.full_name || ""), { x: nameX + 44, y: curY, size: 10, font, color: VINET_DARK });
+
+  page.drawText("Signature:", { x: sigX, y: curY, size: 10, font: bold, color: VINET_DARK });
+
+  page.drawText("Date (YYYY‑MM‑DD):", { x: dateX, y: curY, size: 10, font: bold, color: VINET_DARK });
+  page.drawText(formatDateYMD(new Date()), { x: dateX, y: curY - 14, size: 10, font, color: VINET_DARK });
+
+  // signature image above the label
+  const sigObj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
+  if (sigObj) {
+    const sigBytes = await sigObj.arrayBuffer();
     const sigImg = await pdf.embedPng(sigBytes);
-    const w = 160;
-    const sc = sigImg.scale(1);
-    const h = (sc.height / sc.width) * w;
-    page.drawImage(sigImg, { x: M + (W / 2 - 50) + 70, y: footY - h + 8, width: w, height: h });
+    const sigW = 200;
+    const scale = sigImg.scale(1);
+    const sigH = (scale.height / scale.width) * sigW;
+    page.drawImage(sigImg, {
+      x: sigX,
+      y: curY + 30,
+      width: sigW,
+      height: sigH
+    });
+    dashedDivider(page, sigX, curY - 2, sigW, 7, 5, 0.8, LIGHT_GREY);
   }
-
-  page.drawText("Date (DD/MM/YYYY):", {
-    x: W - M - 160,
-    y: footY,
-    size: 10,
-    font: bold,
-    color: VINET_BLACK,
-  });
-  page.drawText(localDateZA().split("-").reverse().join("/"), {
-    x: W - M - 30 - 100,
-    y: footY - 14,
-    size: 10,
-    font,
-    color: VINET_BLACK,
-  });
-
-  // Page 2: Security audit header
-  let p2 = pdf.addPage([W, H]);
-  let y2 = H - 40;
-  if (logoImg) {
-    const targetH = 36;
-    const sc = logoImg.scale(1);
-    const ratio = targetH / sc.height;
-    const lw = sc.width * ratio;
-    p2.drawImage(logoImg, { x: W - M - lw, y: y2 - targetH, width: lw, height: targetH });
-  }
-  p2.drawText("Security Audit", { x: M, y: y2 - 8, size: 16, font: bold, color: VINET_RED });
-  y2 -= 26;
-  drawDashedLine(p2, M, y2, W - M, { dash: 12, gap: 7, color: VINET_BLACK });
 
   const bytes = await pdf.save();
-  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
-  return new Response(bytes, {
-    headers: {
-      "content-type": "application/pdf",
-      "cache-control": "public, max-age=86400",
-    },
-  });
+  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: 60 * 60 * 24 * 7 });
+  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
 }
 
 // ---------- Worker entry ----------
