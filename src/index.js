@@ -589,72 +589,137 @@ function renderOnboardUI(linkid) {
 }
 
 // ---------- PDF RENDERERS ----------
-async function renderMSAPdf(env, linkid) {
-  const cacheKey = `pdf:msa:${linkid}`;
-  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
-  if (cached) return new Response(cached, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+// ---- One single source of truth for the MSA terms URL ----
+const MSA_TERMS_URL = (env?.TERMS_SERVICE_URL) || "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt";
 
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed || !sess.agreement_sig_key) return new Response("MSA not available for this link.", { status: 409 });
-
-  const edits = sess.edits || {};
-  const termsUrl = env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
-  const terms = (await fetchTextCached(termsUrl, env, "terms:msa")) || "Terms unavailable.";
-
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595, 842]); // A4
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-  const M = 40;
-  let y = 800;
-
-  page.drawText("Master Service Agreement", { x: M, y, size: 18, font: bold });
-  y -= 28;
-
-  const row = (k, v) => { page.drawText(k, { x: M, y, size: 11, font: bold }); page.drawText(String(v || ""), { x: M + 140, y, size: 11, font }); y -= 16; };
-  const idOnly = String(linkid).split("_")[0];
-
-  row("Full Name:", edits.full_name);
-  row("Email:", edits.email);
-  row("Phone:", edits.phone);
-  row("Street:", edits.street);
-  row("City:", edits.city);
-  row("ZIP:", edits.zip);
-  row("ID / Passport:", edits.passport);
-  row("Client Code:", idOnly);
-
-  y -= 6;
-  page.drawText("Agreement Terms", { x: M, y, size: 13, font: bold });
-  y -= 18;
-
-  const wrap = (text, x, y, width, size, fnt, lineH) => {
-    const words = text.split(/\s+/); let line = "";
-    for (const w of words) {
-      const test = `${line}${w} `; const tw = fnt.widthOfTextAtSize(test, size);
-      if (tw > width) { page.drawText(line.trim(), { x, y, size, font: fnt }); y -= lineH; line = `${w} `; }
-      else { line = test; }
-    }
-    if (line) page.drawText(line.trim(), { x, y, size, font: fnt });
-    return y;
-  };
-
-  y = wrap(terms, M, y, 595 - M * 2, 10, font, 14);
-  y -= 18;
-
-  page.drawText("Signature:", { x: M, y, size: 11, font: bold });
-  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-  if (sigBytes) {
-    const sigImg = await pdf.embedPng(sigBytes);
-    const w = 180; const scale = sigImg.scale(1); const h = (scale.height / scale.width) * w;
-    page.drawImage(sigImg, { x: M + 90, y: y - h + 8, width: w, height: h });
+// Fetch text with KV cache (always returns a string)
+async function getTermsText(env, url) {
+  const key = `pdfcache:msa_terms:${btoa(url).slice(0,24)}`;
+  const cached = await env.ONBOARD_KV.get(key);
+  if (cached) return cached;
+  try {
+    const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 1800 } });
+    if (!r.ok) throw new Error(String(r.status));
+    let t = await r.text();
+    // If HTML slipped in, strip tags to plain text so pdf-lib wrapping is safe
+    if (t.includes("<")) t = t.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    await env.ONBOARD_KV.put(key, t || "Terms unavailable.", { expirationTtl: 7 * 24 * 3600 });
+    return t || "Terms unavailable.";
+  } catch {
+    return "Terms unavailable.";
   }
-  page.drawText("Date:", { x: 595 - M - 80, y, size: 11, font: bold });
-  page.drawText(localDateZA(), { x: 595 - M - 80, y: y - 16, size: 11, font });
+}
 
-  const bytes = await pdf.save();
-  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
-  return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+// Read a key from the SAME bucket the worker writes to
+async function readR2Bytes(env, key) {
+  if (!key) return null;
+  try {
+    const obj = await env.R2_UPLOADS.get(key);
+    return obj ? new Uint8Array(await obj.arrayBuffer()) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Small ZA date helper
+function localDateZA() {
+  return new Date().toLocaleDateString("en-ZA", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+// ---------- Render MSA PDF (robust) ----------
+async function renderMSA(env, linkid) {
+  try {
+    const cacheKey = `pdf:msa:${linkid}`;
+    const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+    if (cached) {
+      return new Response(cached, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+    }
+
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    if (!sess) return new Response("No session for link", { status: 404 });
+    if (!sess.agreement_signed || !sess.agreement_sig_key) return new Response("MSA not signed", { status: 409 });
+
+    const edits = sess.edits || {};
+    const idOnly = String(linkid).split("_")[0];
+    const termsText = await getTermsText(env, MSA_TERMS_URL);
+
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    let page = pdf.addPage([595, 842]); // A4 portrait
+    const M = 40;
+    let y = 800;
+
+    // Header + optional logo
+    page.drawText("Master Service Agreement", { x: M, y, size: 18, font: bold });
+    try {
+      const lr = await fetch(LOGO_URL, { cf: { cacheEverything: true, cacheTtl: 1800 } });
+      if (lr.ok) {
+        const lb = new Uint8Array(await lr.arrayBuffer());
+        const logo = await pdf.embedJpg(lb).catch(() => pdf.embedPng(lb));
+        if (logo) {
+          const w = 72, h = (logo.scale(1).height / logo.scale(1).width) * w;
+          page.drawImage(logo, { x: 595 - M - w, y: y - h + 10, width: w, height: h });
+        }
+      }
+    } catch {}
+
+    y -= 28;
+    const row = (k, v) => { page.drawText(k, { x: M, y, size: 11, font: bold }); page.drawText(String(v ?? ""), { x: M + 140, y, size: 11, font }); y -= 16; };
+    row("Full Name:", edits.full_name);
+    row("Email:", edits.email);
+    row("Phone:", edits.phone);
+    row("Street:", edits.street);
+    row("City:", edits.city);
+    row("ZIP:", edits.zip);
+    row("ID / Passport:", edits.passport);
+    row("Client Code:", idOnly);
+
+    y -= 6;
+    page.drawText("Agreement Terms", { x: M, y, size: 13, font: bold });
+    y -= 18;
+
+    // Wrapped text with simple page-breaks
+    const width = 595 - M * 2, size = 10, lineH = 14;
+    const words = String(termsText).split(/\s+/);
+    let line = "";
+    for (const w of words) {
+      const test = line + w + " ";
+      if (font.widthOfTextAtSize(test, size) > width) {
+        page.drawText(line.trim(), { x: M, y, size, font });
+        y -= lineH;
+        line = w + " ";
+        if (y < 100) { // add a page
+          page = pdf.addPage([595, 842]); y = 800;
+          page.drawText("Agreement Terms (cont.)", { x: M, y, size: 12, font: bold }); y -= 18;
+        }
+      } else {
+        line = test;
+      }
+    }
+    if (line) { page.drawText(line.trim(), { x: M, y, size, font }); y -= lineH; }
+
+    // Signature
+    y -= 6;
+    page.drawText("Signature:", { x: M, y, size: 11, font: bold });
+    const sig = await readR2Bytes(env, sess.agreement_sig_key);
+    if (sig && sig.byteLength) {
+      const sigImg = await pdf.embedPng(sig).catch(async () => pdf.embedJpg(sig));
+      if (sigImg) {
+        const w = 180, h = (sigImg.scale(1).height / sigImg.scale(1).width) * w;
+        page.drawImage(sigImg, { x: M + 90, y: y - h + 8, width: w, height: h });
+      }
+    }
+    page.drawText("Date:", { x: 595 - M - 80, y, size: 11, font: bold });
+    page.drawText(localDateZA(), { x: 595 - M - 80, y: y - 16, size: 11, font });
+
+    const bytes = await pdf.save();
+    await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: 7 * 24 * 3600 });
+
+    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" } });
+  } catch (e) {
+    return new Response("MSA PDF generation failed: " + (e?.message || String(e)), { status: 500 });
+  }
 }
 
 async function renderDebitPdf(env, linkid) {
