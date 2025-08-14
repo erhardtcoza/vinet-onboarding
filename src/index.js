@@ -572,165 +572,230 @@ function renderOnboardUI(linkid) {
 </body></html>`;
 }
 
-// ---------- PDF helpers & renderers ----------
-const mm = (v) => v * 2.83464567; // mm -> PDF points
-
-async function fetchBytesFromUrl(urlStr) {
-  if (!urlStr) throw new Error("Template URL missing");
-  const r = await fetch(urlStr, { cf: { cacheEverything: true, cacheTtl: 600 } });
-  if (!r.ok) throw new Error(`fetch ${urlStr} ${r.status}`);
-  const ab = await r.arrayBuffer();
-  return new Uint8Array(ab);
+// ---------- PDF BRAND RENDERERS ----------
+async function appendAuditPage(pdf, sess, linkid) {
+const font = await pdf.embedFont(StandardFonts.Helvetica);
+const page = pdf.addPage(\[540, 800]); // slightly narrower than A4
+const M = 28;
+page.drawText("VINET — Agreement Security Summary", {
+x: M, y: 800 - M - 18, size: 18, font, color: rgb(0.88, 0.0, 0.10),
+});
+const t = nowLocalDate();
+const loc = sess.last\_loc || {};
+const lines = \[
+\["Link ID", linkid],
+\["Splynx ID", (linkid || "").split("\_")\[0]],
+\["IP Address", sess.last\_ip || "n/a"],
+\["Location", \[loc.city, loc.region, loc.country].filter(Boolean).join(", ") || "n/a"],
+\["Coordinates", (loc.latitude!=null && loc.longitude!=null) ? `${loc.latitude}, ${loc.longitude}` : "n/a"],
+\["ASN / Org", \[loc.asn, loc.asOrganization].filter(Boolean).join(" • ") || "n/a"],
+\["Cloudflare PoP", loc.colo || "n/a"],
+\["User-Agent", sess.last\_ua || "n/a"],
+\["Device ID", sess.device\_id || "n/a"],
+\["Timestamp", t],
+];
+let y = 800 - M - 50;
+const keyW = 120;
+const size = 11;
+for (const \[k, v] of lines) {
+page.drawText(k + ":", { x: M, y, size, font, color: rgb(0.2, 0.2, 0.2) });
+page.drawText(String(v||""), { x: M + keyW, y, size, font, color: rgb(0, 0, 0) });
+y -= 18;
 }
-async function fetchR2Bytes(env, key) {
-  const obj = await env.R2_UPLOADS.get(key);
-  if (!obj) return null;
-  const ab = await obj.arrayBuffer();
-  return new Uint8Array(ab);
-}
-function drawText(page, text, x, y, opts) {
-  const { font, size = 10, color = rgb(0,0,0), maxWidth = null, lineHeight = 1.2 } = opts || {};
-  if (!text) return;
-  const words = String(text).split(/\s+/);
-  let line = "";
-  let cursorY = y;
-  const wrapAndDraw = (t) => page.drawText(t, { x, y: cursorY, size, font, color });
-  if (!maxWidth) { wrapAndDraw(String(text)); return; }
-  for (const w of words) {
-    const tryLine = line ? line + " " + w : w;
-    const width = font.widthOfTextAtSize(tryLine, size);
-    if (width <= maxWidth) { line = tryLine; continue; }
-    if (line) wrapAndDraw(line);
-    line = w;
-    cursorY -= size * lineHeight;
-  }
-  if (line) wrapAndDraw(line);
-}
-function drawBBox(page, x, y, w, h) {
-  page.drawRectangle({ x, y, width: w, height: h, borderColor: rgb(1,0,0), borderWidth: 0.5, color: rgb(1,0,0), opacity: 0.05 });
+page.drawText("This page is appended for audit purposes and should accompany the agreement.", {
+x: M, y: M, size: 10, font, color: rgb(0.4, 0.4, 0.4),
+});
 }
 
-// (positions are approximate; can tweak with ?bbox=1 later)
-const MSA_FIELDS = {
-  full_name: { page: 0, x: mm(30), y: mm(240), size: 11, w: mm(120) },
-  email:     { page: 0, x: mm(30), y: mm(232), size: 11, w: mm(120) },
-  phone:     { page: 0, x: mm(30), y: mm(224), size: 11, w: mm(120) },
-  passport:  { page: 0, x: mm(30), y: mm(216), size: 11, w: mm(120) },
-  address:   { page: 0, x: mm(30), y: mm(208), size: 11, w: mm(150) },
-  date:      { page: 0, x: mm(150),y: mm(200), size: 11, w: mm(40) },
-  signature: { page: 0, x: mm(30), y: mm(188), w: mm(60), h: mm(20) },
+async function renderBrandedHeader(pdf, title) {
+const page = pdf.addPage(\[540, 800]); // narrower look
+const font = await pdf.embedFont(StandardFonts.Helvetica);
+const M = 28;
+
+// Title (top-left)
+page.drawText(title, { x: M, y: 754, size: 18, font, color: rgb(0, 0, 0) });
+
+// Right side info
+page.drawText("[www.vinet.co.za](http://www.vinet.co.za) • 021 007 0200", { x: 540 - M - 250, y: 754, size: 11, font, color: rgb(0.2,0.2,0.2) });
+
+// Logo (slightly bigger than before)
+try {
+const r = await fetch(LOGO\_URL, { cf: { cacheEverything: true, cacheTtl: 1800 } });
+if (r.ok) {
+const bytes = new Uint8Array(await r.arrayBuffer());
+const img = await pdf.embedJpg(bytes).catch(async()=>await pdf.embedPng(bytes));
+const w = 110; // bigger
+const scale = img.scale(1);
+const h = (scale.height/scale.width) \* w;
+page.drawImage(img, { x: 540 - M - w, y: 730, width: w, height: h });
+}
+} catch {}
+
+// Separator line a little lower (so it doesn't cross the phone number)
+page.drawLine({
+start: { x: M, y: 720 },
+end: { x: 540 - M, y: 720 },
+thickness: 1,
+color: rgb(0.85, 0.85, 0.85),
+});
+
+return page;
+}
+
+async function renderMSA(env, linkid) {
+const sess = await env.ONBOARD\_KV.get(`onboard/${linkid}`, "json");
+if (!sess) return new Response("Not found", { status: 404 });
+if (!sess.agreement\_signed || !sess.agreement\_sig\_key) {
+return new Response("MSA requires a signed agreement; signature missing.", { status: 409 });
+}
+
+const termsText = await fetchTextCached(env.TERMS\_SERVICE\_URL || DEFAULT\_MSA\_TERMS);
+const edits = sess.edits || {};
+const idOnly = String(linkid).split("\_")\[0];
+
+const pdf = await PDFDocument.create();
+const font = await pdf.embedFont(StandardFonts.Helvetica);
+const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+// Page 1 (header already drawn)
+const p = await renderBrandedHeader(pdf, "Master Service Agreement");
+
+const M = 28, colL = M, colR = 270, topY = 700;
+
+// Client Info block
+p.drawText("Client Information", { x: M, y: topY, size: 13, font: bold, color: rgb(0.1,0.1,0.1) });
+let y = topY - 16;
+const lab = (k, v) => {
+p.drawText(k, { x: colL, y, size: 10, font: bold, color: rgb(0.15,0.15,0.15) });
+p.drawText(v, { x: colL + 120, y, size: 10, font, color: rgb(0,0,0) });
+y -= 16;
 };
-const DEBIT_FIELDS = {
-  account_holder: { page: 0, x: mm(30), y: mm(235), size: 11, w: mm(120) },
-  id_number:      { page: 0, x: mm(30), y: mm(227), size: 11, w: mm(120) },
-  bank_name:      { page: 0, x: mm(30), y: mm(219), size: 11, w: mm(120) },
-  account_number: { page: 0, x: mm(30), y: mm(211), size: 11, w: mm(120) },
-  account_type:   { page: 0, x: mm(30), y: mm(203), size: 11, w: mm(80) },
-  debit_day:      { page: 0, x: mm(120),y: mm(203), size: 11, w: mm(30) },
-  date:           { page: 0, x: mm(150),y: mm(195), size: 11, w: mm(40) },
-  signature:      { page: 0, x: mm(30), y: mm(183), w: mm(60), h: mm(20) },
+const labR = (k, v) => {
+p.drawText(k, { x: colR, y, size: 10, font: bold, color: rgb(0.15,0.15,0.15) });
+p.drawText(v, { x: colR + 130, y, size: 10, font, color: rgb(0,0,0) });
+y -= 16;
 };
 
-async function makeMsaPdfBytes(env, linkid, bbox=false) {
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_signed) throw new Error("Not signed");
-  const e = sess.edits || {};
-  const address = [e.street, e.city, e.zip].filter(Boolean).join(", ");
-  const dateStr = new Date().toLocaleDateString();
+lab("Full Name:", edits.full\_name || "");
+lab("Email:", edits.email || "");
+lab("Phone:", edits.phone || "");
+lab("Street:", edits.street || "");
+lab("City:", edits.city || "");
+lab("ZIP:", edits.zip || "");
+labR("ID / Passport:", edits.passport || "");
+labR("Client Code:", idOnly);
 
-  const tplUrl = env.SERVICE_PDF_KEY || DEFAULT_MSA_PDF;
-  const tplBytes = await fetchBytesFromUrl(tplUrl);
-  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+// Terms title
+y -= 8;
+p.drawText("MSA Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) });
+y -= 14;
 
-  const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = MSA_FIELDS[key]; if (!f) return;
-    const p = pages[f.page || 0];
-    if (key === "signature") return;
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
-  };
+// Terms paragraph (wrapped)
+const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M\*2, font, 10.5, rgb(0,0,0), 1.35);
 
-  draw("full_name", e.full_name || "");
-  draw("email", e.email || "");
-  draw("phone", e.phone || "");
-  draw("passport", e.passport || "");
-  draw("address", address);
-  draw("date", dateStr);
+// Signature block
+let sigBaseY = Math.max(afterTermsY - 24, 120);
+p.drawText("Name", { x: M, y: sigBaseY, size: 10, font: bold, color: rgb(0.2,0.2,0.2) });
+p.drawText(edits.full\_name || "", { x: M, y: sigBaseY - 16, size: 10, font, color: rgb(0,0,0) });
 
-  if (sess.agreement_sig_key) {
-    const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-    if (sigBytes) {
-      const png = await pdf.embedPng(sigBytes);
-      const f = MSA_FIELDS.signature;
-      const p = pages[f.page || 0];
-      const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
-      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
-    }
-  }
-
-  return await pdf.save();
+p.drawText("Signature", { x: 540/2 - 40, y: sigBaseY, size: 10, font: bold, color: rgb(0.2,0.2,0.2) });
+const sigBytes = await fetchR2Bytes(env, sess.agreement\_sig\_key);
+if (sigBytes) {
+const img = await pdf.embedPng(sigBytes);
+const w = 160, s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
+p.drawImage(img, { x: 540/2 - 80, y: sigBaseY - 16 - h + 8, width: w, height: h });
 }
-async function makeDebitPdfBytes(env, linkid, bbox=false) {
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) throw new Error("Not found");
-  const d = sess.debit || {};
-  const dateStr = new Date().toLocaleDateString();
 
-  const tplUrl = env.DEBIT_PDF_KEY || DEFAULT_DEBIT_PDF;
-  const tplBytes = await fetchBytesFromUrl(tplUrl);
-  const pdf = await PDFDocument.load(tplBytes, { ignoreEncryption: true });
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+p.drawText("Date", { x: 540 - M - 60, y: sigBaseY, size: 10, font: bold, color: rgb(0.2,0.2,0.2) });
+p.drawText(nowLocalDate(), { x: 540 - M - 60, y: sigBaseY - 16, size: 10, font, color: rgb(0,0,0) });
 
-  const pages = pdf.getPages();
-  const draw = (key, val) => {
-    const f = DEBIT_FIELDS[key]; if (!f) return;
-    const p = pages[f.page || 0];
-    if (key === "signature") return;
-    if (bbox && f.w) drawBBox(p, f.x, f.y - (f.size||11)*0.2, f.w, (f.size||11)*1.4);
-    drawText(p, String(val||""), f.x, f.y, { font, size: f.size||11, maxWidth: f.w||null });
-  };
+// Audit page
+await appendAuditPage(pdf, sess, linkid);
 
-  draw("account_holder", d.account_holder || "");
-  draw("id_number", d.id_number || "");
-  draw("bank_name", d.bank_name || "");
-  draw("account_number", d.account_number || "");
-  draw("account_type", d.account_type || "");
-  draw("debit_day", d.debit_day || "");
-  draw("date", dateStr);
-
-  if (sess.debit_sig_key) {
-    const sigBytes = await fetchR2Bytes(env, sess.debit_sig_key);
-    if (sigBytes) {
-      const png = await pdf.embedPng(sigBytes);
-      const f = DEBIT_FIELDS.signature;
-      const p = pages[f.page || 0];
-      const { width, height } = png.scale(1);
-      let w = f.w, h = (height/width)*w;
-      if (h > f.h) { h = f.h; w = (width/height)*h; }
-      if (bbox) drawBBox(p, f.x, f.y, f.w, f.h);
-      p.drawImage(png, { x: f.x, y: f.y, width: w, height: h });
-    }
-  }
-
-  return await pdf.save();
+const bytes = await pdf.save();
+return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
 }
-async function renderMsaPdf(env, linkid, bbox=false) {
-  try {
-    const bytes = await makeMsaPdfBytes(env, linkid, bbox);
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-  } catch { return new Response("Not signed", { status: 404 }); }
+
+async function renderDEBIT(env, linkid) {
+const sess = await env.ONBOARD\_KV.get(`onboard/${linkid}`, "json");
+if (!sess) return new Response("Not found", { status: 404 });
+const d = sess.debit || {};
+const edits = sess.edits || {};
+const idOnly = String(linkid).split("\_")\[0];
+
+const termsText = await fetchTextCached(env.TERMS\_DEBIT\_URL || DEFAULT\_DEBIT\_TERMS);
+
+const pdf = await PDFDocument.create();
+const font = await pdf.embedFont(StandardFonts.Helvetica);
+const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+const p = await renderBrandedHeader(pdf, "Debit Order Instruction");
+const M = 28, colL = M, colR = 270, topY = 700;
+
+// Client Info
+p.drawText("Client Information", { x: M, y: topY, size: 13, font: bold, color: rgb(0.1,0.1,0.1) });
+let y = topY - 16;
+const lab = (k, v) => { p.drawText(k, { x: colL, y, size: 10, font: bold }); p.drawText(v, { x: colL + 120, y, size: 10, font }); y -= 16; };
+const labR = (k, v) => { p.drawText(k, { x: colR, y, size: 10, font: bold }); p.drawText(v, { x: colR + 130, y, size: 10, font }); y -= 16; };
+
+lab("Full Name:", edits.full\_name || "");
+lab("Email:", edits.email || "");
+lab("Phone:", edits.phone || "");
+lab("Street:", edits.street || "");
+lab("City:", edits.city || "");
+lab("ZIP:", edits.zip || "");
+labR("ID / Passport:", edits.passport || "");
+labR("Client Code:", idOnly);
+
+y -= 8;
+p.drawText("Debit Order Details", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) });
+y -= 16;
+
+const det = \[
+\["Account Holder Name:", d.account\_holder || ""],
+\["Account Holder ID / Passport:", d.id\_number || ""],
+\["Bank:", d.bank\_name || ""],
+\["Bank Account No:", d.account\_number || ""],
+\["Account Type:", d.account\_type || ""],
+\["Debit Order Date:", d.debit\_day || ""],
+];
+for (const \[k, v] of det) {
+p.drawText(k, { x: M, y, size: 10, font: bold });
+p.drawText(v, { x: M + 170, y, size: 10, font });
+y -= 16;
 }
-async function renderDebitPdf(env, linkid, bbox=false) {
-  try {
-    const bytes = await makeDebitPdfBytes(env, linkid, bbox);
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
-  } catch { return new Response("Not found", { status: 404 }); }
+
+y -= 8;
+p.drawText("Debit Order Terms", { x: M, y, size: 12, font: bold, color: rgb(0.1,0.1,0.1) });
+y -= 14;
+
+// Slightly smaller terms (about 5pt down from body)
+const afterTermsY = drawWrapped(p, termsText || "Terms unavailable.", M, y, 540 - M\*2, font, 9, rgb(0,0,0), 1.35);
+
+// Signature row
+let sigBaseY = Math.max(afterTermsY - 24, 120);
+p.drawText("Name", { x: M, y: sigBaseY, size: 10, font: bold });
+p.drawText(edits.full\_name || "", { x: M, y: sigBaseY - 16, size: 10, font });
+
+p.drawText("Signature", { x: 540/2 - 40, y: sigBaseY, size: 10, font: bold });
+if (sess.debit\_sig\_key) {
+const sigBytes = await fetchR2Bytes(env, sess.debit\_sig\_key);
+if (sigBytes) {
+const img = await pdf.embedPng(sigBytes);
+const w = 160; const s = img.scale(1); let h = (s.height/s.width)\*w; if (h>45) { h=45; }
+p.drawImage(img, { x: 540/2 - 80, y: sigBaseY - 16 - h + 8, width: w, height: h });
 }
+}
+
+p.drawText("Date", { x: 540 - M - 60, y: sigBaseY, size: 10, font: bold });
+p.drawText(nowLocalDate(), { x: 540 - M - 60, y: sigBaseY - 16, size: 10, font });
+
+await appendAuditPage(pdf, sess, linkid);
+
+const bytes = await pdf.save();
+return new Response(bytes, { headers: { "content-type": "application/pdf", "cache-control": "no-store" } });
+}
+
 
 // ---------- Worker entry ----------
 export default {
@@ -744,7 +809,7 @@ export default {
     // ----- Admin UI -----
     if (path === "/admin" && method === "GET") {
       if (!ipAllowed(request)) {
-        return new Response(`<!doctype html><meta charset="utf-8"><title>Restricted</title><div style="font-family:system-ui;padding:40px;max-width:720px;margin:auto"><h1 style="color:#e2001a">Access restricted</h1><p>This dashboard is only available from the Vinet network.</p></div>`, { status: 403, headers: { "content-type":"text/html; charset=utf-8" } });
+        return new Response('<!doctype html><meta charset="utf-8"><title>Restricted</title><div style="font-family:system-ui;padding:40px;max-width:720px;margin:auto"><h1 style="color:#e2001a">Access restricted</h1><p>This dashboard is only available from the Vinet network.</p></div>', { status: 403, headers: { "content-type":"text/html; charset=utf-8" } });
       }
       return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
