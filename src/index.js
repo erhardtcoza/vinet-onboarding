@@ -474,49 +474,6 @@ async function buildMsaPayload(env, linkid) {
   };
 }
 
-// ---------- Minimal fetch handler (PDF routes only in this part) ----------
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-    try {
-      // PDF: Debit
-      if (path.startsWith("/pdf/debit/")) {
-        const linkid = path.split("/").pop();
-        const data = await buildDebitPayload(env, linkid);
-        const bytes = await renderDebitPdf(data);
-        return new Response(bytes, {
-          headers: {
-            "content-type": "application/pdf",
-            "cache-control": "public, max-age=86400",
-          },
-        });
-      }
-
-      // PDF: MSA
-      if (path.startsWith("/pdf/msa/")) {
-        const linkid = path.split("/").pop();
-        const data = await buildMsaPayload(env, linkid);
-        const bytes = await renderMSAPdf(data);
-        return new Response(bytes, {
-          headers: {
-            "content-type": "application/pdf",
-            "cache-control": "public, max-age=86400",
-          },
-        });
-      }
-
-      // Placeholder 404 for non-PDF routes in this part.
-      // Parts 4–5 will add the existing Admin + Onboarding routes unchanged.
-      return new Response("Not found (routes will be added in Parts 4–5)", { status: 404 });
-
-    } catch (e) {
-      const msg = (e && e.message) ? e.message : "Internal error";
-      return new Response(`PDF generation failed: ${msg}`, { status: 500 });
-    }
-  }
-};
 // ===============================
 // Admin + Onboarding UI RENDERERS
 // ===============================
