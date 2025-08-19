@@ -1280,6 +1280,34 @@ async function handleProfile(env, id) {
 // ==================
 export default {
   async fetch(request, env) {
+
+// --- Handle signature saving ---
+if (url.pathname === "/api/signature" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const { id, type, data } = body;
+    if (!id || !type || !data) {
+      return new Response(JSON.stringify({ error: "Missing fields" }), { status: 400 });
+    }
+
+    // Ensure data is base64-encoded image
+    const base64 = data.replace(/^data:image\/png;base64,/, "");
+    const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+
+    // Save in R2 bucket under signatures/
+    if (env.R2_BUCKET) {
+      await env.R2_BUCKET.put(`signatures/${id}_${type}.png`, binary);
+    }
+
+    return new Response(JSON.stringify({ success: true, url: `https://onboarding-uploads.vinethosting.org/signatures/${id}_${type}.png` }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: "Failed to save signature", details: err.message }), { status: 500 });
+  }
+}
+
+
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
