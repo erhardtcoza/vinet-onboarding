@@ -1546,16 +1546,17 @@ export default {
         return json({ error: "Lookup failed" }, 502);
       }
     }
+    
+// ----- PDF endpoints -----
+if (path.startsWith("/pdf/msa/") && method === "GET") {
+  const linkid = path.split("/").pop();
+  return await renderMSAPdf(env, linkid);
+}
 
-    // ----- PDF endpoints -----
-    if (path.startsWith("/pdf/msa/") && method === "GET")) {
-      const linkid = path.split("/").pop();
-      return await renderMSAPdf(env, linkid);
-    }
-    if (path.startsWith("/pdf/debit/") && method === "GET")) {
-      const linkid = path.split("/").pop();
-      return await renderDebitPdf(env, linkid);
-    }
+if (path.startsWith("/pdf/debit/") && method === "GET") {
+  const linkid = path.split("/").pop();
+  return await renderDebitPdf(env, linkid);
+}
 
     return new Response("Not found", { status: 404 });
   },
