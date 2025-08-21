@@ -1,151 +1,98 @@
 // src/splynx.js
-// Splynx API helpers
 
-// --- Generic GET ---
-async function splynxGET(env, endpoint) {
-  const url = `${env.SPLYNX_API}${endpoint}`;
-  const res = await fetch(url, {
+// ---------- Helpers ----------
+function getBaseUrl(env) {
+  if (!env.SPLYNX_API_URL) {
+    throw new Error("Missing SPLYNX_API_URL in environment");
+  }
+  return env.SPLYNX_API_URL.replace(/\/+$/, ""); // strip trailing slash
+}
+
+function getAuthHeader(env) {
+  if (!env.SPLYNX_AUTH) {
+    throw new Error("Missing SPLYNX_AUTH in environment");
+  }
+  return { Authorization: `Basic ${env.SPLYNX_AUTH}` };
+}
+
+// ---------- Core HTTP wrappers ----------
+export async function splynxGET(env, endpoint) {
+  const base = getBaseUrl(env);
+  const res = await fetch(`${base}${endpoint}`, {
     headers: {
-      "Authorization": `Basic ${env.SPLYNX_AUTH}`,
-      "Content-Type": "application/json"
-    }
+      ...getAuthHeader(env),
+      "Content-Type": "application/json",
+    },
   });
-  if (!res.ok) throw new Error(`Splynx GET failed: ${res.status} ${endpoint}`);
+  if (!res.ok) throw new Error(`Splynx GET ${endpoint} failed: ${res.status}`);
   return res.json();
 }
 
-// --- Generic PUT ---
-async function splynxPUT(env, endpoint, body) {
-  const url = `${env.SPLYNX_API}${endpoint}`;
-  const res = await fetch(url, {
+export async function splynxPOST(env, endpoint, data) {
+  const base = getBaseUrl(env);
+  const res = await fetch(`${base}${endpoint}`, {
+    method: "POST",
+    headers: {
+      ...getAuthHeader(env),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Splynx POST ${endpoint} failed: ${res.status}`);
+  return res.json();
+}
+
+export async function splynxPUT(env, endpoint, data) {
+  const base = getBaseUrl(env);
+  const res = await fetch(`${base}${endpoint}`, {
     method: "PUT",
     headers: {
-      "Authorization": `Basic ${env.SPLYNX_AUTH}`,
-      "Content-Type": "application/json"
+      ...getAuthHeader(env),
+      "Content-Type": "application/json",
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(data),
   });
-  if (!res.ok) throw new Error(`Splynx PUT failed: ${res.status} ${endpoint}`);
+  if (!res.ok) throw new Error(`Splynx PUT ${endpoint} failed: ${res.status}`);
   return res.json();
 }
 
-// --- Generic POST ---
-async function splynxPOST(env, endpoint, body) {
-  const url = `${env.SPLYNX_API}${endpoint}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${env.SPLYNX_AUTH}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(`Splynx POST failed: ${res.status} ${endpoint}`);
-  return res.json();
-}
-
-// --- Upload a file for customer or lead ---
-async function splynxCreateAndUpload(env, type, id, file, field = "file") {
-  let endpoint;
-  if (type === "customer") {
-    endpoint = `/admin/customers/customer-documents/${id}`;
-  } else if (type === "lead") {
-    endpoint = `/admin/crm/lead-documents/${id}`;
-  } else {
-    throw new Error("Invalid type for upload");
-  }
-
-  const url = `${env.SPLYNX_API}${endpoint}`;
-  const form = new FormData();
-  form.append(field, file, file.name || "upload.dat");
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${env.SPLYNX_AUTH}`
-    },
-    body: form
-  });
-
-  if (!res.ok) throw new Error(`Splynx upload failed: ${res.status} ${endpoint}`);
-  return res.json();
-}
-
-// --- Fetch profile for display ---
-async function fetchProfileForDisplay(env, id, type = "customer") {
-  let endpoint;
-  if (type === "customer") {
-    endpoint = `/admin/customers/customer/${id}`;
-  } else if (type === "lead") {
-    endpoint = `/admin/crm/leads/${id}`;
-  } else {
-    throw new Error("Invalid type for profile fetch");
-  }
-
-  const data = await splynxGET(env, endpoint);
-
-  return {
-    id: data.id,
-    name: data.name || `${data.firstname || ""} ${data.lastname || ""}`.trim(),
-    email: data.email || data.billing_email || null,
-    phone: data.phone || data.mobile || null,
-    passport: data.passport || null,
-    street: data.street || null,
-    city: data.city || null,
-    status: data.status || null
+// ---------- Profile helpers ----------
+export async function fetchProfileForDisplay(env, id, type = "customer") {
+  const endpoints = {
+    customer: `/admin/customers/customer/${id}`,
+    lead: `/admin/crm/leads/${id}`,
   };
+  if (!endpoints[type]) throw new Error(`Unknown profile type: ${type}`);
+  return splynxGET(env, endpoints[type]);
 }
 
-// --- Fetch customer MSISDN across endpoints ---
-async function fetchCustomerMsisdn(env, id) {
+// ---------- MSISDN lookup ----------
+export async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
     `/admin/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
-    `/admin/crm/leads/${id}/contacts`
+    `/admin/crm/leads/${id}/contacts`,
   ];
 
   for (const ep of eps) {
     try {
       const res = await splynxGET(env, ep);
-      if (res && (res.phone || res.msisdn || res.email)) {
-        return {
-          phone: res.phone || res.msisdn || null,
-          email: res.email || null
-        };
+
+      // Check for phone in top-level fields
+      if (res?.phone) return { source: ep, phone: res.phone };
+      if (res?.main_phone) return { source: ep, phone: res.main_phone };
+
+      // Check in contacts array
+      if (Array.isArray(res)) {
+        const c = res.find(r => r.phone || r.main_phone);
+        if (c) return { source: ep, phone: c.phone || c.main_phone };
       }
-    } catch {
-      // ignore failed endpoint
+    } catch (err) {
+      // Ignore and try next endpoint
     }
   }
 
-  return { phone: null, email: null };
+  return null;
 }
-
-// --- Map edits to Splynx payload ---
-function mapEditsToSplynxPayload(edits) {
-  const payload = {};
-  if (edits.name) {
-    const parts = edits.name.split(" ");
-    payload.firstname = parts[0];
-    payload.lastname = parts.slice(1).join(" ") || "";
-  }
-  if (edits.email) payload.email = edits.email;
-  if (edits.phone) payload.phone = edits.phone;
-  if (edits.passport) payload.passport = edits.passport;
-  if (edits.street) payload.street = edits.street;
-  if (edits.city) payload.city = edits.city;
-  return payload;
-}
-
-// --- Exports ---
-export {
-  splynxGET,
-  splynxPUT,
-  splynxPOST,
-  splynxCreateAndUpload,
-  fetchProfileForDisplay,
-  fetchCustomerMsisdn,
-  mapEditsToSplynxPayload
-};
