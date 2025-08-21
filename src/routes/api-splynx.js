@@ -1,5 +1,5 @@
 // src/api-splynx.js
-import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT } from "./splynx.js";
+import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT } from "./splynx";
 
 export async function handleSplynxAPI(request, env) {
   const url = new URL(request.url);
