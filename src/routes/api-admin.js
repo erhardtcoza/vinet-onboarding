@@ -1,52 +1,54 @@
 // src/routes/api-admin.js
+import { getOnboardAll, deleteOnboardAll } from "../storage.js";
 
-export async function handleAdminApi(request, env) {
+/**
+ * Match paths that belong to /api/admin/*
+ */
+export function match(path, method) {
+  return path.startsWith("/api/admin/");
+}
+
+/**
+ * Handle admin API requests
+ */
+export async function handle(request, env) {
   const url = new URL(request.url);
+  const path = url.pathname;
+  const id = url.searchParams.get("id");
 
-  // --- Generate onboarding link ---
-  if (url.pathname === "/api/admin/genlink" && request.method === "POST") {
-    try {
-      const data = await request.json();
-      const id = data.id;
-      if (!id) {
-        return new Response(JSON.stringify({ error: "missing id" }), {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        });
-      }
+  if (path === "/api/admin/sessions" && request.method === "GET") {
+    const all = await getOnboardAll(env);
+    const inprogress = [];
+    const pending = [];
+    const approved = [];
 
-      // Generate short random token
-      const rand = Math.random().toString(36).substring(2, 8);
-      const token = `${id}_${rand}`;
-
-      // Save session to KV with 24h expiry
-      await env.SESSION_KV.put(
-        `onboard:${token}`,
-        JSON.stringify({ id, status: "pending" }),
-        { expirationTtl: 86400 }
-      );
-
-      // Build onboarding link
-      const link = `https://onboard.vinet.co.za/${token}`;
-
-      return new Response(JSON.stringify({ link }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    } catch (e) {
-      return new Response(
-        JSON.stringify({
-          error: "genlink_failed",
-          details: e.message || String(e),
-        }),
-        { status: 500, headers: { "content-type": "application/json" } }
-      );
+    for (const row of all) {
+      if (row.status === "inprogress") inprogress.push(row);
+      else if (row.status === "pending") pending.push(row);
+      else if (row.status === "approved") approved.push(row);
     }
+
+    return new Response(JSON.stringify({ inprogress, pending, approved }), {
+      headers: { "content-type": "application/json" },
+    });
   }
 
-  // --- Not found fallback ---
-  return new Response(JSON.stringify({ error: "not_found" }), {
-    status: 404,
-    headers: { "content-type": "application/json" },
-  });
+  if (path === "/api/admin/approve" && request.method === "POST") {
+    if (!id) return new Response("Missing id", { status: 400 });
+    const all = await getOnboardAll(env);
+    const row = all.find(r => String(r.id) === String(id));
+    if (!row) return new Response("Not found", { status: 404 });
+
+    row.status = "approved";
+    await env.SESSION_KV.put("onboard:" + row.id, JSON.stringify(row));
+    return new Response(JSON.stringify({ ok: true }));
+  }
+
+  if (path === "/api/admin/delete" && request.method === "POST") {
+    if (!id) return new Response("Missing id", { status: 400 });
+    await deleteOnboardAll(env, id);
+    return new Response(JSON.stringify({ ok: true }));
+  }
+
+  return new Response("Not found", { status: 404 });
 }
