@@ -170,19 +170,31 @@ export async function route(request, env) {
     return json({ items });
   }
 
-  // ----- Admin: review page -----
-  if (path === "/admin/review" && method === "GET") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-    const linkid = url.searchParams.get("linkid") || "";
-    if (!linkid) return new Response("Missing linkid", { status: 400 });
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return new Response("Not found", { status: 404 });
-    const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    return new Response(renderAdminReviewHTML({ linkid, sess, r2PublicBase }), {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
+// ----- Admin review -----
+if (path === "/admin/review" && method === "GET") {
+  if (!ipAllowed(request)) return new Response("Forbidden",{status:403});
+  const linkid = url.searchParams.get("linkid") || "";
+  if (!linkid) return new Response("Missing linkid",{status:400});
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return new Response("Not found",{status:404});
+
+  const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
+
+  // NEW: fetch original Splynx profile to compute diffs
+  let original = null;
+  try {
+    const id = String(sess.id || "").trim();
+    if (id) original = await fetchProfileForDisplay(env, id);
+  } catch {
+    original = null; // non-fatal
   }
 
+  return new Response(
+    renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }),
+    { headers:{ "content-type":"text/html; charset=utf-8" } }
+  );
+}
   // ----- Admin: reject -----
   if (path === "/api/admin/reject" && method === "POST") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
