@@ -1,174 +1,99 @@
 // src/routes/api-admin.js
-import {
-  fetchProfileForDisplay,
-  mapEditsToSplynxPayload,
-  splynxPUT,
-  splynxPOST,
-  splynxCreateAndUpload,
-} from "../splynx.js";
-import { deleteOnboardAll } from "../storage.js";
+import { getClientMeta, deleteOnboardAll } from "../helpers.js";
+import { fetchProfileForDisplay, splynxPUT } from "../splynx.js";
+import { renderAdminReviewHTML } from "../ui/admin-review.js";
 
 /**
- * Handles admin API routes
+ * Router for /api/admin/*
  */
-export async function handleApiAdmin(req, env) {
-  const url = new URL(req.url);
-  const path = url.pathname;
+export async function handleAdminApi(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname.replace(/^\/api\/admin/, "");
+  const method = request.method;
 
-  // --- List sessions by status ---
-  if (path === "/api/admin/list") {
-    const status = url.searchParams.get("status") || "inprogress";
-    const { results } = await env.DB.prepare(
-      "SELECT * FROM onboard WHERE status = ? ORDER BY created_at DESC"
-    )
-      .bind(status)
-      .all();
-    return Response.json(results);
+  // --- List sessions by section ---
+  if (path.startsWith("/list")) {
+    const section = url.searchParams.get("section") || "inprogress";
+    const sessions = await loadSessions(env, section);
+    return new Response(renderAdminReviewHTML({ [section]: sessions }), {
+      headers: { "Content-Type": "text/html" },
+    });
   }
 
-  // --- Fetch a single profile ---
-  if (path === "/api/admin/profile") {
-    const id = url.searchParams.get("id");
-    if (!id) return new Response("Missing id", { status: 400 });
-
-    const profile = await fetchProfileForDisplay(env, id);
-    return Response.json(profile || {});
+  // --- Approve session ---
+  if (path.startsWith("/approve/") && method === "POST") {
+    const id = path.split("/")[2];
+    await approveSession(env, id);
+    return json({ ok: true, action: "approved", id });
   }
 
-  // --- Update profile fields ---
-  if (path === "/api/admin/update" && req.method === "POST") {
-    const body = await req.json();
-    const id = body.id;
-    if (!id) return new Response("Missing id", { status: 400 });
-
-    const editableFields = [
-      "full_name",
-      "email",
-      "billing_email",
-      "phone",
-      "passport",
-      "address",
-      "city",
-      "zip",
-      "payment_method",
-      "bank_name",
-      "bank_account",
-      "bank_branch",
-      "signed_ip",
-      "signed_device",
-      "signed_date",
-    ];
-
-    const updates = {};
-    for (const f of editableFields) {
-      if (body[f] !== undefined) updates[f] = body[f];
-    }
-
-    if (Object.keys(updates).length > 0) {
-      const sets = Object.keys(updates).map(k => `${k} = ?`).join(", ");
-      const values = Object.values(updates);
-      values.push(id);
-
-      await env.DB.prepare(
-        `UPDATE onboard SET ${sets} WHERE id = ?`
-      ).bind(...values).run();
-    }
-
-    try {
-      const payload = mapEditsToSplynxPayload(body);
-      if (Object.keys(payload).length > 0) {
-        await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
-      }
-    } catch (err) {
-      console.error("Splynx sync failed", err);
-    }
-
-    return new Response("OK");
+  // --- Reject session ---
+  if (path.startsWith("/reject/") && method === "POST") {
+    const id = path.split("/")[2];
+    await rejectSession(env, id);
+    return json({ ok: true, action: "rejected", id });
   }
 
-  // --- Approve / Reject ---
-  if (path === "/api/admin/status" && req.method === "POST") {
-    const body = await req.json();
-    const { id, status } = body;
-    if (!id || !status) return new Response("Missing id or status", { status: 400 });
-
-    if (!["approved", "rejected"].includes(status)) {
-      return new Response("Invalid status", { status: 400 });
-    }
-
-    await env.DB.prepare(
-      "UPDATE onboard SET status = ? WHERE id = ?"
-    ).bind(status, id).run();
-
-    // 🔄 Auto-sync on approve
-    let splynxId = null;
-    if (status === "approved") {
-      try {
-        const row = await env.DB.prepare("SELECT * FROM onboard WHERE id = ?")
-          .bind(id)
-          .first();
-
-        if (row) {
-          // Map to payload
-          const payload = mapEditsToSplynxPayload(row);
-
-          // Update if existing customer, otherwise create as new lead
-          let splynxResult;
-          try {
-            splynxResult = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
-          } catch (_) {
-            splynxResult = await splynxPOST(env, `/admin/crm/leads`, payload);
-          }
-
-          if (splynxResult && splynxResult.id) {
-            splynxId = splynxResult.id;
-
-            // ⬇️ Save mapping in onboard table
-            await env.DB.prepare(
-              "UPDATE onboard SET splynx_id = ? WHERE id = ?"
-            ).bind(splynxId, id).run();
-          }
-
-          // Attachments (if stored in R2/KV)
-          const docs = [
-            ["id_doc_key", "id"],
-            ["poa_doc_key", "poa"],
-            ["msa_doc_key", "msa"],
-            ["debit_doc_key", "debit"],
-          ];
-          for (const [field] of docs) {
-            if (row[field]) {
-              const file = await env.R2_BUCKET.get(row[field]);
-              if (file) {
-                await splynxCreateAndUpload(
-                  env,
-                  "lead",
-                  splynxId || id,
-                  file
-                );
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Auto-sync failed", err);
-      }
-    }
-
-    return Response.json({ id, status, splynx_id: splynxId });
+  // --- Delete all onboarding (reset) ---
+  if (path === "/delete" && method === "POST") {
+    await deleteOnboardAll(env);
+    return json({ ok: true });
   }
 
-  // --- Delete ---
-  if (path === "/api/admin/delete" && req.method === "POST") {
-    const body = await req.json();
-    const id = body.id;
-    if (!id) return new Response("Missing id", { status: 400 });
+  return new Response(JSON.stringify({ error: "Unknown admin endpoint" }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
-    await deleteOnboardAll(env, id);
-    await env.DB.prepare("DELETE FROM onboard WHERE id = ?").bind(id).run();
+/**
+ * Helpers
+ */
+async function loadSessions(env, section) {
+  const kv = env.ONBOARD_KV;
+  const keys = await kv.list({ prefix: section + ":" });
+  const sessions = [];
+  for (const k of keys.keys) {
+    const data = await kv.get(k.name, { type: "json" });
+    if (data) sessions.push({ id: k.name.split(":")[1], ...data });
+  }
+  return sessions;
+}
 
-    return new Response("Deleted");
+async function approveSession(env, id) {
+  const kv = env.ONBOARD_KV;
+  const raw = await kv.get("pending:" + id, { type: "json" });
+  if (!raw) return;
+
+  // Push edits to Splynx (example: update customer info)
+  const payload = {};
+  if (raw.full_name) payload.name = raw.full_name;
+  if (raw.email) payload.email = raw.email;
+  if (raw.passport) payload.passport = raw.passport;
+  if (raw.address) payload.street_1 = raw.address;
+  if (raw.city) payload.city = raw.city;
+  if (raw.zip) payload.zip_code = raw.zip;
+
+  try {
+    await splynxPUT(env, `/admin/customers/${raw.id}`, payload);
+  } catch (err) {
+    console.error("Approve Splynx update failed", err);
   }
 
-  return new Response("Not found", { status: 404 });
+  await kv.put("approved:" + id, JSON.stringify(raw));
+  await kv.delete("pending:" + id);
+}
+
+async function rejectSession(env, id) {
+  const kv = env.ONBOARD_KV;
+  const raw = await kv.get("pending:" + id, { type: "json" });
+  if (!raw) return;
+  await kv.delete("pending:" + id);
+  await kv.put("rejected:" + id, JSON.stringify(raw));
+}
+
+function json(obj) {
+  return new Response(JSON.stringify(obj), {
+    headers: { "Content-Type": "application/json" },
+  });
 }
