@@ -1,198 +1,350 @@
 // src/ui/admin.js
+import { LOGO_URL } from "../constants.js";
 
-// ---- tiny helpers ----
-const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-function esc(s) { return String(s ?? "").replace(/[&<>"']/g, m => ESC_MAP[m]); }
-function fmtKB(bytes) {
-  if (bytes === 0) return "0 KB";
-  if (!bytes && bytes !== 0) return "";
-  const kb = bytes / 1024;
-  if (kb < 1024) return kb.toFixed(1) + " KB";
-  return (kb / 1024).toFixed(1) + " MB";
-}
-
-// =================== DASHBOARD ===================
+/** Admin dashboard (inline, self-contained) */
 export function renderAdminPage() {
-  const LOGO_URL = "https://static.vinet.co.za/logo.jpeg";
-  return (
-'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>' +
-'<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
-'<title>Vinet Onboarding – Admin</title>' +
-'<style>' +
-'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f6f7fb;color:#222;margin:0}' +
-'header{background:#fff;border-bottom:1px solid #eee;position:sticky;top:0;z-index:5}' +
-'.wrap{max-width:1100px;margin:0 auto;padding:18px 16px}' +
-'.brand{display:flex;align-items:center;gap:14px}' +
-'.brand img{height:46px}' +
-'.brand h1{margin:0;font-size:22px;color:#e2001a}' +
-'.controls{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0 10px}' +
-'.card{background:#fff;border:1px solid #eee;border-radius:12px;padding:14px}' +
-'label{font-size:12px;color:#444;font-weight:700;display:block;margin:0 0 6px}' +
-'input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa}' +
-'.btn{background:#e2001a;color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:700}' +
-'.btn.secondary{background:#fff;color:#e2001a;border:2px solid #e2001a}' +
-'.cols{display:grid;grid-template-columns:1fr;gap:14px;margin-top:8px}' +
-'@media(min-width:900px){.cols{grid-template-columns:1fr 1fr}}' +
-'.section h2{margin:6px 0 10px;font-size:18px;color:#333}' +
-'.list{display:grid;gap:10px}' +
-'.entry{border:1px solid #eee;border-radius:12px;padding:12px;background:#fff}' +
-'.entry h3{margin:0 0 5px;font-size:16px;color:#222}' +
-'.muted{color:#666;font-size:12px}' +
-'.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}' +
-'.row a{color:#0b69c7;text-decoration:none} .row a:hover{text-decoration:underline}' +
-'.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}' +
-'.empty{border:1px dashed #ddd;border-radius:12px;padding:14px;color:#777;text-align:center}' +
-'.tabs{display:flex;gap:8px;margin:12px 0 8px}' +
-'.tabs .tab{padding:6px 10px;border-radius:999px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:12px}' +
-'.tabs .tab.active{border-color:#e2001a;color:#e2001a;font-weight:700}' +
-'.toggleBoth{margin:2px 0 10px;font-size:12px;color:#0b69c7;cursor:pointer}' +
-'.diff{display:grid;grid-template-columns:1fr 1fr;gap:16px}' +
-'.diff h3{margin:6px 0;font-size:14px;color:#e2001a}' +
-'.diff table{width:100%;border-collapse:collapse;font-size:13px}' +
-'.diff td{border-bottom:1px solid #eee;padding:4px 6px;vertical-align:top}' +
-'.diff .label{font-weight:700;color:#444}' +
-'</style></head><body>' +
-'<header><div class="wrap">' +
-  '<div class="brand"><img src="' + LOGO_URL + '" alt="Vinet"><h1>Vinet Onboarding – Admin</h1></div>' +
-'</div></header>' +
+  return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Vinet Onboarding – Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --vinet:#e2001a; --ink:#122; --muted:#6b7280; --bg:#f7f8fb; --card:#fff; --line:#e9ecf1;
+    --pill-shadow: 0 2px 10px rgba(0,0,0,.08);
+  }
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+  .wrap{max-width:1100px;margin:28px auto;padding:0 18px}
+  .logo-row{display:flex;align-items:center;gap:14px;margin:4px 0 12px}
+  .logo-row img{height:60px} /* ~50% bigger */
+  h1{font-size:22px;color:var(--vinet);font-weight:800;margin:0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}
+  .card{background:var(--card);border-radius:16px;box-shadow:var(--pill-shadow);padding:16px}
+  .hbar{border-bottom:1px solid var(--line);padding:10px 0 12px;margin-bottom:12px}
+  .hbar .tabs{display:flex;gap:10px;flex-wrap:wrap}
+  .pill{border:2px solid var(--vinet);color:var(--vinet);background:#fff;border-radius:999px;padding:.45em 1.0em;font-weight:700;cursor:pointer}
+  .pill.active{background:var(--vinet);color:#fff}
+  .center-actions{display:flex;justify-content:center;gap:12px;margin-top:10px}
+  .field{margin:8px 0}
+  .field input{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fafafa}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-weight:800;cursor:pointer}
+  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet);border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
+  .list{display:flex;flex-direction:column;gap:14px}
+  .item{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .item h3{margin:0 0 6px 0;font-size:15px}
+  .meta{line-height:1.25;color:var(--muted);font-size:12px}
+  .links{display:flex;gap:10px;align-items:center;margin-top:8px}
+  .links a{color:#1b4; text-decoration:none}
+  .actions{display:flex;gap:8px;margin-top:10px}
+  .danger{border-color:#eab308;color:#eab308}
+  .delete{border-color:#ef4444;color:#ef4444}
+  .bad{color:#ef4444}
+  .muted{color:var(--muted)}
+  .url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;word-break:break-all;color:#374151}
+  .empty{color:var(--muted);font-style:italic}
 
-'<div class="wrap">' +
-  '<div class="controls">' +
-    '<div class="card">' +
-      '<label>Generate Onboard link (Splynx ID)</label>' +
-      '<div class="row">' +
-        '<input id="gen_id" placeholder="e.g. 319" />' +
-        '<button class="btn" id="btn_gen">Generate</button>' +
-      '</div>' +
-    '</div>' +
-    '<div class="card">' +
-      '<label>Generate Verification code (linkid)</label>' +
-      '<div class="row">' +
-        '<input id="ver_linkid" placeholder="e.g. 319_abcd1234" />' +
-        '<button class="btn" id="btn_ver">Generate</button>' +
-      '</div>' +
-    '</div>' +
-  '</div>' +
+  /* Styled popup */
+  .popup{
+    position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.35); z-index:9999;
+  }
+  .popup.open{display:grid}
+  .pop-card{
+    background:#fff; max-width:540px; width:min(92vw,540px); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+    padding:18px 18px 14px;
+  }
+  .pop-title{display:flex;align-items:center;gap:10px;color:var(--vinet);font-weight:900;font-size:18px;margin:2px 0 10px}
+  .pop-url{background:#fff;border:1px dashed var(--vinet);border-radius:10px;padding:10px 12px}
+  .pop-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
+  .copy{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
+  .ok{background:#fff;color:var(--vinet);border:2px solid var(--vinet);border-radius:10px;padding:8px 14px;font-weight:800;cursor:pointer}
 
-  '<div class="tabs">' +
-    '<button class="tab active" data-tab="dual">In Progress + Pending</button>' +
-    '<button class="tab" data-tab="inprog">In Progress</button>' +
-    '<button class="tab" data-tab="pending">Pending</button>' +
-    '<button class="tab" data-tab="approved">Approved</button>' +
-  '</div>' +
+  @media (max-width:840px){ .grid{grid-template-columns:1fr} .center-actions{justify-content:flex-start} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo-row">
+      <img src="${LOGO_URL}" alt="Vinet logo">
+      <h1>Vinet Onboarding – Admin</h1>
+    </div>
 
-  '<div class="toggleBoth" id="showBoth" style="display:none">↩ Show both “In Progress” and “Pending”</div>' +
+    <div class="grid">
+      <!-- Generate onboarding link -->
+      <div class="card">
+        <div class="hbar"><strong>Generate Onboard link (Splynx ID)</strong></div>
+        <div class="field"><input id="gen-id" placeholder="e.g. 319" inputmode="numeric"></div>
+        <div class="center-actions">
+          <button class="btn" id="btn-gen">Generate</button>
+        </div>
+        <div class="hbar" style="margin-top:16px">
+          <div class="tabs">
+            <span class="pill active" data-tab="mix">In Progress + Pending</span>
+            <span class="pill" data-tab="inprog">In Progress</span>
+            <span class="pill" data-tab="pending">Pending</span>
+            <span class="pill" data-tab="approved">Approved</span>
+          </div>
+        </div>
+        <div id="col-inprog" class="list"></div>
+      </div>
 
-  '<div class="cols" id="dual_cols">' +
-    '<div class="section card" id="sec_inprog"><h2>In Progress</h2><div class="list" id="list_inprog"></div></div>' +
-    '<div class="section card" id="sec_pending"><h2>Pending</h2><div class="list" id="list_pending"></div></div>' +
-  '</div>' +
+      <!-- Staff verify code -->
+      <div class="card">
+        <div class="hbar"><strong>Generate Verification code (linkid)</strong></div>
+        <div class="field"><input id="gen-linkid" placeholder="e.g. 319_abcd1234"></div>
+        <div class="center-actions">
+          <button class="btn" id="btn-staff">Generate</button>
+        </div>
+        <div class="hbar" style="visibility:hidden;height:1px;padding:0;margin:0;border:0"></div>
+        <div id="col-pending" class="list"></div>
+      </div>
+    </div>
+  </div>
 
-  '<div class="section card" id="sec_approved" style="margin-top:12px; display:none;"><h2>Approved</h2><div class="list" id="list_approved"></div></div>' +
-'</div>' +
+  <!-- Pretty popup -->
+  <div class="popup" id="popup">
+    <div class="pop-card">
+      <div class="pop-title">Onboarding link</div>
+      <div class="pop-url"><div id="pop-url" class="url"></div></div>
+      <div class="pop-actions">
+        <button class="copy" id="copy">Copy</button>
+        <button class="ok" id="ok">OK</button>
+      </div>
+    </div>
+  </div>
 
-'<script>' +
-'const $ = (s)=>document.querySelector(s); const $all=(s)=>Array.from(document.querySelectorAll(s));' +
-'function showModal(t,b){alert(t+"\\n"+b);}' +
-'const rBase=(window.R2_PUBLIC_BASE||"https://onboarding-uploads.vinethosting.org");' +
-'function fmtKB(bytes){ if(bytes===0) return "0 KB"; if(!bytes&&bytes!==0) return ""; const kb=bytes/1024; if(kb<1024) return kb.toFixed(1)+" KB"; return (kb/1024).toFixed(1)+" MB"; }' +
+<script>
+(function(){
+  const el = (id)=>document.getElementById(id);
+  const $inprog = el('col-inprog');
+  const $pending = el('col-pending');
+  const popup = el('popup'); const popUrl = el('pop-url');
+  el('ok').onclick = ()=> popup.classList.remove('open');
+  el('copy').onclick = async ()=> { try { await navigator.clipboard.writeText(popUrl.textContent.trim()); el('copy').textContent='Copied'; setTimeout(()=> el('copy').textContent='Copy', 1200);} catch{} };
 
-'function cardHTML(item){ const linkid=item.linkid; const name=(item.edits?.full_name)||""; const uploads=(item.uploads||[]).map(u=>"<li><a href=\\""+rBase+"/"+u.key+"\\" target=\\"_blank\\">"+(u.name||"file")+"</a> <span class=muted>"+fmtKB(u.size)+"</span></li>").join(""); const quick=["<a href=/admin/review?linkid="+linkid+">Review</a>","<a href=/agreements/msa/"+linkid+" target=_blank>MSA</a>","<a href=/agreements/debit/"+linkid+" target=_blank>Debit</a>"].join(" · "); return "<div class=entry><h3>Customer/Lead "+(item.id||"")+"</h3><div class=muted>"+(name?("Name: "+name):"No name yet")+"</div><div class=muted>Updated: "+(new Date(item.updated||0).toLocaleString())+"</div>"+(uploads?("<ul>"+uploads+"</ul>"):"<div class=muted>No uploads</div>")+"<div class=row>"+quick+"</div><div class=actions><button class=btn data-approve="+linkid+">Approve</button><button class=\'btn secondary\' data-reject="+linkid+">Reject</button><button class=\'btn secondary\' data-delete="+linkid+">Delete</button></div></div>"; }' +
+  // Tabs
+  const tabs = [...document.querySelectorAll('.pill[data-tab]')];
+  let currentTab = 'mix'; // approved hidden by default
+  tabs.forEach(t=> t.addEventListener('click', ()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    currentTab = t.dataset.tab;
+    refresh();
+  }));
 
-'async function loadLists(){ const load=async(m,t)=>{const r=await fetch("/api/admin/list?mode="+m);const d=await r.json().catch(()=>({items:[]}));document.getElementById(t).innerHTML=(d.items||[]).map(cardHTML).join("")||"<div class=empty>No records</div>";}; await Promise.all([load("inprog","list_inprog"),load("pending","list_pending"),load("approved","list_approved")]); bindActions(); }' +
+  // Generate onboarding link
+  el('btn-gen').onclick = async ()=>{
+    const id = el('gen-id').value.trim();
+    if(!id) return;
+    const r = await fetch('/api/admin/genlink', {method:'POST', body: JSON.stringify({ id })});
+    const d = await r.json().catch(()=>({}));
+    if (d && d.url){
+      popUrl.textContent = d.url;
+      popup.classList.add('open');
+      await refresh();
+    }
+  };
 
-'function bindActions(){ $all("[data-approve]").forEach(b=>{b.onclick=async()=>{const id=b.getAttribute("data-approve");await fetch("/api/admin/approve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid:id})});loadLists();};}); $all("[data-reject]").forEach(b=>{b.onclick=async()=>{const id=b.getAttribute("data-reject");const reason=prompt("Reason?","");await fetch("/api/admin/reject",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid:id,reason})});loadLists();};}); $all("[data-delete]").forEach(b=>{b.onclick=async()=>{const id=b.getAttribute("data-delete");if(!confirm("Delete?"))return;await fetch("/api/admin/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid:id})});loadLists();};}); }' +
+  // Generate staff code
+  el('btn-staff').onclick = async ()=>{
+    const linkid = el('gen-linkid').value.trim();
+    if(!linkid) return;
+    const r = await fetch('/api/staff/gen', {method:'POST', body: JSON.stringify({ linkid })});
+    const d = await r.json().catch(()=>({}));
+    if (d && d.code){
+      popUrl.textContent = 'Staff code for ' + linkid + ': ' + d.code;
+      popup.classList.add('open');
+    }
+  };
 
-'$all(".tabs .tab").forEach(t=>{t.onclick=()=>{$all(".tabs .tab").forEach(x=>x.classList.remove("active"));t.classList.add("active");const m=t.dataset.tab;const dual=$("#dual_cols"),ap=$("#sec_approved"),both=$("#showBoth");if(m==="dual"){dual.style.display="grid";ap.style.display="none";both.style.display="none";return;}both.style.display="block";if(m==="approved"){dual.style.display="none";ap.style.display="block";}if(m==="inprog"){dual.style.display="block";ap.style.display="none";$("#sec_inprog").style.display="block";$("#sec_pending").style.display="none";}if(m==="pending"){dual.style.display="block";ap.style.display="none";$("#sec_inprog").style.display="none";$("#sec_pending").style.display="block";}}});' +
-'$("#showBoth").onclick=()=>{$("#sec_inprog").style.display="block";$("#sec_pending").style.display="block";$all(".tabs .tab").forEach(x=>x.classList.remove("active"));$all(".tabs .tab")[0].classList.add("active");$("#dual_cols").style.display="grid";$("#sec_approved").style.display="none";$("#showBoth").style.display="none";};' +
+  // Helpers
+  const ago = (t)=> {
+    if(!t) return '—';
+    const s = Math.floor((Date.now()-t)/1000);
+    if (s<60) return s+'s ago';
+    const m = Math.floor(s/60); if (m<60) return m+'m ago';
+    const h = Math.floor(m/60); if (h<24) return h+'h ago';
+    const d = Math.floor(h/24); return d+'d ago';
+  };
 
-'document.getElementById("btn_gen").onclick=async()=>{const id=document.getElementById("gen_id").value.trim(); if(!id) return alert("Enter Splynx ID"); const r=await fetch("/api/admin/genlink",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id})}); const d=await r.json().catch(()=>({})); if(d.url) showModal("Onboarding link", d.url); loadLists();};' +
-'document.getElementById("btn_ver").onclick=async()=>{const linkid=document.getElementById("ver_linkid").value.trim(); if(!linkid) return alert("Enter linkid"); const r=await fetch("/api/staff/gen",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})}); const d=await r.json().catch(()=>({})); if(d.ok) showModal("Staff code for "+linkid, d.code);};' +
+  function itemCard(kind, it){
+    const linkid = it.linkid;
+    const id = it.id || '—';
+    const updated = it.updated || 0;
 
-'loadLists();' +
-'</script>' +
-'</body></html>'
-  );
+    // Base block
+    const lines = [
+      '<div class="item">',
+      '<h3>Customer/Lead '+id+'</h3>',
+      '<div class="meta"><div>No name yet</div><div>Updated: '+ new Date(updated).toLocaleString() +' ('+ago(updated)+')</div>' +
+      (it.has_uploads? '' : '<div>No uploads</div>') + '</div>'
+    ];
+
+    // Links row
+    const links = [];
+    if (kind !== 'pending'){ // For pending we remove Review/MSA/Debit as requested
+      links.push('<a href="/admin/review?linkid='+linkid+'" target="_blank">Review</a>');
+      links.push('<a href="/agreements/msa/'+linkid+'" target="_blank">MSA</a>');
+      links.push('<a href="/agreements/debit/'+linkid+'" target="_blank">Debit</a>');
+    } else {
+      // show the onboarding URL for convenience
+      links.push('<span class="url">'+location.origin+'/onboard/'+linkid+'</span>');
+    }
+    if (links.length) lines.push('<div class="links">'+links.join(' · ')+'</div>');
+
+    // Actions
+    const acts = [];
+    if (kind !== 'approved'){
+      if (kind !== 'pending') acts.push('<button class="btn" data-act="approve" data-id="'+linkid+'">Approve</button>');
+      acts.push('<button class="btn-ghost danger" data-act="reject" data-id="'+linkid+'">Reject</button>');
+    }
+    acts.push('<button class="btn-ghost delete" data-act="delete" data-id="'+linkid+'">Delete</button>');
+    lines.push('<div class="actions">'+acts.join('')+'</div>');
+    lines.push('</div>');
+    return lines.join('');
+  }
+
+  async function fetchList(mode){
+    const r = await fetch('/api/admin/list?mode='+mode);
+    const d = await r.json().catch(()=>({items:[]}));
+    return Array.isArray(d.items)? d.items : [];
+  }
+
+  // Single render pass depending on currentTab
+  async function refresh(){
+    // in-progress & pending always visible when tab = mix
+    const showInprog = (currentTab==='mix' || currentTab==='inprog');
+    const showPending = (currentTab==='mix' || currentTab==='pending');
+    const showApproved = (currentTab==='approved');
+
+    // Fetch
+    const [inprog, pending, approved] = await Promise.all([
+      showInprog ? fetchList('inprog') : Promise.resolve([]),
+      showPending ? fetchList('pending') : Promise.resolve([]),
+      showApproved ? fetchList('approved') : Promise.resolve([])
+    ]);
+
+    // Render left column (in-progress OR approved based on tab)
+    $inprog.innerHTML = '';
+    if (currentTab==='approved'){
+      if (!approved.length){ $inprog.innerHTML = '<div class="empty">No records.</div>'; }
+      else $inprog.innerHTML = approved.map(it=> itemCard('approved', it)).join('');
+    }else{
+      if (!inprog.length){ $inprog.innerHTML = '<div class="empty">No records.</div>'; }
+      else $inprog.innerHTML = inprog.map(it=> itemCard('inprog', it)).join('');
+    }
+
+    // Render right column (pending or empty)
+    $pending.innerHTML = '';
+    if (showPending){
+      if (!pending.length){ $pending.innerHTML = '<div class="empty">No records.</div>'; }
+      else $pending.innerHTML = pending.map(it=> itemCard('pending', it)).join('');
+    }
+
+    // Wire actions
+    document.querySelectorAll('[data-act]').forEach(btn=>{
+      btn.addEventListener('click', async (e)=>{
+        const act = btn.dataset.act;
+        const linkid = btn.dataset.id;
+        if (act==='approve'){
+          await fetch('/api/admin/approve',{method:'POST',body:JSON.stringify({linkid})});
+        } else if (act==='reject'){
+          const reason = prompt('Reason (optional):') || '';
+          await fetch('/api/admin/reject',{method:'POST',body:JSON.stringify({linkid,reason})});
+        } else if (act==='delete'){
+          if (!confirm('Delete this onboarding session and all related KV/R2 records?')) return;
+          await fetch('/api/admin/delete',{method:'POST',body:JSON.stringify({linkid})});
+        }
+        await refresh();
+      });
+    });
+  }
+
+  refresh();
+})();
+</script>
+</body>
+</html>`;
 }
 
-// =================== REVIEW PAGE ===================
-export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, splynxData }) {
+/** Review page (kept – includes clickable R2 links) */
+export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
+  const kb = (n)=> (Math.round((n/1024)*10)/10).toFixed(1) + " KB";
+  const e = (s)=> String(s||"");
+  const up = Array.isArray(sess.uploads)?sess.uploads:[];
   const edits = sess.edits || {};
-  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-  const s = splynxData || {};
-  const f = (k)=>esc(edits[k]||"");
-  const fs = (k)=>esc(s[k]||"");
+  const audit = sess.audit_meta || {};
+  const status = sess.status || 'pending';
 
-  const uploadsHtml = uploads.map(function(u){
-    const url = (r2PublicBase || "https://onboarding-uploads.vinethosting.org") + "/" + u.key;
-    return '<li><a href="' + esc(url) + '" target="_blank">' + esc(u.name || 'file') + '</a> (' + fmtKB(u.size) + ')</li>';
-  }).join("");
+  const rows = Object.entries(edits).map(([k,v])=> `<div><b>${k}</b>: ${e(v)}</div>`).join("");
 
-  return (
-'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>' +
-'<title>Review & Approve</title>' +
-'<style>body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222}.wrap{max-width:900px;margin:0 auto;padding:20px}.card{background:#fff;padding:16px;border-radius:12px;border:1px solid #eee}.diff{display:grid;grid-template-columns:1fr 1fr;gap:16px}.diff h3{margin:6px 0;font-size:14px;color:#e2001a}.diff table{width:100%;border-collapse:collapse;font-size:13px}.diff td{border-bottom:1px solid #eee;padding:4px 6px;vertical-align:top}.diff .label{font-weight:700;color:#444}.actions{margin-top:14px;display:flex;gap:8px}.btn{background:#e2001a;color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}.btn.secondary{background:#fff;color:#e2001a;border:2px solid #e2001a}.muted{color:#666;font-size:12px}.back{display:inline-block;margin-bottom:10px;text-decoration:none;color:#0b69c7}</style></head><body>' +
-'<div class="wrap">' +
-'<a class="back" href="/">← Back</a>' +
-'<h2>Review & Approve</h2>' +
-'<div class="card">' +
-'<div class="diff">' +
-'<div><h3>Submitted (Onboarding)</h3><table>' +
-'<tr><td class="label">Full Name</td><td>'+f("full_name")+'</td></tr>' +
-'<tr><td class="label">Email</td><td>'+f("email")+'</td></tr>' +
-'<tr><td class="label">Phone</td><td>'+f("phone")+'</td></tr>' +
-'<tr><td class="label">Passport/ID</td><td>'+f("passport")+'</td></tr>' +
-'<tr><td class="label">Street</td><td>'+f("street")+'</td></tr>' +
-'<tr><td class="label">City</td><td>'+f("city")+'</td></tr>' +
-'<tr><td class="label">ZIP</td><td>'+f("zip")+'</td></tr>' +
-'</table></div>' +
-'<div><h3>Current (Splynx)</h3><table>' +
-'<tr><td class="label">Full Name</td><td>'+fs("full_name")+'</td></tr>' +
-'<tr><td class="label">Email</td><td>'+fs("email")+'</td></tr>' +
-'<tr><td class="label">Phone</td><td>'+fs("phone")+'</td></tr>' +
-'<tr><td class="label">Passport/ID</td><td>'+fs("passport")+'</td></tr>' +
-'<tr><td class="label">Street</td><td>'+fs("street")+'</td></tr>' +
-'<tr><td class="label">City</td><td>'+fs("city")+'</td></tr>' +
-'<tr><td class="label">ZIP</td><td>'+fs("zip")+'</td></tr>' +
-'</table></div>' +
-'</div>' +
+  const files = up.map(u=>{
+    const url = `${r2PublicBase}/${u.key}`;
+    return `<div><a href="${url}" target="_blank">${e(u.name)}</a> · ${kb(u.size)}</div>`;
+  }).join("") || `<div class="muted">No uploads</div>`;
 
-'<h3>Uploads</h3><ul>'+uploadsHtml+'</ul>' +
+  const msaLink = `/pdf/msa/${linkid}`;
+  const doLink  = `/pdf/debit/${linkid}`;
 
-'<h3>Agreements</h3>' +
-'<div class="row"><a href="/pdf/msa/'+esc(linkid)+'" target="_blank">MSA PDF</a> · <a href="/agreements/msa/'+esc(linkid)+'" target="_blank">MSA HTML</a>' +
-((sess.pay_method === "debit") ? ' · <a href="/pdf/debit/'+esc(linkid)+'" target="_blank">Debit Order PDF</a> · <a href="/agreements/debit/'+esc(linkid)+'" target="_blank">Debit HTML</a>' : '') +
-'</div>' +
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Review & Approve</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial; background:#f7f8fb; color:#122}
+  .wrap{max-width:900px;margin:28px auto;padding:0 16px}
+  .card{background:#fff;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.08);padding:18px}
+  h1{color:#e2001a;margin:0 0 10px;font-size:26px}
+  .muted{color:#6b7280}
+  .row{display:flex;gap:18px;flex-wrap:wrap}
+  .btn{background:#e2001a;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
+  .btn-ghost{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
+  .danger{border-color:#ef4444;color:#ef4444}
+</style>
+</head><body>
+<div class="wrap">
+  <a href="/" class="btn-ghost" style="margin-bottom:12px;display:inline-block">← Back</a>
+  <div class="card">
+    <h1>Review & Approve</h1>
+    <div class="muted">Splynx ID: ${e(sess.id)} • LinkID: ${e(linkid)} • Status: ${e(status)}</div>
 
-'<div class="actions">' +
-'<button class="btn" id="btnApprove">Approve & Push</button>' +
-'<button class="btn secondary" id="btnReject">Reject</button>' +
-'<button class="btn secondary" id="btnDelete">Delete</button>' +
-'</div>' +
+    <h3 style="margin-top:16px">Client Edits</h3>
+    <div>${rows || '<span class="muted">No edits captured</span>'}</div>
 
-'</div></div>' +
+    <h3 style="margin-top:18px">Uploads</h3>
+    <div>${files}</div>
 
-'<script>' +
-'(function(){' +
-'const linkid = ' + JSON.stringify(linkid) + ';' +
-'document.getElementById("btnApprove").onclick = async function(){' +
-'  await fetch("/api/admin/approve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
-'  alert("Approved & pushed to Splynx."); location.href="/";' +
-'};' +
-'document.getElementById("btnReject").onclick = async function(){' +
-'  const reason = prompt("Reason for rejection?","");' +
-'  if (reason===null) return;' +
-'  await fetch("/api/admin/reject",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid,reason})});' +
-'  alert("Marked as rejected."); location.href="/";' +
-'};' +
-'document.getElementById("btnDelete").onclick = async function(){' +
-'  if (!confirm("Delete this onboarding session and all related data?")) return;' +
-'  await fetch("/api/admin/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
-'  alert("Deleted."); location.href="/";' +
-'};' +
-'})();' +
-'</script>' +
+    <h3 style="margin-top:18px">Agreement</h3>
+    <div>Accepted: ${sess.agreement_signed ? 'Yes' : 'No'}</div>
+    <div style="margin-top:10px">
+      <a class="btn-ghost" href="${msaLink}" target="_blank">Open MSA PDF</a>
+      <a class="btn-ghost" href="${doLink}" target="_blank">Open Debit PDF</a>
+    </div>
 
-'</body></html>'
-  );
+    <div class="row" style="margin-top:16px">
+      <button class="btn" id="approve">Approve & Push</button>
+      <button class="btn-ghost" id="reject">Reject</button>
+      <button class="btn-ghost danger" id="delete">Delete</button>
+    </div>
+  </div>
+</div>
+<script>
+  (function(){
+    const linkid = ${JSON.stringify(linkid)};
+    document.getElementById('approve').onclick = async ()=>{
+      await fetch('/api/admin/approve',{method:'POST',body:JSON.stringify({linkid})});
+      alert('Approved & pushed (check Splynx).'); location.href='/';
+    };
+    document.getElementById('reject').onclick = async ()=>{
+      const reason = prompt('Reason (optional):') || '';
+      await fetch('/api/admin/reject',{method:'POST',body:JSON.stringify({linkid,reason})});
+      alert('Marked as rejected.'); location.href='/';
+    };
+    document.getElementById('delete').onclick = async ()=>{
+      if (!confirm('Delete this onboarding session and all related KV/R2 records?')) return;
+      await fetch('/api/admin/delete',{method:'POST',body:JSON.stringify({linkid})});
+      alert('Deleted.'); location.href='/';
+    };
+  })();
+</script>
+</body></html>`;
 }
