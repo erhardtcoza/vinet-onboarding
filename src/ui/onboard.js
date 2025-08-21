@@ -82,31 +82,93 @@ export function renderOnboardUI(linkid) {
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
-  // Step 1: Verify (WhatsApp OTP or Staff code)
-  function step1(){
-    stepEl.innerHTML = [
-      '<h2>Verify your identity</h2>',
-      '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
-      '<div id="waBox" class="field" style="margin-top:10px;"></div>',
-      '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
-    ].join('');
+// Step 1: Verify (WhatsApp OTP or Staff code)
+function step1(){
+  stepEl.innerHTML = [
+    '<h2>Verify your identity</h2>',
+    '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
+    '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+    '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+  ].join('');
 
-    const wa=document.getElementById('waBox');
-    // NOTE: one backslash in HTML => "\\\\d" would be wrong; keep "\\d{6}" here.
-    wa.innerHTML='<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div><form id="otpForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\d{6}" placeholder="6-digit code" required /><button class="btn" type="submit">Verify</button></div></form><a class="btn-outline" id="resend">Resend code</a>';
-    sendOtp();
-    document.getElementById('resend').onclick=(e)=>{ e.preventDefault(); sendOtp(); };
-    document.getElementById('otpForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"wa"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; setProg(); save(); render(); } else { document.getElementById('otpmsg').textContent='Invalid code. Try again.'; } };
+  const wa = document.getElementById('waBox');
+  wa.innerHTML = ''
+    + '<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div>'
+    + '<form id="otpForm" autocomplete="off" class="field">'
+    + '  <div class="row">'
+    + '    <input id="otp" name="otp" type="text" inputmode="numeric" '
+    + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required />'
+    + '    <button class="btn" type="submit">Verify</button>'
+    + '  </div>'
+    + '</form>'
+    + '<a class="btn-outline" id="resend">Resend code</a>';
 
-    const staff=document.getElementById('staffBox');
-    staff.innerHTML='<div class="note">Ask Vinet for a one-time staff code.</div><form id="staffForm" autocomplete="off" class="field"><div class="row"><input name="otp" maxlength="6" pattern="\\d{6}" placeholder="6-digit code from Vinet" required /><button class="btn" type="submit">Verify</button></div></form><div id="staffMsg" class="note"></div>';
-    document.getElementById('staffForm').onsubmit=async(e)=>{ e.preventDefault(); const otp=e.target.otp.value.trim(); const r=await fetch('/api/otp/verify',{method:'POST',body:JSON.stringify({linkid,otp,kind:"staff"})}); const d=await r.json().catch(()=>({ok:false})); if(d.ok){ step=2; state.progress=step; setProg(); save(); render(); } else { document.getElementById('staffMsg').textContent='Invalid or expired staff code.'; } };
+  // Send initial WhatsApp OTP
+  sendOtp();
+  document.getElementById('resend').onclick = (e)=>{ e.preventDefault(); sendOtp(); };
 
-    const pwa=document.getElementById('p-wa'), pst=document.getElementById('p-staff');
-    pwa.onclick=()=>{ pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
-    pst.onclick=()=>{ pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
-  }
+  // Robust client-side validation (works even if browser pattern is picky)
+  const otpInput = document.getElementById('otp');
+  otpInput.addEventListener('input', () => {
+    // keep only digits and trim to 6
+    otpInput.value = otpInput.value.replace(/\D+/g, '').slice(0, 6);
+  });
 
+  document.getElementById('otpForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const otp = otpInput.value.trim();
+    if (otp.length !== 6) {
+      document.getElementById('otpmsg').textContent = 'Please enter the 6‑digit code.';
+      return;
+    }
+    const r = await fetch('/api/otp/verify', {
+      method:'POST',
+      body: JSON.stringify({ linkid, otp, kind: "wa" })
+    });
+    const d = await r.json().catch(()=>({ ok:false }));
+    if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
+    else { document.getElementById('otpmsg').textContent = 'Invalid code. Try again.'; }
+  };
+
+  // Staff code UI
+  const staff = document.getElementById('staffBox');
+  staff.innerHTML = ''
+    + '<div class="note">Ask Vinet for a one-time staff code.</div>'
+    + '<form id="staffForm" autocomplete="off" class="field">'
+    + '  <div class="row">'
+    + '    <input id="staffOtp" name="otp" type="text" inputmode="numeric" '
+    + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code from Vinet" required />'
+    + '    <button class="btn" type="submit">Verify</button>'
+    + '  </div>'
+    + '</form>'
+    + '<div id="staffMsg" class="note"></div>';
+
+  const staffInput = document.getElementById('staffOtp');
+  staffInput.addEventListener('input', () => {
+    staffInput.value = staffInput.value.replace(/\D+/g, '').slice(0, 6);
+  });
+
+  document.getElementById('staffForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const otp = staffInput.value.trim();
+    if (otp.length !== 6) {
+      document.getElementById('staffMsg').textContent = 'Please enter the 6‑digit code.';
+      return;
+    }
+    const r = await fetch('/api/otp/verify', {
+      method:'POST',
+      body: JSON.stringify({ linkid, otp, kind: "staff" })
+    });
+    const d = await r.json().catch(()=>({ ok:false }));
+    if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
+    else { document.getElementById('staffMsg').textContent = 'Invalid or expired staff code.'; }
+  };
+
+  // Toggle tabs
+  const pwa = document.getElementById('p-wa'), pst = document.getElementById('p-staff');
+  pwa.onclick = () => { pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
+  pst.onclick = () => { pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
+}
   // Step 2: Personal info (pulled from Splynx, editable)
   function step2(){
     stepEl.innerHTML='<h2>Confirm your details</h2><div id="box" class="note">Loading…</div>';
