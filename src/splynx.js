@@ -7,6 +7,7 @@ function authHeader(env) {
   };
 }
 
+// --- Base HTTP helpers ---
 export async function splynxGET(env, path) {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { ...authHeader(env) },
@@ -37,49 +38,72 @@ export async function splynxPUT(env, path, body) {
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`PUT ${path} failed: ${res.status} ${text}`);
+  }
   return res.json();
 }
 
 /**
- * Map frontend edits into Splynx API payload
- * @param {object} edits - fields edited in onboarding admin
- * @returns {object} payload for Splynx PUT/POST
+ * Map onboarding/admin edits into Splynx API payload
+ * @param {object} edits
  */
 export function mapEditsToSplynxPayload(edits) {
   const payload = {};
 
+  // --- Core identity ---
   if (edits.full_name) payload.name = edits.full_name;
   if (edits.email) payload.email = edits.email;
   if (edits.billing_email) payload.billing_email = edits.billing_email;
   if (edits.phone) payload.phone = edits.phone;
-  if (edits.passport) payload.passport = edits.passport;
 
+  // --- Passport / ID ---
+  if (edits.passport) payload.passport = edits.passport;
+  if (edits.id_number) payload.additional_attributes = { 
+    ...(payload.additional_attributes || {}), 
+    social_id: edits.id_number 
+  };
+
+  // --- Address ---
   if (edits.address || edits.city || edits.zip) {
     payload.street_1 = edits.address || "";
     payload.city = edits.city || "";
     payload.zip_code = edits.zip || "";
   }
 
+  // --- Payment / billing ---
+  if (edits.payment_method) payload.payment_method = edits.payment_method;
+  if (edits.bank_name) payload.bank_name = edits.bank_name;
+  if (edits.bank_account) payload.bank_account = edits.bank_account;
+  if (edits.bank_branch) payload.bank_branch = edits.bank_branch;
+
+  // --- Agreement metadata ---
+  if (edits.signed_ip) payload.additional_attributes = { 
+    ...(payload.additional_attributes || {}), 
+    signed_ip: edits.signed_ip 
+  };
+  if (edits.signed_device) payload.additional_attributes = { 
+    ...(payload.additional_attributes || {}), 
+    signed_device: edits.signed_device 
+  };
+  if (edits.signed_date) payload.additional_attributes = { 
+    ...(payload.additional_attributes || {}), 
+    signed_date: edits.signed_date 
+  };
+
   return payload;
 }
 
 /**
  * Upload file to Splynx for customer or lead
- * 
- * @param {Env} env
- * @param {"lead"|"customer"} type
- * @param {string|number} id
- * @param {File|Blob} file
  */
 export async function splynxCreateAndUpload(env, type, id, file) {
   let endpoint;
 
   if (type === "lead") {
-    // POST /admin/crm/lead-documents?lead_id={id}
     endpoint = `/admin/crm/lead-documents?lead_id=${id}`;
   } else if (type === "customer") {
-    // POST /admin/customers/customer-documents?customer_id={id}
     endpoint = `/admin/customers/customer-documents?customer_id=${id}`;
   } else {
     throw new Error(`Invalid upload type: ${type}`);
@@ -103,7 +127,7 @@ export async function splynxCreateAndUpload(env, type, id, file) {
 }
 
 /**
- * Fetch a clean mapped profile for display in onboarding
+ * Fetch profile and normalize fields for display in onboarding UI
  */
 export async function fetchProfileForDisplay(env, id) {
   const endpoints = [
@@ -126,6 +150,10 @@ export async function fetchProfileForDisplay(env, id) {
         address: data.street_1 || data.address || "",
         city: data.city || "",
         zip: data.zip_code || data.zip || "",
+        payment_method: data.payment_method || "",
+        bank_name: data.bank_name || "",
+        bank_account: data.bank_account || "",
+        bank_branch: data.bank_branch || "",
       };
     } catch (_) {}
   }
@@ -133,7 +161,7 @@ export async function fetchProfileForDisplay(env, id) {
 }
 
 /**
- * Try multiple endpoints to find customer/lead MSISDN info
+ * Try multiple endpoints to fetch MSISDN/contact info
  */
 export async function fetchCustomerMsisdn(env, id) {
   const eps = [
