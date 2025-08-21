@@ -1,350 +1,407 @@
 // src/ui/admin.js
 import { LOGO_URL } from "../constants.js";
 
-/** Admin dashboard (inline, self-contained) */
+// -------------------------------------------------------------
+// Dashboard (Admin) UI
+// -------------------------------------------------------------
 export function renderAdminPage() {
-  return /* html */ `<!DOCTYPE html>
+  return /*html*/`<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
+<meta charset="UTF-8">
 <title>Vinet Onboarding – Admin</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   :root{
-    --vinet:#e2001a; --ink:#122; --muted:#6b7280; --bg:#f7f8fb; --card:#fff; --line:#e9ecf1;
-    --pill-shadow: 0 2px 10px rgba(0,0,0,.08);
+    --vinet:#e2001a;
+    --ink:#222;
+    --muted:#666;
+    --card:#fff;
+    --bg:#f7f8fb;
+    --pill:#e2001a;
+    --pillText:#fff;
+    --ring:#f1d4d8;
+    --radius:14px;
   }
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
-  .wrap{max-width:1100px;margin:28px auto;padding:0 18px}
-  .logo-row{display:flex;align-items:center;gap:14px;margin:4px 0 12px}
-  .logo-row img{height:60px} /* ~50% bigger */
-  h1{font-size:22px;color:var(--vinet);font-weight:800;margin:0}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}
-  .card{background:var(--card);border-radius:16px;box-shadow:var(--pill-shadow);padding:16px}
-  .hbar{border-bottom:1px solid var(--line);padding:10px 0 12px;margin-bottom:12px}
-  .hbar .tabs{display:flex;gap:10px;flex-wrap:wrap}
-  .pill{border:2px solid var(--vinet);color:var(--vinet);background:#fff;border-radius:999px;padding:.45em 1.0em;font-weight:700;cursor:pointer}
-  .pill.active{background:var(--vinet);color:#fff}
-  .center-actions{display:flex;justify-content:center;gap:12px;margin-top:10px}
-  .field{margin:8px 0}
-  .field input{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fafafa}
-  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-weight:800;cursor:pointer}
-  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet);border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
-  .list{display:flex;flex-direction:column;gap:14px}
-  .item{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-  .item h3{margin:0 0 6px 0;font-size:15px}
-  .meta{line-height:1.25;color:var(--muted);font-size:12px}
-  .links{display:flex;gap:10px;align-items:center;margin-top:8px}
-  .links a{color:#1b4; text-decoration:none}
-  .actions{display:flex;gap:8px;margin-top:10px}
-  .danger{border-color:#eab308;color:#eab308}
-  .delete{border-color:#ef4444;color:#ef4444}
-  .bad{color:#ef4444}
-  .muted{color:var(--muted)}
-  .url{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;word-break:break-all;color:#374151}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  a{color:var(--vinet);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:1100px;margin:30px auto;padding:0 18px}
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .brand img{height:60px} /* +50% */
+  .brand h1{font-size:22px;color:var(--vinet);margin:0;font-weight:800}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+  .card{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  .h{font-weight:800;color:var(--ink);margin:0 0 10px}
+  .sub{font-size:12px;color:var(--muted);margin:6px 0}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .input{width:100%;padding:11px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer;font-weight:700}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
+  .pill-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 2px}
+  .pill{padding:8px 14px;border-radius:999px;border:2px solid var(--vinet);color:var(--vinet);font-weight:700;background:#fff;cursor:pointer}
+  .pill.active{background:var(--pill);color:var(--pillText)}
+  .lists{margin-top:18px}
+  .list-col{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  .group-title{font-weight:800;margin:0 0 8px}
   .empty{color:var(--muted);font-style:italic}
-
-  /* Styled popup */
-  .popup{
-    position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.35); z-index:9999;
-  }
-  .popup.open{display:grid}
-  .pop-card{
-    background:#fff; max-width:540px; width:min(92vw,540px); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);
-    padding:18px 18px 14px;
-  }
-  .pop-title{display:flex;align-items:center;gap:10px;color:var(--vinet);font-weight:900;font-size:18px;margin:2px 0 10px}
-  .pop-url{background:#fff;border:1px dashed var(--vinet);border-radius:10px;padding:10px 12px}
-  .pop-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
-  .copy{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
-  .ok{background:#fff;color:var(--vinet);border:2px solid var(--vinet);border-radius:10px;padding:8px 14px;font-weight:800;cursor:pointer}
-
-  @media (max-width:840px){ .grid{grid-template-columns:1fr} .center-actions{justify-content:flex-start} }
+  .item{border:1px solid #eee;border-radius:12px;padding:12px;margin:10px 0}
+  .meta{font-size:12px;color:#445}
+  .links{display:flex;gap:12px;margin:8px 0}
+  .btn-row{display:flex;gap:10px;flex-wrap:wrap}
+  .btn-small{padding:7px 12px;border-radius:9px;font-size:14px}
+  .muted{color:#6a6a6a}
+  .urlchip{display:inline-block;background:#fafafa;border:1px dashed #ddd;border-radius:10px;padding:6px 10px;font-size:12px;color:#333}
+  /* Center generate buttons */
+  .center{display:flex;justify-content:center;margin-top:8px}
+  /* Modal */
+  .modal-back{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:20}
+  .modal{background:#fff;border-radius:16px;box-shadow:0 10px 40px #0004;max-width:560px;width:min(92vw,560px);padding:16px 16px 14px}
+  .modal .title{font-weight:900;color:var(--vinet);margin:0 0 8px}
+  .modal .box{border:2px solid var(--vinet);border-radius:12px;padding:10px 12px;background:#fff;margin:6px 0;overflow:auto}
+  .modal .row{justify-content:flex-end}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222;color:#fff;border-radius:10px;padding:9px 12px;font-size:13px;display:none;z-index:25}
 </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="logo-row">
-      <img src="${LOGO_URL}" alt="Vinet logo">
+    <div class="brand">
+      <img src="${LOGO_URL}" alt="Vinet Logo">
       <h1>Vinet Onboarding – Admin</h1>
     </div>
 
-    <div class="grid">
-      <!-- Generate onboarding link -->
-      <div class="card">
-        <div class="hbar"><strong>Generate Onboard link (Splynx ID)</strong></div>
-        <div class="field"><input id="gen-id" placeholder="e.g. 319" inputmode="numeric"></div>
-        <div class="center-actions">
-          <button class="btn" id="btn-gen">Generate</button>
-        </div>
-        <div class="hbar" style="margin-top:16px">
-          <div class="tabs">
-            <span class="pill active" data-tab="mix">In Progress + Pending</span>
-            <span class="pill" data-tab="inprog">In Progress</span>
-            <span class="pill" data-tab="pending">Pending</span>
-            <span class="pill" data-tab="approved">Approved</span>
-          </div>
-        </div>
-        <div id="col-inprog" class="list"></div>
+    <!-- Top: two generate cards -->
+    <div class="grid-2">
+      <div class="card" id="card-left">
+        <p class="h">Generate Onboard link (Splynx ID)</p>
+        <input id="splynxId" class="input" placeholder="e.g. 319" />
+        <div class="center"><button id="genLink" class="btn">Generate</button></div>
       </div>
 
-      <!-- Staff verify code -->
-      <div class="card">
-        <div class="hbar"><strong>Generate Verification code (linkid)</strong></div>
-        <div class="field"><input id="gen-linkid" placeholder="e.g. 319_abcd1234"></div>
-        <div class="center-actions">
-          <button class="btn" id="btn-staff">Generate</button>
-        </div>
-        <div class="hbar" style="visibility:hidden;height:1px;padding:0;margin:0;border:0"></div>
-        <div id="col-pending" class="list"></div>
+      <div class="card" id="card-right">
+        <p class="h">Generate Verification code (linkid)</p>
+        <input id="linkId" class="input" placeholder="e.g. 319_abcd1234" />
+        <div class="center"><button id="genStaff" class="btn">Generate</button></div>
+        <p class="sub">No records.</p>
+      </div>
+    </div>
+
+    <!-- Status Tabs + Lists (separate block BELOW the generate cards) -->
+    <div class="lists">
+      <div class="pill-tabs">
+        <button data-mode="all" class="pill active">In Progress + Pending</button>
+        <button data-mode="inprog" class="pill">In Progress</button>
+        <button data-mode="pending" class="pill">Pending</button>
+        <button data-mode="approved" class="pill">Approved</button>
+      </div>
+      <div id="listWrap" class="list-col">
+        <p class="group-title" id="groupTitle">In Progress + Pending</p>
+        <div id="listBody"></div>
+        <p id="emptyMsg" class="empty" style="display:none">No records.</p>
       </div>
     </div>
   </div>
 
-  <!-- Pretty popup -->
-  <div class="popup" id="popup">
-    <div class="pop-card">
-      <div class="pop-title">Onboarding link</div>
-      <div class="pop-url"><div id="pop-url" class="url"></div></div>
-      <div class="pop-actions">
-        <button class="copy" id="copy">Copy</button>
-        <button class="ok" id="ok">OK</button>
+  <!-- Modal -->
+  <div id="modalBack" class="modal-back" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <div class="modal">
+      <p id="mTitle" class="title">Onboarding link</p>
+      <div id="mBox" class="box"></div>
+      <div class="row">
+        <button id="mCopy" class="btn btn-small">Copy</button>
+        <button id="mOk" class="btn btn-small btn-ghost">OK</button>
       </div>
+      <p id="mNote" class="sub" style="margin:8px 0 0">This window will close automatically.</p>
     </div>
   </div>
+  <div id="toast" class="toast">Copied!</div>
 
 <script>
 (function(){
-  const el = (id)=>document.getElementById(id);
-  const $inprog = el('col-inprog');
-  const $pending = el('col-pending');
-  const popup = el('popup'); const popUrl = el('pop-url');
-  el('ok').onclick = ()=> popup.classList.remove('open');
-  el('copy').onclick = async ()=> { try { await navigator.clipboard.writeText(popUrl.textContent.trim()); el('copy').textContent='Copied'; setTimeout(()=> el('copy').textContent='Copy', 1200);} catch{} };
+  const $ = (s)=>document.querySelector(s);
+  const listBody = $('#listBody');
+  const emptyMsg = $('#emptyMsg');
+  const groupTitle = $('#groupTitle');
 
-  // Tabs
-  const tabs = [...document.querySelectorAll('.pill[data-tab]')];
-  let currentTab = 'mix'; // approved hidden by default
-  tabs.forEach(t=> t.addEventListener('click', ()=>{
-    tabs.forEach(x=>x.classList.remove('active'));
-    t.classList.add('active');
-    currentTab = t.dataset.tab;
-    refresh();
-  }));
+  // ------------ Modal helpers ------------
+  let modalTimer = null;
+  function showModalLink(url){
+    $('#mBox').textContent = url;
+    $('#modalBack').style.display = 'flex';
+    // Auto-close in 5s and reload
+    clearTimeout(modalTimer);
+    modalTimer = setTimeout(()=>{ closeModal(true); }, 5000);
+  }
+  function closeModal(reload){
+    $('#modalBack').style.display = 'none';
+    if (reload) location.reload();
+  }
+  $('#mOk').onclick = ()=> closeModal(true);
+  $('#mCopy').onclick = async ()=>{
+    try{ await navigator.clipboard.writeText($('#mBox').textContent); toast('Link copied'); }catch{ /* ignore */ }
+  };
+  function toast(msg){
+    const t=$('#toast'); t.textContent=msg; t.style.display='block';
+    setTimeout(()=>{ t.style.display='none'; }, 1500);
+  }
 
-  // Generate onboarding link
-  el('btn-gen').onclick = async ()=>{
-    const id = el('gen-id').value.trim();
-    if(!id) return;
-    const r = await fetch('/api/admin/genlink', {method:'POST', body: JSON.stringify({ id })});
-    const d = await r.json().catch(()=>({}));
-    if (d && d.url){
-      popUrl.textContent = d.url;
-      popup.classList.add('open');
-      await refresh();
+  // ------------ Generate Onboard Link ------------
+  $('#genLink').onclick = async ()=>{
+    const id = ($('#splynxId').value||'').trim();
+    if (!id) return;
+    $('#genLink').disabled = true;
+    try{
+      const r = await fetch('/api/admin/genlink', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ id })});
+      const d = await r.json();
+      if (d && d.url) showModalLink(d.url);
+    }catch{}
+    $('#genLink').disabled = false;
+  };
+
+  // ------------ Generate Staff Code ------------
+  $('#genStaff').onclick = async ()=>{
+    const linkid = ($('#linkId').value||'').trim();
+    if (!linkid) return;
+    $('#genStaff').disabled = true;
+    try{
+      const r = await fetch('/api/staff/gen', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
+      const d = await r.json();
+      if (d && d.ok) {
+        const msg = \`Staff code generated for \${linkid}: \${d.code || '(check logs)'}\`;
+        showModalLink(msg);
+      }
+    }catch{}
+    $('#genStaff').disabled = false;
+  };
+
+  // ------------ Lists ------------
+  let mode = 'all'; // 'all' = inprog + pending
+  const tabs = Array.from(document.querySelectorAll('.pill-tabs .pill'));
+  tabs.forEach(btn=>{
+    btn.onclick = ()=>{
+      tabs.forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      mode = btn.dataset.mode;
+      groupTitle.textContent =
+        mode==='inprog' ? 'In Progress' :
+        mode==='pending' ? 'Pending' :
+        mode==='approved' ? 'Approved' : 'In Progress + Pending';
+      loadList();
+    };
+  });
+
+  function fmtAgo(ts){
+    if (!ts) return 'unknown';
+    const ms = Date.now()-ts;
+    const m = Math.max(0, Math.round(ms/60000));
+    if (m < 1) return 'just now';
+    if (m < 60) return \`\${m}m ago\`;
+    const h = Math.round(m/60);
+    return \`\${h}h ago\`;
+  }
+
+  async function fetchList(kind){
+    // Map 'all' to 2 calls: inprog + pending
+    if (kind==='all'){
+      const [a,b] = await Promise.all([
+        fetch('/api/admin/list?mode=inprog').then(r=>r.json()).catch(()=>({items:[]})),
+        fetch('/api/admin/list?mode=pending').then(r=>r.json()).catch(()=>({items:[]})),
+      ]);
+      const items = [].concat(a.items||[], b.items||[]);
+      items.sort((x,y)=> (y.updated||0)-(x.updated||0));
+      return { items };
     }
-  };
+    return await fetch('/api/admin/list?mode='+encodeURIComponent(kind)).then(r=>r.json()).catch(()=>({items:[]}));
+  }
 
-  // Generate staff code
-  el('btn-staff').onclick = async ()=>{
-    const linkid = el('gen-linkid').value.trim();
-    if(!linkid) return;
-    const r = await fetch('/api/staff/gen', {method:'POST', body: JSON.stringify({ linkid })});
-    const d = await r.json().catch(()=>({}));
-    if (d && d.code){
-      popUrl.textContent = 'Staff code for ' + linkid + ': ' + d.code;
-      popup.classList.add('open');
-    }
-  };
-
-  // Helpers
-  const ago = (t)=> {
-    if(!t) return '—';
-    const s = Math.floor((Date.now()-t)/1000);
-    if (s<60) return s+'s ago';
-    const m = Math.floor(s/60); if (m<60) return m+'m ago';
-    const h = Math.floor(m/60); if (h<24) return h+'h ago';
-    const d = Math.floor(h/24); return d+'d ago';
-  };
-
-  function itemCard(kind, it){
-    const linkid = it.linkid;
+  function itemHtml(it){
     const id = it.id || '—';
-    const updated = it.updated || 0;
+    const linkid = it.linkid || '';
+    const updated = it.updated ? new Date(it.updated).toLocaleString() : '—';
+    const ago = fmtAgo(it.updated);
 
-    // Base block
-    const lines = [
-      '<div class="item">',
-      '<h3>Customer/Lead '+id+'</h3>',
-      '<div class="meta"><div>No name yet</div><div>Updated: '+ new Date(updated).toLocaleString() +' ('+ago(updated)+')</div>' +
-      (it.has_uploads? '' : '<div>No uploads</div>') + '</div>'
-    ];
-
-    // Links row
-    const links = [];
-    if (kind !== 'pending'){ // For pending we remove Review/MSA/Debit as requested
-      links.push('<a href="/admin/review?linkid='+linkid+'" target="_blank">Review</a>');
-      links.push('<a href="/agreements/msa/'+linkid+'" target="_blank">MSA</a>');
-      links.push('<a href="/agreements/debit/'+linkid+'" target="_blank">Debit</a>');
-    } else {
-      // show the onboarding URL for convenience
-      links.push('<span class="url">'+location.origin+'/onboard/'+linkid+'</span>');
+    // Pending: show only URL + Delete (per requirement)
+    if (mode==='pending'){
+      const url = \`\${location.origin}/onboard/\${linkid}\`;
+      return /*html*/\`
+        <div class="item">
+          <div class="meta"><b>Customer/Lead \${id}</b></div>
+          <div class="meta muted">Updated: \${updated} (\${ago})</div>
+          <div style="margin:8px 0"><span class="urlchip">\${url}</span></div>
+          <div class="btn-row">
+            <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
+          </div>
+        </div>\`;
     }
-    if (links.length) lines.push('<div class="links">'+links.join(' · ')+'</div>');
 
-    // Actions
-    const acts = [];
-    if (kind !== 'approved'){
-      if (kind !== 'pending') acts.push('<button class="btn" data-act="approve" data-id="'+linkid+'">Approve</button>');
-      acts.push('<button class="btn-ghost danger" data-act="reject" data-id="'+linkid+'">Reject</button>');
+    // Approved (only visible when the tab is selected)
+    if (mode==='approved'){
+      return /*html*/\`
+        <div class="item">
+          <div class="meta"><b>Customer/Lead \${id}</b></div>
+          <div class="meta muted">Updated: \${updated} (\${ago})</div>
+          <div class="links">
+            <a target="_blank" href="/admin/review?linkid=\${linkid}">Review</a>
+            <a target="_blank" href="/pdf/msa/\${linkid}">MSA</a>
+            <a target="_blank" href="/pdf/debit/\${linkid}">Debit</a>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
+          </div>
+        </div>\`;
     }
-    acts.push('<button class="btn-ghost delete" data-act="delete" data-id="'+linkid+'">Delete</button>');
-    lines.push('<div class="actions">'+acts.join('')+'</div>');
-    lines.push('</div>');
-    return lines.join('');
+
+    // In-progress: Review + MSA + Debit + Approve/Reject/Delete
+    return /*html*/\`
+      <div class="item">
+        <div class="meta"><b>Customer/Lead \${id}</b></div>
+        <div class="meta muted">Updated: \${updated} (\${ago})</div>
+        <div class="links">
+          <a target="_blank" href="/admin/review?linkid=\${linkid}">Review</a>
+          <a target="_blank" href="/pdf/msa/\${linkid}">MSA</a>
+          <a target="_blank" href="/pdf/debit/\${linkid}">Debit</a>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-small" data-act="approve" data-linkid="\${linkid}">Approve</button>
+          <button class="btn btn-small btn-ghost" data-act="reject" data-linkid="\${linkid}">Reject</button>
+          <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
+        </div>
+      </div>\`;
   }
 
-  async function fetchList(mode){
-    const r = await fetch('/api/admin/list?mode='+mode);
-    const d = await r.json().catch(()=>({items:[]}));
-    return Array.isArray(d.items)? d.items : [];
-  }
-
-  // Single render pass depending on currentTab
-  async function refresh(){
-    // in-progress & pending always visible when tab = mix
-    const showInprog = (currentTab==='mix' || currentTab==='inprog');
-    const showPending = (currentTab==='mix' || currentTab==='pending');
-    const showApproved = (currentTab==='approved');
-
-    // Fetch
-    const [inprog, pending, approved] = await Promise.all([
-      showInprog ? fetchList('inprog') : Promise.resolve([]),
-      showPending ? fetchList('pending') : Promise.resolve([]),
-      showApproved ? fetchList('approved') : Promise.resolve([])
-    ]);
-
-    // Render left column (in-progress OR approved based on tab)
-    $inprog.innerHTML = '';
-    if (currentTab==='approved'){
-      if (!approved.length){ $inprog.innerHTML = '<div class="empty">No records.</div>'; }
-      else $inprog.innerHTML = approved.map(it=> itemCard('approved', it)).join('');
-    }else{
-      if (!inprog.length){ $inprog.innerHTML = '<div class="empty">No records.</div>'; }
-      else $inprog.innerHTML = inprog.map(it=> itemCard('inprog', it)).join('');
+  async function loadList(){
+    listBody.innerHTML = '';
+    emptyMsg.style.display = 'none';
+    const { items } = await fetchList(mode);
+    if (!items || !items.length){
+      emptyMsg.style.display = 'block';
+      return;
     }
-
-    // Render right column (pending or empty)
-    $pending.innerHTML = '';
-    if (showPending){
-      if (!pending.length){ $pending.innerHTML = '<div class="empty">No records.</div>'; }
-      else $pending.innerHTML = pending.map(it=> itemCard('pending', it)).join('');
-    }
-
+    listBody.innerHTML = items.map(itemHtml).join('');
     // Wire actions
-    document.querySelectorAll('[data-act]').forEach(btn=>{
-      btn.addEventListener('click', async (e)=>{
-        const act = btn.dataset.act;
-        const linkid = btn.dataset.id;
-        if (act==='approve'){
-          await fetch('/api/admin/approve',{method:'POST',body:JSON.stringify({linkid})});
-        } else if (act==='reject'){
-          const reason = prompt('Reason (optional):') || '';
-          await fetch('/api/admin/reject',{method:'POST',body:JSON.stringify({linkid,reason})});
-        } else if (act==='delete'){
-          if (!confirm('Delete this onboarding session and all related KV/R2 records?')) return;
-          await fetch('/api/admin/delete',{method:'POST',body:JSON.stringify({linkid})});
-        }
-        await refresh();
-      });
+    listBody.querySelectorAll('[data-act]').forEach(btn=>{
+      const act = btn.getAttribute('data-act');
+      const linkid = btn.getAttribute('data-linkid');
+      btn.onclick = ()=> handleAct(act, linkid);
     });
   }
 
-  refresh();
+  async function handleAct(act, linkid){
+    if (!linkid) return;
+    if (act==='approve'){
+      const r = await fetch('/api/admin/approve', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
+      if (r.ok) loadList();
+    } else if (act==='reject'){
+      const reason = prompt('Reason for rejection (optional):') || '';
+      await fetch('/api/admin/reject', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid, reason })});
+      loadList();
+    } else if (act==='delete'){
+      if (!confirm('Delete this onboarding session (including uploads)?')) return;
+      await fetch('/api/admin/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
+      loadList();
+    }
+  }
+
+  // Initial
+  loadList();
 })();
 </script>
 </body>
 </html>`;
 }
 
-/** Review page (kept – includes clickable R2 links) */
+// -------------------------------------------------------------
+// Review page (kept feature‑complete; links go to R2 public bucket)
+// -------------------------------------------------------------
 export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
-  const kb = (n)=> (Math.round((n/1024)*10)/10).toFixed(1) + " KB";
-  const e = (s)=> String(s||"");
-  const up = Array.isArray(sess.uploads)?sess.uploads:[];
-  const edits = sess.edits || {};
-  const audit = sess.audit_meta || {};
-  const status = sess.status || 'pending';
+  const e = (s)=> String(s ?? "").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  const edits = sess?.edits || {};
+  const uploads = Array.isArray(sess?.uploads) ? sess.uploads : [];
+  const msalink = `/pdf/msa/${linkid}`;
+  const debitlink = `/pdf/debit/${linkid}`;
+  const back = `/`;
 
-  const rows = Object.entries(edits).map(([k,v])=> `<div><b>${k}</b>: ${e(v)}</div>`).join("");
-
-  const files = up.map(u=>{
-    const url = `${r2PublicBase}/${u.key}`;
-    return `<div><a href="${url}" target="_blank">${e(u.name)}</a> · ${kb(u.size)}</div>`;
-  }).join("") || `<div class="muted">No uploads</div>`;
-
-  const msaLink = `/pdf/msa/${linkid}`;
-  const doLink  = `/pdf/debit/${linkid}`;
-
-  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+  return /*html*/`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
 <title>Review & Approve</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial; background:#f7f8fb; color:#122}
-  .wrap{max-width:900px;margin:28px auto;padding:0 16px}
-  .card{background:#fff;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.08);padding:18px}
-  h1{color:#e2001a;margin:0 0 10px;font-size:26px}
-  .muted{color:#6b7280}
-  .row{display:flex;gap:18px;flex-wrap:wrap}
-  .btn{background:#e2001a;color:#fff;border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
-  .btn-ghost{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:10px;padding:8px 14px;font-weight:700;cursor:pointer}
-  .danger{border-color:#ef4444;color:#ef4444}
+  :root{ --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; }
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  .wrap{max-width:900px;margin:28px auto;padding:0 18px}
+  .card{background:#fff;border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  h1{color:var(--vinet);margin:0 0 14px;font-size:28px}
+  .sec{margin:14px 0}
+  .k{font-weight:700}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;margin-right:10px}
+  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
+  .chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:6px 9px;margin:3px 0;font-size:13px}
 </style>
-</head><body>
+</head>
+<body>
 <div class="wrap">
-  <a href="/" class="btn-ghost" style="margin-bottom:12px;display:inline-block">← Back</a>
+  <a href="${back}" class="chip">&larr; Back</a>
   <div class="card">
     <h1>Review & Approve</h1>
-    <div class="muted">Splynx ID: ${e(sess.id)} • LinkID: ${e(linkid)} • Status: ${e(status)}</div>
+    <div class="sec"><span class="k">Splynx ID:</span> ${e(sess?.id)} &nbsp; • &nbsp; <span class="k">LinkID:</span> ${e(linkid)} &nbsp; • &nbsp; <span class="k">Status:</span> ${e(sess?.status||'pending')}</div>
 
-    <h3 style="margin-top:16px">Client Edits</h3>
-    <div>${rows || '<span class="muted">No edits captured</span>'}</div>
+    <h3>Edits</h3>
+    <pre class="sec" style="white-space:pre-wrap;line-height:1.35">
+full_name: ${e(edits.full_name)}
+email: ${e(edits.email)}
+phone: ${e(edits.phone)}
+passport: ${e(edits.passport)}
+street: ${e(edits.street)}
+city: ${e(edits.city)}
+zip: ${e(edits.zip)}</pre>
 
-    <h3 style="margin-top:18px">Uploads</h3>
-    <div>${files}</div>
-
-    <h3 style="margin-top:18px">Agreement</h3>
-    <div>Accepted: ${sess.agreement_signed ? 'Yes' : 'No'}</div>
-    <div style="margin-top:10px">
-      <a class="btn-ghost" href="${msaLink}" target="_blank">Open MSA PDF</a>
-      <a class="btn-ghost" href="${doLink}" target="_blank">Open Debit PDF</a>
+    <h3>Uploads</h3>
+    <div class="sec">
+      ${uploads.length ? uploads.map(u=>{
+        const url = `${r2PublicBase}/${u.key}`;
+        const sizeStr = (Math.round((u.size||0)/102.4)/10).toFixed(1) + ' KB';
+        return `<div><a href="${url}" target="_blank">${e(u.name)}</a> <span class="muted">• ${sizeStr}</span></div>`;
+      }).join('') : '<div class="muted">No uploads</div>'}
     </div>
 
-    <div class="row" style="margin-top:16px">
+    <h3>Agreement</h3>
+    <div class="sec">
+      <div class="chip">Accepted: ${sess?.agreement_signed ? 'Yes' : 'No'}</div>
+      <div class="chip"><a href="${msalink}" target="_blank">MSA PDF</a></div>
+      <div class="chip"><a href="${debitlink}" target="_blank">Debit PDF</a></div>
+    </div>
+
+    <div class="sec">
       <button class="btn" id="approve">Approve & Push</button>
-      <button class="btn-ghost" id="reject">Reject</button>
-      <button class="btn-ghost danger" id="delete">Delete</button>
+      <button class="btn btn-ghost" id="reject">Reject</button>
+      <button class="btn btn-ghost" id="delete">Delete</button>
     </div>
   </div>
 </div>
+
 <script>
-  (function(){
-    const linkid = ${JSON.stringify(linkid)};
-    document.getElementById('approve').onclick = async ()=>{
-      await fetch('/api/admin/approve',{method:'POST',body:JSON.stringify({linkid})});
-      alert('Approved & pushed (check Splynx).'); location.href='/';
-    };
-    document.getElementById('reject').onclick = async ()=>{
-      const reason = prompt('Reason (optional):') || '';
-      await fetch('/api/admin/reject',{method:'POST',body:JSON.stringify({linkid,reason})});
-      alert('Marked as rejected.'); location.href='/';
-    };
-    document.getElementById('delete').onclick = async ()=>{
-      if (!confirm('Delete this onboarding session and all related KV/R2 records?')) return;
-      await fetch('/api/admin/delete',{method:'POST',body:JSON.stringify({linkid})});
-      alert('Deleted.'); location.href='/';
-    };
-  })();
+(function(){
+  const linkid = ${JSON.stringify(linkid)};
+  document.getElementById('approve').onclick = async ()=>{
+    await fetch('/api/admin/approve', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
+    location.href = '/';
+  };
+  document.getElementById('reject').onclick = async ()=>{
+    const reason = prompt('Reason for rejection (optional):')||'';
+    await fetch('/api/admin/reject', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid, reason })});
+    location.href = '/';
+  };
+  document.getElementById('delete').onclick = async ()=>{
+    if (!confirm('Delete this onboarding session (including uploads)?')) return;
+    await fetch('/api/admin/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
+    location.href = '/';
+  };
+})();
 </script>
-</body></html>`;
+</body>
+</html>`;
 }
