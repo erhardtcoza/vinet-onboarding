@@ -40,9 +40,6 @@ export async function splynxPUT(env, path, body) {
   if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
   return res.json();
 }
-// src/splynx.js
-
-// ... keep your other exports (splynxGET, splynxPOST, splynxPUT, splynxCreateAndUpload, etc.)
 
 /**
  * Map frontend edits into Splynx API payload
@@ -59,9 +56,9 @@ export function mapEditsToSplynxPayload(edits) {
   if (edits.passport) payload.passport = edits.passport;
 
   if (edits.address || edits.city || edits.zip) {
-    payload.address = edits.address || "";
+    payload.street_1 = edits.address || "";
     payload.city = edits.city || "";
-    payload.zip = edits.zip || "";
+    payload.zip_code = edits.zip || "";
   }
 
   return payload;
@@ -105,12 +102,39 @@ export async function splynxCreateAndUpload(env, type, id, file) {
   return res.json();
 }
 
-// existing helper stubs (you already have them but keeping placeholders here)
+/**
+ * Fetch a clean mapped profile for display in onboarding
+ */
 export async function fetchProfileForDisplay(env, id) {
-  const customer = await splynxGET(env, `/admin/customers/customer/${id}`);
-  return customer;
+  const endpoints = [
+    `/admin/customers/customer/${id}`,
+    `/admin/customers/${id}`,
+    `/admin/crm/leads/${id}`,
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      const data = await splynxGET(env, ep);
+
+      return {
+        id,
+        full_name: data.name || data.full_name || "",
+        email: data.email || "",
+        billing_email: data.billing_email || data.email || "",
+        phone: data.phone || (data.phones ? data.phones[0]?.phone : ""),
+        passport: data.passport || data.additional_attributes?.social_id || "",
+        address: data.street_1 || data.address || "",
+        city: data.city || "",
+        zip: data.zip_code || data.zip || "",
+      };
+    } catch (_) {}
+  }
+  return null;
 }
 
+/**
+ * Try multiple endpoints to find customer/lead MSISDN info
+ */
 export async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
