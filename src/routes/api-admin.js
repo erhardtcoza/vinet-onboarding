@@ -16,7 +16,7 @@ export async function handleAdminApi(request, env) {
   const path = url.pathname;
   const method = request.method;
 
-  // --- Get all sessions ---
+  // --- List all sessions (for Admin dashboard) ---
   if (path === "/api/admin/sessions" && method === "GET") {
     const rows = await getOnboardAll(env);
     return new Response(JSON.stringify(rows), {
@@ -24,7 +24,7 @@ export async function handleAdminApi(request, env) {
     });
   }
 
-  // --- Delete a session ---
+  // --- Delete a session completely ---
   if (path === "/api/admin/delete" && method === "POST") {
     const { id } = await request.json();
     await deleteOnboardAll(env, id);
@@ -33,14 +33,14 @@ export async function handleAdminApi(request, env) {
     });
   }
 
-  // --- Set status (incl. approve with sync) ---
+  // --- Update status (incl. approve with sync) ---
   if (path === "/api/admin/set-status" && method === "POST") {
     const { id, status } = await request.json();
 
-    // 1) Update KV
+    // Update status in KV
     await setOnboardStatus(env, id, status);
 
-    // 2) If approved → push to Splynx
+    // --- Handle approval flow ---
     if (status === "approved") {
       const key = "onboard:" + id;
       const raw = await env.SESSION_KV.get(key);
@@ -54,24 +54,24 @@ export async function handleAdminApi(request, env) {
       const session = JSON.parse(raw);
 
       try {
-        // --- Build Splynx payload from session edits ---
+        // --- Build payload from session edits ---
         const payload = mapEditsToSplynxPayload(session);
 
-        // --- Update customer/lead profile in Splynx ---
+        // --- Update Splynx profile ---
         if (session.customer_id) {
           await splynxPUT(env, `/admin/customers/${session.customer_id}`, payload);
         } else if (session.lead_id) {
           await splynxPUT(env, `/admin/crm/leads/${session.lead_id}`, payload);
         }
 
-        // --- Upload supporting documents (if any) ---
+        // --- Upload client documents if any ---
         if (session.uploads && session.uploads.length > 0) {
           for (const file of session.uploads) {
             try {
               if (session.customer_id) {
                 await splynxPOST(env, `/admin/customers/customer-documents`, {
                   customer_id: session.customer_id,
-                  file: file.key,      // assumes file already uploaded to R2
+                  file: file.key,      // file already in R2
                   description: file.type,
                 });
               } else if (session.lead_id) {
@@ -82,12 +82,12 @@ export async function handleAdminApi(request, env) {
                 });
               }
             } catch (uploadErr) {
-              console.error("Doc upload failed:", uploadErr);
+              console.error("Document upload failed:", uploadErr);
             }
           }
         }
 
-        // --- Update KV session ---
+        // --- Mark KV as synced & approved ---
         session.synced = true;
         session.status = "approved";
         await env.SESSION_KV.put(key, JSON.stringify(session));
@@ -96,7 +96,7 @@ export async function handleAdminApi(request, env) {
           headers: { "content-type": "application/json" },
         });
       } catch (err) {
-        console.error("Approve sync failed", err);
+        console.error("Approval sync failed", err);
         return new Response(JSON.stringify({ ok: false, error: String(err) }), {
           status: 500,
           headers: { "content-type": "application/json" },
@@ -109,5 +109,6 @@ export async function handleAdminApi(request, env) {
     });
   }
 
+  // --- Fallback ---
   return new Response("Not found", { status: 404 });
 }
