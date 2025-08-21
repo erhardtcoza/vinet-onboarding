@@ -14,7 +14,7 @@ export async function route(request, env) {
   const path = url.pathname;
   const method = request.method;
 
-  // --- Debug log every request ---
+  // Debug log
   console.log(`[router] ${method} ${path}`);
 
   const modules = [
@@ -26,7 +26,7 @@ export async function route(request, env) {
     agreements,
     admin,
     onboard,
-    apiSplynx,   // <-- Splynx API routes
+    apiSplynx, // <-- Splynx API routes wired in
   ];
 
   for (const m of modules) {
