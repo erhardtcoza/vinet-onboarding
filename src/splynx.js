@@ -1,9 +1,12 @@
 // src/splynx.js
 // Splynx helper functions for Vinet Onboarding Worker
 
-// --- Generic GET ---
+// ---------------------
+// Generic GET
+// ---------------------
 export async function splynxGET(env, endpoint) {
   const url = `${env.SPLYNX_API_URL}${endpoint}`;
+  console.log(`[Splynx] GET ${url}`);
   const res = await fetch(url, {
     headers: {
       Authorization: `Basic ${env.SPLYNX_AUTH}`,
@@ -18,9 +21,12 @@ export async function splynxGET(env, endpoint) {
   return await res.json();
 }
 
-// --- Generic PUT ---
+// ---------------------
+// Generic PUT
+// ---------------------
 export async function splynxPUT(env, endpoint, body) {
   const url = `${env.SPLYNX_API_URL}${endpoint}`;
+  console.log(`[Splynx] PUT ${url}`, body);
   const res = await fetch(url, {
     method: "PUT",
     headers: {
@@ -37,19 +43,25 @@ export async function splynxPUT(env, endpoint, body) {
   return await res.json();
 }
 
-// --- Map edits into Splynx payload format ---
+// ---------------------
+// Map edits into Splynx payload format
+// ---------------------
 export function mapEditsToSplynxPayload(edits) {
   // TODO: adapt mapping rules as needed for Splynx schema
+  console.log("[Splynx] Mapping edits", edits);
   return edits;
 }
 
-// --- Upload file to Splynx (lead or customer) ---
+// ---------------------
+// Upload file to Splynx (lead or customer)
+// ---------------------
 export async function splynxCreateAndUpload(env, type, id, file) {
   const endpoint =
     type === "lead"
       ? `/admin/crm/lead-documents/${id}`
       : `/admin/customers/customer-documents/${id}`;
 
+  console.log(`[Splynx] Uploading file to ${endpoint}`);
   const res = await fetch(`${env.SPLYNX_API_URL}${endpoint}`, {
     method: "POST",
     headers: {
@@ -65,7 +77,9 @@ export async function splynxCreateAndUpload(env, type, id, file) {
   return await res.json();
 }
 
-// --- Fetch profile for onboarding display ---
+// ---------------------
+// Fetch profile for onboarding display
+// ---------------------
 export async function fetchProfileForDisplay(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
@@ -92,7 +106,9 @@ export async function fetchProfileForDisplay(env, id) {
   return null;
 }
 
-// --- Fetch customer MSISDN info ---
+// ---------------------
+// Fetch customer MSISDN info
+// ---------------------
 export async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
