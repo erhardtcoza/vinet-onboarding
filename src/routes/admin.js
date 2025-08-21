@@ -116,14 +116,15 @@ export async function handle(request, env) {
     return json({ ok: true });
   }
 
+  
   // delete
   if (path === "/api/admin/delete") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     try {
-      const res = await deleteOnboardAll(env, linkid);
-      return json({ ok: true, ...res });
+    const res = await deleteOnboardAll(env, linkid);
+    return json({ ok: true, removed: res });  // <- optional, handy for debugging
     } catch (e) {
       return json({ ok: false, error: String((e && e.message) || e) }, 500);
     }
