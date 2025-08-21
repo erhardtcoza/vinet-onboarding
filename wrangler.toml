@@ -16,7 +16,6 @@ binding = "R2_UPLOADS"
 bucket_name = "vinet-onboarding-uploads"
 
 [vars]
-[vars]
 SPLYNX_API_URL = "https://splynx.vinet.co.za/api/2.0"
 SPLYNX_AUTH = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
 API_URL = "https://onboard.vinet.co.za"
