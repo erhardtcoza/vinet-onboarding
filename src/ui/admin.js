@@ -1,221 +1,87 @@
 // src/ui/admin.js
 
-export function renderAdminDashboardHTML() {
-  return /*html*/`
-    <html>
-      <head>
-        <title>Vinet Onboarding Admin</title>
-        <link rel="icon" href="https://static.vinet.co.za/logo.jpeg" />
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            background: #fafafa;
-            margin: 0; padding: 0;
-          }
-          header {
-            display: flex;
-            align-items: center;
-            padding: 12px 20px;
-            background: #d50000;
-            color: #fff;
-          }
-          header img {
-            height: 40px;
-            margin-right: 12px;
-          }
-          h1 { font-size: 20px; margin: 0; }
-          nav {
-            display: flex;
-            justify-content: center;
-            background: #333;
-          }
-          nav button {
-            flex: 1;
-            padding: 14px;
-            border: none;
-            background: #333;
-            color: #fff;
-            font-size: 16px;
-            cursor: pointer;
-          }
-          nav button.active {
-            background: #d50000;
-          }
-          section {
-            padding: 20px;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 10px;
-            background: #fff;
-          }
-          th, td {
-            padding: 10px;
-            border: 1px solid #ddd;
-            text-align: left;
-          }
-          th {
-            background: #f5f5f5;
-          }
-          .actions button {
-            margin-right: 6px;
-            padding: 6px 10px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-          }
-          .edit-btn { background: #1976d2; color: #fff; }
-          .review-btn { background: #f9a825; color: #fff; }
-          .approve-btn { background: #2e7d32; color: #fff; }
-          .delete-btn { background: #c62828; color: #fff; }
-        </style>
-      </head>
-      <body>
-        <header>
-          <img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
-          <h1>Onboarding Admin</h1>
-        </header>
+export function renderAdminReviewHTML(profile) {
+  return /*html*/ `
+    <div class="admin-review">
+      <h2>Review Client Information</h2>
 
-        <nav>
-          <button class="tab-btn active" data-tab="inprogress">In Progress</button>
-          <button class="tab-btn" data-tab="pending">Pending Review</button>
-          <button class="tab-btn" data-tab="approved">Approved</button>
-        </nav>
+      <form id="review-form">
+        <!-- Identity -->
+        <label>Full Name
+          <input type="text" name="full_name" value="${profile.full_name || ""}" />
+        </label>
 
-        <section>
-          <div id="inprogress" class="tab active">
-            <h2>In Progress Sessions</h2>
-            <table id="inprogress-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Phone</th>
-                  <th>Date</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
+        <label>Email
+          <input type="email" name="email" value="${profile.email || ""}" />
+        </label>
 
-          <div id="pending" class="tab hidden">
-            <h2>Pending Review</h2>
-            <table id="pending-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Phone</th>
-                  <th>Date</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
+        <label>Billing Email
+          <input type="email" name="billing_email" value="${profile.billing_email || ""}" />
+        </label>
 
-          <div id="approved" class="tab hidden">
-            <h2>Approved</h2>
-            <table id="approved-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Phone</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-        </section>
+        <label>Phone
+          <input type="text" name="phone" value="${profile.phone || ""}" />
+        </label>
 
-        <script>
-          // --- Tab switching ---
-          const tabButtons = document.querySelectorAll(".tab-btn");
-          const tabs = document.querySelectorAll(".tab");
+        <!-- ID / Passport -->
+        <label>Passport / ID Number
+          <input type="text" name="passport" value="${profile.passport || ""}" />
+        </label>
+        <label>National ID (additional_attributes.social_id)
+          <input type="text" name="id_number" value="${profile.id_number || ""}" />
+        </label>
 
-          tabButtons.forEach(btn => {
-            btn.addEventListener("click", () => {
-              tabButtons.forEach(b => b.classList.remove("active"));
-              tabs.forEach(t => t.classList.add("hidden"));
-              btn.classList.add("active");
-              document.getElementById(btn.dataset.tab).classList.remove("hidden");
-            });
-          });
+        <!-- Address -->
+        <label>Street Address
+          <input type="text" name="address" value="${profile.address || ""}" />
+        </label>
 
-          // --- Load data into each table ---
-          async function loadSessions() {
-            const res = await fetch("/api/admin/sessions");
-            const data = await res.json();
+        <label>City
+          <input type="text" name="city" value="${profile.city || ""}" />
+        </label>
 
-            fillTable("inprogress-table", data.inprogress, ["review","delete"]);
-            fillTable("pending-table", data.pending, ["edit","approve","delete"]);
-            fillTable("approved-table", data.approved, []);
-          }
+        <label>ZIP Code
+          <input type="text" name="zip" value="${profile.zip || ""}" />
+        </label>
 
-          function fillTable(id, rows, actions) {
-            const tbody = document.querySelector("#" + id + " tbody");
-            tbody.innerHTML = "";
-            rows.forEach(row => {
-              const tr = document.createElement("tr");
-              tr.innerHTML = \`
-                <td>\${row.id}</td>
-                <td>\${row.name || ""}</td>
-                <td>\${row.email || ""}</td>
-                <td>\${row.phone || ""}</td>
-                <td>\${row.date || ""}</td>
-                <td class="actions"></td>
-              \`;
-              const actionsTd = tr.querySelector(".actions");
-              actions.forEach(a => {
-                const btn = document.createElement("button");
-                if (a === "edit") {
-                  btn.textContent = "Edit";
-                  btn.className = "edit-btn";
-                  btn.onclick = () => window.location = "/admin/edit?id=" + row.id;
-                }
-                if (a === "review") {
-                  btn.textContent = "Review";
-                  btn.className = "review-btn";
-                  btn.onclick = () => window.location = "/admin/review?id=" + row.id;
-                }
-                if (a === "approve") {
-                  btn.textContent = "Approve";
-                  btn.className = "approve-btn";
-                  btn.onclick = () => approveSession(row.id);
-                }
-                if (a === "delete") {
-                  btn.textContent = "Delete";
-                  btn.className = "delete-btn";
-                  btn.onclick = () => deleteSession(row.id);
-                }
-                actionsTd.appendChild(btn);
-              });
-              tbody.appendChild(tr);
-            });
-          }
+        <!-- Banking / Payment -->
+        <h3>Banking & Payment</h3>
 
-          async function approveSession(id) {
-            if (!confirm("Approve this session?")) return;
-            await fetch("/api/admin/approve?id=" + id, { method: "POST" });
-            loadSessions();
-          }
+        <label>Payment Method
+          <input type="text" name="payment_method" value="${profile.payment_method || ""}" />
+        </label>
 
-          async function deleteSession(id) {
-            if (!confirm("Delete this session?")) return;
-            await fetch("/api/admin/delete?id=" + id, { method: "POST" });
-            loadSessions();
-          }
+        <label>Bank Name
+          <input type="text" name="bank_name" value="${profile.bank_name || ""}" />
+        </label>
 
-          loadSessions();
-        </script>
-      </body>
-    </html>
+        <label>Bank Account
+          <input type="text" name="bank_account" value="${profile.bank_account || ""}" />
+        </label>
+
+        <label>Bank Branch
+          <input type="text" name="bank_branch" value="${profile.bank_branch || ""}" />
+        </label>
+
+        <!-- Agreement Metadata -->
+        <h3>Agreement Metadata</h3>
+
+        <label>Signed IP
+          <input type="text" name="signed_ip" value="${profile.signed_ip || ""}" />
+        </label>
+
+        <label>Signed Device
+          <input type="text" name="signed_device" value="${profile.signed_device || ""}" />
+        </label>
+
+        <label>Signed Date
+          <input type="text" name="signed_date" value="${profile.signed_date || ""}" />
+        </label>
+
+        <div class="actions">
+          <button type="submit">Save Changes</button>
+        </div>
+      </form>
+    </div>
   `;
 }
