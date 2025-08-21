@@ -253,54 +253,58 @@ export async function route(request, env) {
     try { await splynxPUT(env, `/admin/crm/leads/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/customers/${id}/contacts`, body); } catch {}
     try { await splynxPUT(env, `/admin/crm/leads/${id}/contacts`, body); } catch {}
-// ---- Create & upload documents to Splynx (always include `type`) ----
-try {
-  const idNum = Number(id);
-  const uploadsArr = Array.isArray(sess.uploads) ? sess.uploads : [];
-  const isCustomer = true; // we try customer; if it fails we fall back to lead
 
-  for (const u of uploadsArr) {
-    // pull file from R2
-    const obj = await env.R2_UPLOADS.get(u.key);
-    if (!obj) continue;
-    const bytes = await obj.arrayBuffer();
+    // ---- 2) Upload documents (Customer→fallback Lead) ----
+    const uploaded = [];
 
-    const type = mapUploadLabelToType(u.label);
-    const title = u.label || "Onboarding Document";
-    const description = `Uploaded via onboarding: ${u.name || ""}`;
-
-    let docMeta = null;
-    try {
-      // customer document
-      docMeta = await splynxCreateCustomerDoc(env, {
-        customer_id: idNum,
-        title, description, type
-      });
-      await splynxUploadCustomerDocFile(env, {
-        customer_id: idNum,
-        document_id: docMeta?.id,
-        filename: u.name || "upload.bin",
-        bytes
-      });
-    } catch (eCust) {
-      // fall back to lead document
-      try {
-        docMeta = await splynxCreateLeadDoc(env, {
-          lead_id: idNum,
-          title, description, type
-        });
-        await splynxUploadLeadDocFile(env, {
-          lead_id: idNum,
-          document_id: docMeta?.id,
-          filename: u.name || "upload.bin",
-          bytes
-        });
-      } catch (eLead) {
-        // swallow; continue with next file
+    // a) User-uploaded attachments from R2
+    if (Array.isArray(sess.uploads)) {
+      for (const u of sess.uploads) {
+        try {
+          const obj = await env.R2_UPLOADS.get(u.key);
+          if (!obj) continue;
+          const bytes = await obj.arrayBuffer();
+          const label = u.label || u.name || "Attachment";
+          const filename = (u.name || "file.bin").replace(/[^a-z0-9_.-]/gi, "_");
+          const ct = obj.httpMetadata?.contentType || "application/octet-stream";
+          const res = await splynxCreateAndUploadDocFallback(env, id, label, bytes, filename, ct);
+          if (res) uploaded.push({ kind: res.kind, title: label });
+        } catch {}
       }
     }
+
+    // b) MSA PDF (if signed)
+    if (sess.agreement_signed) {
+      try {
+        const msaResp = await renderMSAPdf(env, linkid);
+        if (msaResp && msaResp.status === 200) {
+          const bytes = await msaResp.arrayBuffer();
+          const res = await splynxCreateAndUploadDocFallback(env, id, "Master Service Agreement", bytes, `MSA_${id}.pdf`, "application/pdf");
+          if (res) uploaded.push({ kind: res.kind, title: "Master Service Agreement" });
+        }
+      } catch {}
+    }
+
+    // c) Debit Order PDF (if signed)
+    if (sess.debit_sig_key) {
+      try {
+        const doResp = await renderDebitPdf(env, linkid);
+        if (doResp && doResp.status === 200) {
+          const bytes = await doResp.arrayBuffer();
+          const res = await splynxCreateAndUploadDocFallback(env, id, "Debit Order Instruction", bytes, `Debit_${id}.pdf`, "application/pdf");
+          if (res) uploaded.push({ kind: res.kind, title: "Debit Order Instruction" });
+        }
+      } catch {}
+    }
+
+    // ---- 3) Mark approved ----
+    await env.ONBOARD_KV.put(
+      `onboard/${linkid}`,
+      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), splynx_docs: uploaded }),
+      { expirationTtl: 86400 }
+    );
+    return json({ ok: true, uploaded });
   }
-} catch {}
 
   // ----- OTP: send -----
   if (path === "/api/otp/send" && method === "POST") {
