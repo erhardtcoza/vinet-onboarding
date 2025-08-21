@@ -46,3 +46,5 @@ MAIL_SUBJECT = "Your signed Vinet onboarding documents"
 
 [observability.logs]
 enabled = true
+
+SPLYNX_DEBUG = "1"
