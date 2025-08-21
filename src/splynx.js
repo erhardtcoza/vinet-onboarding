@@ -1,145 +1,105 @@
-// /src/splynx.js
-//
-// Minimal Splynx client + a consolidated "push onboarding to Splynx" helper.
-//
-// Expects these env vars to be set in your Worker:
-// - SPLYNX_BASE (e.g. "https://splynx.example.com")
-// - SPLYNX_TOKEN  (Bearer token)  OR  SPLYNX_BASIC (e.g. "Basic xxx")
-// If both are set, TOKEN is used.
-//
-// Endpoints we will PUT to (best-effort; failures are swallowed but logged):
-//   /admin/customers/customer/{id}
-//   /admin/customers/{id}
-//   /admin/crm/leads/{id}
-//   /admin/customers/{id}/contacts
-//   /admin/crm/leads/{id}/contacts
-//
-// NOTE: Because Splynx instances can differ (custom fields), we:
-//  1) Map the obvious standard fields (name, email, phone, address).
-//  2) Add a durable "comments" note with all file/PDF URLs, so info is never lost.
-//  3) Try to update both customer and lead “sides”, safely ignoring 404/405.
-//
+import { escapeHtml } from "./helpers.js";
 
-const pickAuthHeader = (env) => {
-  if (env.SPLYNX_TOKEN) return { Authorization: `Bearer ${env.SPLYNX_TOKEN}` };
-  if (env.SPLYNX_BASIC) return { Authorization: env.SPLYNX_BASIC }; // "Basic {base64}"
-  // Fall back to none; requests will fail clearly.
-  return {};
-};
-
-export async function splynxPUT(env, path, body) {
-  const base = (env.SPLYNX_BASE || "").replace(/\/+$/, "");
-  if (!base) throw new Error("SPLYNX_BASE not configured");
-  const url = `${base}${path}`;
-  const headers = {
-    "Content-Type": "application/json",
-    ...pickAuthHeader(env),
-  };
-  const res = await fetch(url, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify(body || {}),
+// GET
+export async function splynxGET(env, endpoint) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
   });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`PUT ${path} -> ${res.status} ${t.slice(0,300)}`);
-  }
-  return res.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Splynx GET ${endpoint} ${r.status}`);
+  return r.json();
 }
 
-/**
- * Best-effort push of onboarding session to Splynx.
- * - Writes obvious fields to customer and lead resources via PUT.
- * - Adds doc links (uploads + MSA/DO PDFs) into a "comments" / notes blob so staff can see everything.
- * - Tries to update basic contact info via /contacts endpoints too (if permitted by instance).
- */
-export async function pushOnboardToSplynx(env, sess, linkid) {
-  if (!sess) throw new Error("Missing session");
-  const id = String(sess.id || String(linkid || "").split("_")[0] || "").trim();
-  if (!id) throw new Error("Cannot infer Splynx ID");
+// PUT (push updates)
+export async function splynxPUT(env, endpoint, body) {
+  const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(()=> "");
+    throw new Error(`Splynx PUT ${endpoint} ${r.status} ${t}`);
+  }
+  return r.json().catch(()=> ({}));
+}
 
-  const r2Base = (env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org").replace(/\/+$/,"");
-  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-  const uploadUrls = uploads.map(u => `${r2Base}/${u.key}`);
+function ok27(s){ return /^27\d{8,13}$/.test(String(s||"").trim()); }
+export function pickPhone(obj){
+  if (!obj) return null;
+  if (typeof obj==="string") return ok27(obj)?String(obj).trim():null;
+  if (Array.isArray(obj)) { for (const it of obj){ const m=pickPhone(it); if(m) return m; } return null; }
+  if (typeof obj==="object"){
+    const direct=[obj.phone_mobile,obj.mobile,obj.phone,obj.whatsapp,obj.msisdn,obj.primary_phone,obj.contact_number,obj.billing_phone,obj.contact_number_2nd,obj.contact_number_3rd,obj.alt_phone,obj.alt_mobile];
+    for (const v of direct) if (ok27(v)) return String(v).trim();
+    for (const [,v] of Object.entries(obj)){
+      if (typeof v==="string" && ok27(v)) return String(v).trim();
+      if (v && typeof v==="object"){ const m=pickPhone(v); if (m) return m; }
+    }
+  }
+  return null;
+}
+export function pickFrom(obj, keys){
+  if (!obj) return null;
+  const wanted = keys.map(k=>String(k).toLowerCase());
+  const stack=[obj];
+  while (stack.length){
+    const cur=stack.pop();
+    if (Array.isArray(cur)){ for (const it of cur) stack.push(it); continue; }
+    if (cur && typeof cur==="object"){
+      for (const [k,v] of Object.entries(cur)){
+        if (wanted.includes(String(k).toLowerCase())){
+          const s=String(v??"").trim(); if (s) return s;
+        }
+        if (v && typeof v==="object") stack.push(v);
+      }
+    }
+  }
+  return null;
+}
 
-  // Agreement PDFs (MSA always; Debit if they used that method)
-  const origin = env.PUBLIC_ORIGIN || "https://onboard.vinet.co.za";
-  const msaPdf = `${origin}/pdf/msa/${linkid}`;
-  const debitPdf = sess.pay_method === "debit" ? `${origin}/pdf/debit/${linkid}` : null;
-
-  // Compose a readable note staff can find easily in Splynx UI.
-  const stamp = new Date().toISOString().replace("T"," ").replace("Z","");
-  const lines = [
-    `Vinet Onboarding pushed: ${stamp}`,
-    `Link: ${origin}/onboard/${linkid}`,
-    `MSA PDF: ${msaPdf}`,
-    debitPdf ? `Debit Order PDF: ${debitPdf}` : null,
-    uploadUrls.length ? "Uploads:" : null,
-    ...uploadUrls.map(u => ` - ${u}`),
-  ].filter(Boolean);
-  const commentsBlob = lines.join("\n");
-
-  // Field mapping (common)
-  const edits = sess.edits || {};
-  const common = {
-    // Adjust to your exact Splynx schema if needed:
-    full_name: edits.full_name || undefined,
-    email: edits.email || undefined,
-    phone_mobile: edits.phone || undefined,
-    // Address (common Splynx keys)
-    street_1: edits.street || undefined,
-    city: edits.city || undefined,
-    zip_code: edits.zip || undefined,
-    // Payment
-    payment_method: sess.pay_method || undefined,
-    // OPTIONAL: add what the customer entered for debit to help staff (will be ignored if Splynx doesn’t allow it)
-    debit: sess.debit || undefined,
-    // Append a comments/note string so staff can find file links regardless of strict schema
-    comments: commentsBlob,
-  };
-
-  // Some Splynx instances prefer "comment" or "additional_information".
-  // We'll provide several fallbacks in the payload to maximize the chance something is shown.
-  const withNoteVariants = {
-    ...common,
-    comment: commentsBlob,
-    additional_information: commentsBlob,
-  };
-
-  // Contacts payload (best-effort)
-  const contactBasic = {
-    first_name: (edits.full_name || "").split(" ").slice(0,-1).join(" ") || edits.full_name || undefined,
-    last_name: (edits.full_name || "").split(" ").slice(-1).join(" ") || undefined,
-    email: edits.email || undefined,
-    phone: edits.phone || undefined,
-  };
-
-  // Push to all five endpoints, best-effort
-  const tasks = [
-    // Customers
-    splynxPUT(env, `/admin/customers/customer/${id}`, withNoteVariants).catch(e => ({__err: e.message})),
-    splynxPUT(env, `/admin/customers/${id}`, withNoteVariants).catch(e => ({__err: e.message})),
-    // Leads
-    splynxPUT(env, `/admin/crm/leads/${id}`, withNoteVariants).catch(e => ({__err: e.message})),
-    // Contacts (not all Splynx setups accept PUT here; swallow errors)
-    splynxPUT(env, `/admin/customers/${id}/contacts`, contactBasic).catch(e => ({__err: e.message})),
-    splynxPUT(env, `/admin/crm/leads/${id}/contacts`, contactBasic).catch(e => ({__err: e.message})),
+export async function fetchCustomerMsisdn(env, id) {
+  const eps=[
+    `/admin/customers/customer/${id}`,
+    `/admin/customers/${id}`,
+    `/admin/crm/leads/${id}`,
+    `/admin/customers/${id}/contacts`,
+    `/admin/crm/leads/${id}/contacts`,
   ];
+  for (const ep of eps) {
+    try { const data=await splynxGET(env, ep); const m=pickPhone(data); if(m) return m; } catch {}
+  }
+  return null;
+}
 
-  const results = await Promise.all(tasks);
+export async function fetchProfileForDisplay(env, id) {
+  let cust=null,lead=null,contacts=null,custInfo=null;
+  try { cust=await splynxGET(env, `/admin/customers/customer/${id}`);} catch {}
+  if (!cust){ try {lead=await splynxGET(env, `/admin/crm/leads/${id}`);} catch {} }
+  try { contacts=await splynxGET(env, `/admin/customers/${id}/contacts`);} catch {}
+  try { custInfo=await splynxGET(env, `/admin/customers/customer-info/${id}`);} catch {}
+  const src=cust||lead||{};
+  const phone = pickPhone({ ...src, contacts });
 
-  // Return a compact summary for logging/diagnostics.
-  const summary = {
+  const street = src.street ?? src.address ?? src.address_1 ?? src.street_1 ?? (src.addresses&&(src.addresses.street||src.addresses.address_1)) ?? "";
+  const city = src.city ?? (src.addresses && src.addresses.city) ?? "";
+  const zip  = src.zip_code ?? src.zip ?? (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ?? "";
+
+  const passport =
+    (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
+    src.passport || src.id_number ||
+    (pickFrom(src, ["passport","id_number","idnumber","national_id","id_card","identity","identity_number","document_number"]) || "");
+
+  return {
+    kind: cust ? "customer" : lead ? "lead" : "unknown",
     id,
-    attempted: [
-      "/admin/customers/customer/{id}",
-      "/admin/customers/{id}",
-      "/admin/crm/leads/{id}",
-      "/admin/customers/{id}/contacts",
-      "/admin/crm/leads/{id}/contacts",
-    ],
-    results,
+    full_name: src.full_name || src.name || "",
+    email: src.email || src.billing_email || "",
+    phone: phone || "",
+    city, street, zip, passport,
+    partner: src.partner || src.location || "",
+    payment_method: src.payment_method || "",
   };
-
-  return summary;
 }
