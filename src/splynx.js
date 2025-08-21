@@ -7,7 +7,6 @@ function authHeader(env) {
   };
 }
 
-// --- Base HTTP helpers ---
 export async function splynxGET(env, path) {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { ...authHeader(env) },
@@ -38,59 +37,54 @@ export async function splynxPUT(env, path, body) {
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`PUT ${path} failed: ${res.status} ${text}`);
-  }
+  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
   return res.json();
 }
 
 /**
- * Map onboarding/admin edits into Splynx API payload
- * @param {object} edits
+ * Map frontend edits into Splynx API payload
+ * @param {object} edits - fields edited in onboarding admin
+ * @returns {object} payload for Splynx PUT/POST
  */
 export function mapEditsToSplynxPayload(edits) {
   const payload = {};
 
-  // --- Core identity ---
   if (edits.full_name) payload.name = edits.full_name;
   if (edits.email) payload.email = edits.email;
   if (edits.billing_email) payload.billing_email = edits.billing_email;
   if (edits.phone) payload.phone = edits.phone;
-
-  // --- Passport / ID ---
   if (edits.passport) payload.passport = edits.passport;
-  if (edits.id_number) payload.additional_attributes = { 
-    ...(payload.additional_attributes || {}), 
-    social_id: edits.id_number 
-  };
 
-  // --- Address ---
+  // ✅ ID Number into additional_attributes.social_id
+  if (edits.id_number) {
+    payload.additional_attributes = {
+      ...(payload.additional_attributes || {}),
+      social_id: edits.id_number,
+    };
+  }
+
+  // ✅ Address
   if (edits.address || edits.city || edits.zip) {
     payload.street_1 = edits.address || "";
     payload.city = edits.city || "";
     payload.zip_code = edits.zip || "";
   }
 
-  // --- Payment / billing ---
+  // ✅ Banking / Payment
   if (edits.payment_method) payload.payment_method = edits.payment_method;
   if (edits.bank_name) payload.bank_name = edits.bank_name;
   if (edits.bank_account) payload.bank_account = edits.bank_account;
   if (edits.bank_branch) payload.bank_branch = edits.bank_branch;
 
-  // --- Agreement metadata ---
-  if (edits.signed_ip) payload.additional_attributes = { 
-    ...(payload.additional_attributes || {}), 
-    signed_ip: edits.signed_ip 
-  };
-  if (edits.signed_device) payload.additional_attributes = { 
-    ...(payload.additional_attributes || {}), 
-    signed_device: edits.signed_device 
-  };
-  if (edits.signed_date) payload.additional_attributes = { 
-    ...(payload.additional_attributes || {}), 
-    signed_date: edits.signed_date 
-  };
+  // ✅ Agreement metadata (custom attributes)
+  if (edits.signed_ip || edits.signed_device || edits.signed_date) {
+    payload.additional_attributes = {
+      ...(payload.additional_attributes || {}),
+      signed_ip: edits.signed_ip || "",
+      signed_device: edits.signed_device || "",
+      signed_date: edits.signed_date || "",
+    };
+  }
 
   return payload;
 }
@@ -127,7 +121,7 @@ export async function splynxCreateAndUpload(env, type, id, file) {
 }
 
 /**
- * Fetch profile and normalize fields for display in onboarding UI
+ * Fetch a clean mapped profile for display in onboarding
  */
 export async function fetchProfileForDisplay(env, id) {
   const endpoints = [
@@ -146,14 +140,20 @@ export async function fetchProfileForDisplay(env, id) {
         email: data.email || "",
         billing_email: data.billing_email || data.email || "",
         phone: data.phone || (data.phones ? data.phones[0]?.phone : ""),
-        passport: data.passport || data.additional_attributes?.social_id || "",
+        passport: data.passport || data.additional_attributes?.passport || "",
+        id_number: data.additional_attributes?.social_id || "",
         address: data.street_1 || data.address || "",
         city: data.city || "",
         zip: data.zip_code || data.zip || "",
+
         payment_method: data.payment_method || "",
         bank_name: data.bank_name || "",
         bank_account: data.bank_account || "",
         bank_branch: data.bank_branch || "",
+
+        signed_ip: data.additional_attributes?.signed_ip || "",
+        signed_device: data.additional_attributes?.signed_device || "",
+        signed_date: data.additional_attributes?.signed_date || "",
       };
     } catch (_) {}
   }
@@ -161,7 +161,7 @@ export async function fetchProfileForDisplay(env, id) {
 }
 
 /**
- * Try multiple endpoints to fetch MSISDN/contact info
+ * Try multiple endpoints to find customer/lead MSISDN info
  */
 export async function fetchCustomerMsisdn(env, id) {
   const eps = [
