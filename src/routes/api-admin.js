@@ -2,16 +2,9 @@
 import { getOnboardAll, deleteOnboardAll } from "../storage.js";
 
 /**
- * Match paths that belong to /api/admin/*
+ * Entry point: used by index.js
  */
-export function match(path, method) {
-  return path.startsWith("/api/admin/");
-}
-
-/**
- * Handle admin API requests
- */
-export async function handle(request, env) {
+export async function handleAdminApi(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const id = url.searchParams.get("id");
