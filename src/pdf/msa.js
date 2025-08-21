@@ -143,8 +143,8 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
 
   // Terms — **two columns**, size 6
   let yText = infoBottom - 12;
-  const sizeT = 6;
-  const lineH = 8.5; // comfortable for 7pt
+  const sizeT = 6.5;
+  const lineH = 9; // comfortable for 7pt
   const col1X = M;
   const col2X = M + colW + GUTTER;
 
