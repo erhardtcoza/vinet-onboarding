@@ -1,164 +1,98 @@
 // src/splynx.js
-// Splynx helper functions for Vinet Onboarding Worker
 
-// ---------------------
-// Generic GET
-// ---------------------
-export async function splynxGET(env, endpoint) {
-  const url = `${env.SPLYNX_API_URL}${endpoint}`;
-  console.log(`[Splynx] GET ${url}`);
+const BASE = "https://splynx.vinet.co.za/api/2.0";
+
+/**
+ * Make a GET request to Splynx API
+ */
+export async function splynxGET(env, ep) {
+  const url = `${BASE}${ep}`;
   const res = await fetch(url, {
     headers: {
-      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      Authorization: env.SPLYNX_AUTH,
       "Content-Type": "application/json",
     },
   });
-
   if (!res.ok) {
-    throw new Error(`GET ${endpoint} failed (${res.status})`);
+    throw new Error(`Splynx fetch failed: ${res.status} ${await res.text()}`);
   }
-
-  return await res.json();
+  return res.json();
 }
 
-// ---------------------
-// Generic PUT
-// ---------------------
-export async function splynxPUT(env, endpoint, body) {
-  const url = `${env.SPLYNX_API_URL}${endpoint}`;
-  console.log(`[Splynx] PUT ${url}`, body);
+/**
+ * Make a PUT request to Splynx API
+ */
+export async function splynxPUT(env, ep, body) {
+  const url = `${BASE}${ep}`;
   const res = await fetch(url, {
     method: "PUT",
     headers: {
-      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      Authorization: env.SPLYNX_AUTH,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
   });
-
   if (!res.ok) {
-    throw new Error(`PUT ${endpoint} failed (${res.status})`);
+    throw new Error(`Splynx PUT failed: ${res.status} ${await res.text()}`);
   }
-
-  return await res.json();
+  return res.json();
 }
 
-// ---------------------
-// Map edits into Splynx payload format
-// ---------------------
-export function mapEditsToSplynxPayload(edits) {
-  console.log("[Splynx] Mapping edits", edits);
-  return edits;
-}
-
-// ---------------------
-// Upload file to Splynx (lead or customer)
-// ---------------------
-export async function splynxCreateAndUpload(env, type, id, file) {
-  const endpoint =
-    type === "lead"
-      ? `/admin/crm/lead-documents/${id}`
-      : `/admin/customers/customer-documents/${id}`;
-
-  console.log(`[Splynx] Uploading file to ${endpoint}`);
-  const res = await fetch(`${env.SPLYNX_API_URL}${endpoint}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${env.SPLYNX_AUTH}`,
-    },
-    body: file, // expects FormData
-  });
-
-  if (!res.ok) {
-    throw new Error(`Upload failed (${res.status})`);
-  }
-
-  return await res.json();
-}
-
-// ---------------------
-// Fetch and merge profile for onboarding
-// ---------------------
+/**
+ * Fetch a customer or lead by ID and normalise fields
+ */
 export async function fetchProfileForDisplay(env, id) {
-  const customerEndpoints = {
-    main: `/admin/customers/customer/${id}`,
-    contacts: `/admin/customers/${id}/contacts`,
-  };
+  // try customer first
+  const endpoints = [
+    `/admin/customers/customer/${id}`,
+    `/admin/crm/leads/${id}`,
+  ];
 
-  const leadEndpoints = {
-    main: `/admin/crm/leads/${id}`,
-    contacts: `/admin/crm/leads/${id}/contacts`,
-  };
-
-  let profile = null;
-
-  // --- Try customer ---
-  try {
-    console.log(`[Splynx] Trying customer ${id}`);
-    profile = await splynxGET(env, customerEndpoints.main);
-    console.log(`[Splynx] Customer profile success`);
+  for (const ep of endpoints) {
     try {
-      const contacts = await splynxGET(env, customerEndpoints.contacts);
-      if (contacts && contacts.length > 0) {
-        profile.contacts = contacts;
-      }
-    } catch (err) {
-      console.log(`[Splynx] No customer contacts: ${err.message}`);
-    }
-  } catch (err) {
-    console.log(`[Splynx] No customer profile: ${err.message}`);
-  }
+      const data = await splynxGET(env, ep);
 
-  // --- If not found, try lead ---
-  if (!profile) {
-    try {
-      console.log(`[Splynx] Trying lead ${id}`);
-      profile = await splynxGET(env, leadEndpoints.main);
-      console.log(`[Splynx] Lead profile success`);
-      try {
-        const contacts = await splynxGET(env, leadEndpoints.contacts);
-        if (contacts && contacts.length > 0) {
-          profile.contacts = contacts;
+      if (data && data.id) {
+        let type = ep.includes("/leads/") ? "lead" : "customer";
+
+        // If it's a customer, fetch customer-info as well (passport, birthday, etc)
+        let passport = "";
+        if (type === "customer") {
+          try {
+            const extra = await splynxGET(env, `/admin/customers/customer-info/${id}`);
+            passport = extra.passport || "";
+          } catch (e) {
+            console.warn("Failed to fetch customer-info:", e.message);
+          }
         }
-      } catch (err) {
-        console.log(`[Splynx] No lead contacts: ${err.message}`);
+
+        // Build normalised object
+        data.normalised = {
+          id: data.id,
+          type,
+          name: data.name || "",
+          email: data.email || "",
+          phone: data.phone || "",
+          street: data.street_1 || "",
+          city: data.city || "",
+          zip: data.zip_code || "",
+          passport,
+          contacts: data.contacts || [],
+        };
+
+        return data;
       }
     } catch (err) {
-      console.log(`[Splynx] No lead profile: ${err.message}`);
+      // ignore and try next endpoint
     }
   }
 
-  if (!profile) {
-    console.log(`[Splynx] No profile found for id=${id}`);
-    return null;
-  }
-
-  // --- Ensure passport always present ---
-  if (!profile.passport) {
-    profile.passport = "";
-  }
-
-  // --- Build normalised profile alongside raw ---
-  profile.normalised = {
-    id: profile.id,
-    type: profile.category === "lead" ? "lead" : "customer",
-    name: profile.name || "",
-    email: profile.email || profile.billing_email || "",
-    phone: profile.phone || "",
-    street: profile.street_1 || "",
-    city: profile.city || "",
-    zip: profile.zip_code || "",
-    passport: profile.passport || "",
-    contacts: profile.contacts || [],
-  };
-
-  console.log(`[Splynx] Returning merged+normalised profile for id=${id}`);
-  return profile; // raw + normalised
+  return null;
 }
 
-// ---------------------
-// Fetch customer MSISDN info
-// ---------------------
+/**
+ * Fetch customer MSISDN (phone numbers)
+ */
 export async function fetchCustomerMsisdn(env, id) {
   const eps = [
     `/admin/customers/customer/${id}`,
@@ -170,17 +104,16 @@ export async function fetchCustomerMsisdn(env, id) {
 
   for (const ep of eps) {
     try {
-      console.log(`[Splynx] Trying MSISDN ${ep}`);
       const data = await splynxGET(env, ep);
-      if (data && Object.keys(data).length > 0) {
-        console.log(`[Splynx] Found MSISDN in ${ep}`);
-        return data;
+      if (data && (data.phone || (data.contacts && data.contacts.length))) {
+        return {
+          phone: data.phone || "",
+          contacts: data.contacts || [],
+        };
       }
     } catch (err) {
-      console.log(`[Splynx] Failed MSISDN ${ep}: ${err.message}`);
+      // try next
     }
   }
-
-  console.log(`[Splynx] No MSISDN found for id=${id}`);
   return null;
 }
