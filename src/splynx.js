@@ -138,8 +138,24 @@ export async function fetchProfileForDisplay(env, id) {
     profile.passport = "";
   }
 
-  console.log(`[Splynx] Returning profile for id=${id}`);
-  return profile; // keep raw JSON + attached contacts
+  // --- Build normalised profile ---
+  const normalised = {
+    id: profile.id,
+    type: profile.category === "lead" ? "lead" : "customer",
+    name: profile.name || "",
+    email: profile.email || profile.billing_email || "",
+    phone: profile.phone || "",
+    street: profile.street_1 || "",
+    city: profile.city || "",
+    zip: profile.zip_code || "",
+    passport: profile.passport || "",
+    contacts: profile.contacts || [],
+  };
+
+  profile.normalised = normalised;
+
+  console.log(`[Splynx] Returning merged+normalised profile for id=${id}`);
+  return profile; // raw + contacts + normalised
 }
 
 // ---------------------
