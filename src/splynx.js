@@ -88,43 +88,75 @@ function pickPassportLike(o) {
   return "";
 }
 
-// ---------- Profile fetch for UI (lead first, then customer + customer-info) ----------
+// --- Robust profile fetch used by /api/splynx/profile (step 2 UI) ---
 export async function fetchProfileForDisplay(env, id) {
-  let lead = null, cust = null, custInfo = null;
+  // Try customer endpoints first; if not found, try lead
+  let cust = null, lead = null, custInfo = null, contacts = null;
 
-  try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {}
+  // 1) Customer main object
   try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (cust) {
-    try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
+  // 2) Customer “customer-info/{id}” (often contains id_number / identity_number)
+  try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
+  // 3) Contacts (fallback phone/email sometimes live here)
+  try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
+
+  // If we didn’t find a customer, try the lead endpoints
+  if (!cust) {
+    try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {}
+    try { contacts = await splynxGET(env, `/admin/crm/leads/${id}/contacts`); } catch {}
   }
 
-  const src = lead || cust || {};
+  // Pick the primary source to surface in UI
+  const src = cust || lead || {};
 
-  const phone =
-    src.phone ||
-    src.phone_mobile ||
-    "";
+  // Pull common top‑level fields (Splynx differs across installs)
+  const name  = src.name || src.full_name || "";
+  const email = src.email || src.billing_email || "";
+  const phone = src.phone || src.phone_mobile || (contacts && Array.isArray(contacts) && contacts[0]?.phone) || "";
 
-  const street = src.street || src.street_1 || src.address || "";
+  // Address variants seen in the wild
+  const street = src.street_1 || src.street || src.address || (src.addresses && (src.addresses.street || src.addresses.address_1)) || "";
   const city   = src.city || (src.addresses && src.addresses.city) || "";
-  const zip    = src.zip || src.zip_code || (src.addresses && (src.addresses.zip || src.addresses.zip_code)) || "";
+  const zip    = src.zip_code || src.zip || (src.addresses && (src.addresses.zip || src.addresses.zip_code)) || "";
 
-  const passport =
-    pickPassportLike(custInfo) ||
-    pickPassportLike(cust)     ||
-    pickPassportLike(lead)     ||
-    "";
+  // ---- Passport / ID: search multiple likely places/keys ----
+  // Preferred: dedicated customer-info object
+  let passport =
+    (custInfo && (
+      custInfo.id_number ||
+      custInfo.identity_number ||
+      custInfo.passport ||
+      custInfo.document_number
+    )) ||
+    // Sometimes stored directly on the customer/lead
+    src.id_number || src.identity_number || src.passport || src.document_number || "";
+
+  // As a last resort, scan shallow properties for common key names
+  if (!passport && src && typeof src === "object") {
+    const wantKeys = [
+      "id", "id_number", "identity_number", "identity", "passport",
+      "document_number", "national_id", "idcard", "idnumber"
+    ];
+    for (const [k,v] of Object.entries(src)) {
+      if (typeof v === "string" && wantKeys.includes(String(k).toLowerCase()) && v.trim()) {
+        passport = v.trim();
+        break;
+      }
+    }
+  }
 
   return {
-    kind: lead ? "lead" : (cust ? "customer" : "unknown"),
+    kind: cust ? "customer" : lead ? "lead" : "unknown",
     id,
-    full_name: src.name || src.full_name || "",
-    email: src.email || src.billing_email || "",
+    full_name: name,
+    email,
     phone,
-    street, city, zip,
-    passport,
+    street,
+    city,
+    zip,
+    passport,           // <— this is what the UI shows under “ID / Passport”
+    partner: src.partner || src.location || "",
     payment_method: src.payment_method || "",
-    partner: src.partner || src.location || ""
   };
 }
 
