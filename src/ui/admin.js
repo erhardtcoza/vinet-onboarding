@@ -1,421 +1,375 @@
 // /src/ui/admin.js
 import { LOGO_URL } from "../constants.js";
 
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[m]));
-const fmtDT = (t) => {
-  if (!t) return "";
-  const d = new Date(t);
-  const pad = (n)=> String(n).padStart(2,"0");
-  return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-};
-const fmtKB = (n)=> (Math.round((Number(n||0)/1024)*10)/10) + " KB";
+// ---- small helpers (no external deps) ----
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, m => ESC_MAP[m]); }
+function fmtKB(bytes) {
+  if (bytes === 0) return "0 KB";
+  if (!bytes && bytes !== 0) return "";
+  const kb = bytes / 1024;
+  if (kb < 1024) return kb.toFixed(1) + " KB";
+  return (kb / 1024).toFixed(1) + " MB";
+}
+function at(obj, path, defv = "") {
+  try {
+    return path.split(".").reduce((v, k) => (v && v[k] !== undefined ? v[k] : undefined), obj) ?? defv;
+  } catch { return defv; }
+}
+function diffRow(label, beforeVal, afterVal) {
+  const b = esc(beforeVal ?? "");
+  const a = esc(afterVal ?? "");
+  const changed = (b !== a);
+  const mark = changed ? '<span class="badge changed">changed</span>' : '<span class="badge same">same</span>';
+  return (
+    '<tr>' +
+      '<th>' + esc(label) + '</th>' +
+      '<td class="mono">' + b + '</td>' +
+      '<td class="mono">' + a + '</td>' +
+      '<td>' + mark + '</td>' +
+    '</tr>'
+  );
+}
 
-// ------- ADMIN DASH (Dashboard) -------
+// ---- MAIN DASHBOARD PAGE ----
 export function renderAdminPage() {
-  return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8" />
-<title>Admin Dashboard</title><meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-  :root{--red:#e2001a;--ink:#222;--muted:#667;--chip:#fff}
-  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f6f7fb;color:var(--ink)}
-  .card{background:#fff;max-width:1080px;margin:26px auto;padding:22px;border-radius:16px;box-shadow:0 2px 12px #0002}
-  .logo{height:64px;display:block;margin:0 auto 8px}
-  h1,h2,h3{color:var(--red);margin:.25em 0 .6em}
-  label{font-weight:600;color:#222;font-size:.95em}
-  input{border:1px solid #ddd;border-radius:10px;padding:10px 12px;width:100%;font-size:1em;background:#fafafa}
-  .row{display:flex;gap:14px;flex-wrap:wrap}
-  .col{flex:1 1 360px}
-  .btn{background:var(--red);color:#fff;border:0;border-radius:999px;padding:.65em 1.4em;font-weight:700;cursor:pointer}
-  .btn.small{padding:.45em .95em;font-weight:600}
-  .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:999px;padding:.5em 1.1em;font-weight:700;cursor:pointer}
-  .btn-ghost{background:#fff;color:#222;border:2px solid #ddd;border-radius:999px;padding:.45em .9em;cursor:pointer}
-  .btn-danger{color:#b00020;border-color:#b00020}
-  .note{color:var(--muted);font-size:.9em}
-  .section{margin:20px 0 14px}
-  .tabs{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
-  .tab{border:2px solid var(--red);color:#e2001a;background:#fff;border-radius:999px;padding:.5em 1.1em;cursor:pointer}
-  .tab.active{background:#e2001a;color:#fff}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  th,td{padding:10px 8px;border-bottom:1px solid #eee;text-align:left}
-  td.actions{white-space:nowrap}
-  .empty{color:#778}
-  .copy{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95em}
-  /* Modal */
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:16px}
-  .modal.active{display:flex}
-  .modal-card{background:#fff;max-width:640px;width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:18px}
-  .modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-  .modal-url{background:#f6f7fb;border:1px solid #e2e5ef;border-radius:10px;padding:12px 14px;font-size:15px;word-break:break-all}
-</style></head><body>
-<div class="card">
-  <img class="logo" src="${LOGO_URL}" alt="Vinet">
-  <h2 style="text-align:center">Admin Dashboard</h2>
+  return (
+'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>' +
+'<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
+'<title>Vinet Onboarding – Admin</title>' +
+'<style>' +
+'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f6f7fb;color:#222;margin:0}' +
+'header{background:#fff;border-bottom:1px solid #eee;position:sticky;top:0;z-index:5}' +
+'.wrap{max-width:1100px;margin:0 auto;padding:18px 16px}' +
+'h1{margin:0;font-size:22px;color:#e2001a}' +
+'.controls{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0 10px}' +
+'.card{background:#fff;border:1px solid #eee;border-radius:12px;padding:14px}' +
+'label{font-size:12px;color:#444;font-weight:700;display:block;margin:0 0 6px}' +
+'input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa}' +
+'.btn{background:#e2001a;color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:700}' +
+'.btn.secondary{background:#fff;color:#e2001a;border:2px solid #e2001a}' +
+'.btn.link{background:transparent;border:0;color:#0b69c7;padding:0 4px;cursor:pointer}' +
+'.cols{display:grid;grid-template-columns:1fr;gap:14px;margin-top:8px}' +
+'@media(min-width:900px){.cols{grid-template-columns:1fr 1fr}}' +
+'.section h2{margin:6px 0 10px;font-size:18px;color:#333}' +
+'.list{display:grid;gap:10px}' +
+'.entry{border:1px solid #eee;border-radius:12px;padding:12px;background:#fff}' +
+'.entry h3{margin:0 0 5px;font-size:16px;color:#222}' +
+'.muted{color:#666;font-size:12px}' +
+'.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}' +
+'.row a{color:#0b69c7;text-decoration:none} .row a:hover{text-decoration:underline}' +
+'.chip{background:#f1f3f7;border-radius:999px;padding:4px 10px;font-size:12px}' +
+'.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}' +
+'.badge{display:inline-block;border-radius:6px;padding:2px 6px;font-size:11px;margin-left:6px}' +
+'.badge.changed{background:#ffefe8;color:#9b2c00;border:1px solid #ffd7c2}' +
+'.badge.same{background:#eef8f0;color:#1f6f3f;border:1px solid #cfead7}' +
+'.mono{font-family:ui-monospace,Menlo,Consolas,monospace}' +
+'.empty{border:1px dashed #ddd;border-radius:12px;padding:14px;color:#777;text-align:center}' +
+'.tabs{display:flex;gap:8px;margin:12px 0 8px}' +
+'.tabs .tab{padding:6px 10px;border-radius:999px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:12px}' +
+'.tabs .tab.active{border-color:#e2001a;color:#e2001a;font-weight:700}' +
+'.modal{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:20}' +
+'.modal .dialog{background:#fff;border-radius:12px;max-width:520px;width:92%;padding:16px;border:1px solid #eee}' +
+'.dialog h3{margin:0 0 8px;font-size:18px}' +
+'.dialog .mono-box{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:10px;word-break:break-all}' +
+'.top-help{font-size:12px;color:#666;margin:6px 0 0}' +
+'</style></head><body>' +
+'<header><div class="wrap"><h1>Vinet Onboarding – Admin</h1></div></header>' +
+'<div class="wrap">' +
+  '<div class="controls">' +
+    '<div class="card">' +
+      '<label>Generate Onboard link (Splynx ID)</label>' +
+      '<div class="row">' +
+        '<input id="gen_id" placeholder="e.g. 319" />' +
+        '<button class="btn" id="btn_gen">Generate</button>' +
+      '</div>' +
+      '<div class="top-help">Creates a unique onboarding URL for the customer.</div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<label>Generate Verification code (linkid)</label>' +
+      '<div class="row">' +
+        '<input id="ver_linkid" placeholder="e.g. 319_abcd1234" />' +
+        '<button class="btn" id="btn_ver">Generate</button>' +
+      '</div>' +
+      '<div class="top-help">Issues a 6‑digit staff verification code for the given link.</div>' +
+    '</div>' +
+  '</div>' +
 
-  <!-- Row: Generate onboarding link + Generate verification code -->
-  <div class="row">
-    <div class="col">
-      <h3>1. Generate onboarding link</h3>
-      <label>Splynx Lead/Customer ID</label>
-      <div class="row" style="align-items:flex-end">
-        <div class="col"><input id="gen_id" placeholder="e.g. 319"></div>
-        <div><button class="btn small" id="gen_btn">Generate</button></div>
-      </div>
-      <div class="note">A modal will show the generated URL.</div>
-    </div>
+  '<div class="tabs">' +
+    '<button class="tab active" data-tab="inprog">In Progress</button>' +
+    '<button class="tab" data-tab="pending">Pending</button>' +
+    '<button class="tab" data-tab="approved">Approved</button>' +
+  '</div>' +
 
-    <div class="col">
-      <h3>2. Generate verification code</h3>
-      <label>Onboarding Link ID <span class="note">(e.g. 319_ab12cd34)</span></label>
-      <div class="row" style="align-items:flex-end">
-        <div class="col"><input id="staff_linkid" placeholder="319_xxxxxxxx"></div>
-        <div><button class="btn small" id="staff_btn">Generate staff code</button></div>
-      </div>
-      <div class="note" id="staff_msg"></div>
-    </div>
-  </div>
+  '<div class="cols">' +
+    '<div class="section card" id="sec_inprog"><h2>In Progress</h2><div class="list" id="list_inprog"></div></div>' +
+    '<div class="section card" id="sec_pending"><h2>Pending</h2><div class="list" id="list_pending"></div></div>' +
+  '</div>' +
 
-  <!-- Tabs -->
-  <div class="section">
-    <div class="tabs">
-      <button class="tab active" data-mode="inprog">3. Pending (in‑progress)</button>
-      <button class="tab" data-mode="pending">4. Completed (awaiting approval)</button>
-      <button class="tab" data-mode="approved">5. Approved</button>
-    </div>
-    <div id="listBox"><div class="empty">Loading…</div></div>
-  </div>
-</div>
+  '<div class="section card" id="sec_approved" style="margin-top:12px;"><h2>Approved</h2><div class="list" id="list_approved"></div></div>' +
+'</div>' +
 
-<!-- Modal: Generated URL -->
-<div class="modal" id="linkModal" role="dialog" aria-modal="true">
-  <div class="modal-card">
-    <div class="modal-head">
-      <h3 style="margin:0;color:#e2001a">Onboarding URL</h3>
-      <button class="btn-ghost" id="closeModal">Close</button>
-    </div>
-    <div id="modalUrl" class="modal-url copy"></div>
-    <div style="display:flex;gap:8px;margin-top:10px;">
-      <button class="btn" id="copyUrl">Copy link</button>
-      <a class="btn-outline" id="openUrl" target="_blank" rel="noopener">Open</a>
-    </div>
-  </div>
-</div>
+'<div class="modal" id="modal">' +
+  '<div class="dialog">' +
+    '<h3 id="modal_title"></h3>' +
+    '<div class="mono-box" id="modal_body"></div>' +
+    '<div class="row" style="margin-top:10px">' +
+      '<button class="btn secondary" id="modal_copy">Copy</button>' +
+      '<button class="btn" id="modal_close">Close</button>' +
+    '</div>' +
+  '</div>' +
+'</div>' +
 
-<script>
-(function(){
-  const $ = (sel) => document.querySelector(sel);
-  const listBox = $("#listBox");
+'<script>' +
+// modal helpers
+'const $ = (s)=>document.querySelector(s);' +
+'const $all=(s)=>Array.from(document.querySelectorAll(s));' +
+'const modal=$("#modal"), mTitle=$("#modal_title"), mBody=$("#modal_body");' +
+'$("#modal_close").onclick=()=>{ modal.style.display="none"; };' +
+'$("#modal_copy").onclick=()=>{ const txt=mBody.textContent||""; navigator.clipboard.writeText(txt).catch(()=>{}); };' +
 
-  // client-side esc helper for UI strings
-  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[m])); }
-  function fmtDT(t){ if(!t) return ""; const d=new Date(t); const p=n=>String(n).padStart(2,"0"); return \`\${p(d.getDate())}/\${p(d.getMonth()+1)}/\${d.getFullYear()}, \${p(d.getHours())}:\${p(d.getMinutes())}:\${p(d.getSeconds())}\`; }
+'function showModal(title, body){ mTitle.textContent=title; mBody.textContent=body; modal.style.display="flex"; }' +
 
-  // Tabs
-  let mode = "inprog";
-  document.querySelectorAll(".tab").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      document.querySelectorAll(".tab").forEach(b=>b.classList.remove("active"));
-      btn.classList.add("active");
-      mode = btn.getAttribute("data-mode");
-      loadList();
-    });
-  });
+'const rBase = (window.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org");' +
 
-  function row(linkid, id, updated, kind){
-    const dt = fmtDT(updated);
-    const safeLink = "/onboard/" + encodeURIComponent(linkid);
-    const review = "/admin/review?linkid=" + encodeURIComponent(linkid);
+'function fmtKB(bytes){ if(bytes===0) return "0 KB"; if(!bytes&&bytes!==0) return ""; const kb=bytes/1024; if(kb<1024) return kb.toFixed(1)+" KB"; return (kb/1024).toFixed(1)+" MB"; }' +
 
-    if (kind === "inprog") {
-      return '<tr>'
-        + '<td>' + esc(id) + '</td>'
-        + '<td class="copy">' + esc(linkid) + '</td>'
-        + '<td>' + esc(dt) + '</td>'
-        + '<td class="actions">'
-          + '<a class="btn-outline small" href="' + safeLink + '" target="_blank">Open</a> '
-          + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
-        + '</td>'
-      + '</tr>';
-    }
-    if (kind === "pending") {
-      return '<tr>'
-        + '<td>' + esc(id) + '</td>'
-        + '<td class="copy">' + esc(linkid) + '</td>'
-        + '<td>' + esc(dt) + '</td>'
-        + '<td class="actions">'
-          + '<a class="btn-outline small" href="' + review + '">Review</a> '
-          + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
-        + '</td>'
-      + '</tr>';
-    }
-    // approved
-    return '<tr>'
-      + '<td>' + esc(id) + '</td>'
-      + '<td class="copy">' + esc(linkid) + '</td>'
-      + '<td>' + esc(dt) + '</td>'
-      + '<td class="actions">'
-        + '<a class="btn-outline small" href="' + review + '">Review</a> '
-        + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
-      + '</td>'
-    + '</tr>';
-  }
+'function cardHTML(item){' +
+'  const linkid = item.linkid;' +
+'  const edits = item.edits||{};' +
+'  const name = edits.full_name || "";' +
+'  const uploads=(item.uploads||[]).map(u=>{' +
+'    const url = rBase + "/" + u.key;' +
+'    const sizeStr = fmtKB(u.size);' +
+'    return "<li><a href=\\"" + url + "\\" target=\\"_blank\\">" + (u.name||"file") + "</a> <span class=\\"muted\\">" + sizeStr + "</span></li>";' +
+'  }).join("");' +
+'  const quick = [' +
+'    "<a href=\\"/admin/review?linkid=" + linkid + "\\">Review</a>",' +
+'    "<a href=\\"/agreements/msa/" + linkid + "\\" target=\\"_blank\\">MSA</a>",' +
+'    "<a href=\\"/agreements/debit/" + linkid + "\\" target=\\"_blank\\">Debit</a>"' +
+'  ].join(" · ");' +
+'  return (' +
+'    "<div class=\\"entry\\">" +' +
+'      "<h3>Customer/Lead " + (item.id||"") + "</h3>" +' +
+'      "<div class=\\"muted\\">" + (name ? ("Name: " + name) : "No name yet") + "</div>" +' +
+'      "<div class=\\"muted\\">Updated: " + (new Date(item.updated||0).toLocaleString()) + "</div>" +' +
+'      (uploads ? ("<ul style=\\"margin:8px 0;\\">" + uploads + "</ul>") : "<div class=\\"muted\\">No uploads</div>") +' +
+'      "<div class=\\"row\\">" + quick + "</div>" +' +
+'      "<div class=\\"actions\\">" +' +
+'        "<button class=\\"btn\\" data-approve=\\"" + linkid + "\\">Approve</button>" +' +
+'        "<button class=\\"btn secondary\\" data-reject=\\"" + linkid + "\\">Reject</button>" +' +
+'        "<button class=\\"btn secondary\\" data-delete=\\"" + linkid + "\\">Delete</button>" +' +
+'      "</div>" +' +
+'    "</div>"' +
+'  );' +
+'}' +
 
-  async function loadList(){
-    listBox.innerHTML = '<div class="empty">Loading…</div>';
-    try{
-      const r = await fetch('/api/admin/list?mode='+encodeURIComponent(mode));
-      const d = await r.json();
-      const items = d.items || [];
-      if (!items.length) {
-        listBox.innerHTML = '<div class="empty">No records.</div>';
-        return;
-      }
-      const title =
-        mode === "approved" ? "Approved"
-        : mode === "pending" ? "Completed (awaiting approval)"
-        : "Pending (in‑progress)";
-      const kind =
-        mode === "approved" ? "approved"
-        : mode === "pending" ? "pending"
-        : "inprog";
+'async function loadLists(which){' +
+'  const load = async (mode, target) => {' +
+'    const r = await fetch("/api/admin/list?mode=" + mode);' +
+'    const d = await r.json().catch(()=>({items:[]}));' +
+'    const html = (d.items||[]).map(cardHTML).join("") || "<div class=\\"empty\\">No records</div>";' +
+'    document.getElementById(target).innerHTML = html;' +
+'  };' +
+'  await Promise.all([' +
+'    load("inprog", "list_inprog"),' +
+'    load("pending", "list_pending"),' +
+'    load("approved","list_approved")' +
+'  ]);' +
+'  bindActions();' +
+'}' +
 
-      listBox.innerHTML =
-        '<h3>' + title + '</h3>'
-        + '<table>'
-          + '<thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th></th></tr></thead>'
-          + '<tbody>' + items.map(x => row(x.linkid, x.id, x.updated, kind)).join('') + '</tbody>'
-        + '</table>';
+'function bindActions(){' +
+// Approve
+'  $all("[data-approve]").forEach(btn=>{' +
+'    btn.onclick = async()=>{' +
+'      const linkid = btn.getAttribute("data-approve");' +
+'      const r = await fetch("/api/admin/approve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
+'      if(!r.ok){ alert("Approve failed"); return; }' +
+'      loadLists();' +
+'    };' +
+'  });' +
+// Reject
+'  $all("[data-reject]").forEach(btn=>{' +
+'    btn.onclick = async()=>{' +
+'      const linkid = btn.getAttribute("data-reject");' +
+'      const reason = prompt("Reason for rejection? (optional)","");' +
+'      const r = await fetch("/api/admin/reject",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid,reason})});' +
+'      if(!r.ok){ alert("Reject failed"); return; }' +
+'      loadLists();' +
+'    };' +
+'  });' +
+// Delete (wipe session + KV + R2 via server)
+'  $all("[data-delete]").forEach(btn=>{' +
+'    btn.onclick = async()=>{' +
+'      const linkid = btn.getAttribute("data-delete");' +
+'      if(!confirm("Delete this onboarding session and all associated records?")) return;' +
+'      const r = await fetch("/api/admin/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
+'      if(!r.ok){ alert("Delete failed"); return; }' +
+'      loadLists();' +
+'    };' +
+'  });' +
+'}' +
 
-      // wire delete buttons
-      listBox.querySelectorAll("[data-del]").forEach(btn=>{
-        btn.addEventListener("click", async ()=>{
-          const linkid = btn.getAttribute("data-del");
-          if (!confirm("Delete this onboarding session and all related data?")) return;
-          const res = await fetch("/api/admin/delete", {
-            method:"POST",
-            headers:{ "content-type":"application/json" },
-            body: JSON.stringify({ linkid })
-          }).then(r=>r.json()).catch(()=>({ok:false}));
-          if (!res.ok) alert(res.error || "Delete failed");
-          else loadList();
-        });
-      });
+// tabs
+'$all(".tabs .tab").forEach(t=>{' +
+'  t.onclick = ()=>{' +
+'    $all(".tabs .tab").forEach(x=>x.classList.remove("active"));' +
+'    t.classList.add("active");' +
+'    const tab = t.getAttribute("data-tab");' +
+'    $("#sec_inprog").style.display = (tab==="inprog"?"block":"none");' +
+'    $("#sec_pending").style.display = (tab==="pending"?"block":"none");' +
+'    $("#sec_approved").style.display = (tab==="approved"?"block":"none");' +
+'  };' +
+'});' +
+// default state
+'$("#sec_inprog").style.display="block";' +
+'$("#sec_pending").style.display="block";' +
+'$("#sec_approved").style.display="block";' +
 
-    }catch{
-      listBox.innerHTML = '<div class="empty">Failed to load.</div>';
-    }
-  }
+// Generate onboard
+'$("#btn_gen").onclick = async ()=>{' +
+'  const id = ($("#gen_id").value||"").trim();' +
+'  if(!id){ alert("Enter the Splynx ID"); return; }' +
+'  const r = await fetch("/api/admin/genlink",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id})});' +
+'  const d = await r.json().catch(()=>({}));' +
+'  if(!d.url){ alert("Failed to generate link"); return; }' +
+'  showModal("Onboarding link", d.url);' +
+'  loadLists();' +
+'};' +
 
-  // Generate link
-  $("#gen_btn").addEventListener("click", async ()=>{
-    const id = ($("#gen_id").value || "").trim();
-    if (!id) return alert("Enter Splynx ID");
-    const res = await fetch("/api/admin/genlink", {
-      method:"POST",
-      headers:{ "content-type":"application/json" },
-      body: JSON.stringify({ id })
-    }).then(r=>r.json()).catch(()=>({}));
-    if (!res || !res.url) return alert("Failed to generate");
-    showModal(res.url);
-    // preselect “in‑progress” to see it if needed
-    document.querySelector('.tab[data-mode="inprog"]').click();
-  });
+// Generate staff verification
+'$("#btn_ver").onclick = async ()=>{' +
+'  const linkid = ($("#ver_linkid").value||"").trim();' +
+'  if(!linkid){ alert("Enter the linkid"); return; }' +
+'  const r = await fetch("/api/staff/gen",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
+'  const d = await r.json().catch(()=>({}));' +
+'  if(!d.ok){ alert("Failed to generate code"); return; }' +
+'  showModal("Verification code", "Code for " + linkid + ": " + (d.code||""));' +
+'};' +
 
-  // Staff OTP
-  $("#staff_btn").addEventListener("click", async ()=>{
-    const linkid = ($("#staff_linkid").value || "").trim();
-    if (!linkid) { $("#staff_msg").textContent = "Enter a link ID."; return; }
-    const res = await fetch("/api/staff/gen", {
-      method:"POST",
-      headers:{ "content-type":"application/json" },
-      body: JSON.stringify({ linkid })
-    }).then(r=>r.json()).catch(()=>({ ok:false }));
-    if (!res.ok) $("#staff_msg").textContent = (res && res.error) ? res.error : "Failed to generate staff code.";
-    else $("#staff_msg").textContent = "Staff code: " + res.code + " (valid ~15 min)";
-  });
-
-  // Modal helpers
-  const modal = $("#linkModal");
-  function showModal(url){
-    $("#modalUrl").textContent = url;
-    $("#openUrl").setAttribute("href", url);
-    modal.classList.add("active");
-  }
-  $("#closeModal").addEventListener("click", ()=> modal.classList.remove("active"));
-  $("#copyUrl").addEventListener("click", async ()=>{
-    try{
-      await navigator.clipboard.writeText($("#modalUrl").textContent);
-      alert("Copied!");
-    }catch{ alert("Copy failed"); }
-  });
-  modal.addEventListener("click", (e)=>{ if(e.target === modal) modal.classList.remove("active"); });
-
-  // Initial list
-  loadList();
-})();
-</script>
-</body></html>`;
+'loadLists();' +
+'</script>' +
+'</body></html>'
+  );
 }
 
-// ------- REVIEW PAGE (Review & Approve) -------
-const fieldMap = {
-  full_name: "Full name",
-  email: "Email",
-  phone: "Phone",
-  passport: "ID / Passport",
-  street: "Street",
-  city: "City",
-  zip: "ZIP"
-};
-function computeDiffs(original, edits) {
-  const rows = [];
-  for (const k of Object.keys(fieldMap)) {
-    const oldV = original?.[k] ?? "";
-    const newV = edits?.[k] ?? "";
-    if (String(oldV||"").trim() !== String(newV||"").trim()) {
-      rows.push({ label: fieldMap[k], oldV, newV });
-    }
-  }
-  return rows;
-}
+// ---- REVIEW PAGE (shows diffs + links + back) ----
+export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
+  const edits = sess?.edits || {};
+  const orig  = sess?.original || {}; // optional: if you store the original snapshot
+  const uploads = Array.isArray(sess?.uploads) ? sess.uploads : [];
+  const msaPdf   = "/pdf/msa/"   + linkid;
+  const msaHtml  = "/agreements/msa/" + linkid;
+  const debitPdf = "/pdf/debit/" + linkid;
+  const debitHtml= "/agreements/debit/" + linkid;
 
-export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) {
-  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-  const diffs = computeDiffs(original, sess.edits || {});
-  const msaReady = !!sess.agreement_sig_key;
-  const debitReady = (sess.pay_method === "debit") && !!sess.debit_sig_key;
+  // Build attachment list (R2 public)
+  const filesHTML = uploads.length
+    ? ('<ul>' + uploads.map(u => {
+        const url = (r2PublicBase || "https://onboarding-uploads.vinethosting.org") + "/" + esc(u.key);
+        const name = esc(u.name || "file");
+        return '<li><a target="_blank" href="' + url + '">' + name + '</a> <span class="muted">' + esc(fmtKB(u.size)) + '</span></li>';
+      }).join("") + '</ul>')
+    : '<div class="empty">No attachments uploaded</div>';
 
-  return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8" />
-<title>Review & Approve</title><meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-  :root{--red:#e2001a}
-  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f6f7fb;color:#222}
-  .card{background:#fff;max-width:880px;margin:28px auto;padding:22px;border-radius:16px;box-shadow:0 2px 12px #0002}
-  .logo{height:54px;display:block;margin:0 auto 8px}
-  h1,h2,h3{color:var(--red);margin:.25em 0 .6em}
-  .note{color:#666}
-  .btn{background:#e2001a;color:#fff;border:0;border-radius:999px;padding:.6em 1.2em;cursor:pointer}
-  .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:999px;padding:.5em 1.1em;cursor:pointer}
-  .btn-danger{border-color:#b00020;color:#b00020}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  table{width:100%;border-collapse:collapse;margin-top:8px}
-  th,td{padding:8px 6px;border-bottom:1px solid #eee;text-align:left}
-  .diff-old{color:#b00020}
-  .diff-new{color:#0b6}
-  .chips{display:flex;gap:.5em;flex-wrap:wrap}
-  .pill{display:inline-block;border:2px solid #e2001a;color:#e2001a;border-radius:999px;padding:.35em .9em}
-</style></head><body>
-<div class="card">
-  <a class="btn-outline" href="/">← Back</a>
-  <img class="logo" src="${LOGO_URL}" alt="Vinet">
-  <h2>Review & Approve</h2>
-  <div class="note">Splynx ID: <b>${esc(sess.id||"")}</b> • LinkID: <b>${esc(linkid)}</b> • Status: <b>${esc(sess.status||"pending")}</b></div>
+  // Diffs (if no original provided, we still show the “after” values nicely)
+  const diffTable =
+    '<table class="diff">' +
+      '<thead><tr><th>Field</th><th>Original</th><th>Submitted</th><th>Status</th></tr></thead>' +
+      '<tbody>' +
+        diffRow('Full name',  at(orig,'full_name',''), at(edits,'full_name','')) +
+        diffRow('Email',      at(orig,'email',''),     at(edits,'email','')) +
+        diffRow('Phone',      at(orig,'phone',''),     at(edits,'phone','')) +
+        diffRow('ID/Passport',at(orig,'passport',''),  at(edits,'passport','')) +
+        diffRow('Street',     at(orig,'street',''),    at(edits,'street','')) +
+        diffRow('City',       at(orig,'city',''),      at(edits,'city','')) +
+        diffRow('ZIP',        at(orig,'zip',''),       at(edits,'zip','')) +
+      '</tbody>' +
+    '</table>';
 
-  <h3>Requested changes</h3>
-  ${
-    diffs.length
-      ? `<table>
-           <thead><tr><th>Field</th><th>Current (Splynx)</th><th>Requested (Customer)</th></tr></thead>
-           <tbody>
-             ${diffs.map(d=>`<tr><td>${esc(d.label)}</td><td class="diff-old">${esc(d.oldV)}</td><td class="diff-new"><b>${esc(d.newV)}</b></td></tr>`).join("")}
-           </tbody>
-         </table>`
-      : `<div class="note">No changes detected vs Splynx profile.</div>`
-  }
+  return (
+'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>' +
+'<meta name="viewport" content="width=device-width, initial-scale=1"/>' +
+'<title>Admin Review</title>' +
+'<style>' +
+'body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f6f7fb;color:#222;margin:0}' +
+'header{background:#fff;border-bottom:1px solid #eee;position:sticky;top:0;z-index:5}' +
+'.wrap{max-width:980px;margin:0 auto;padding:18px 16px}' +
+'h1{margin:0;font-size:22px;color:#e2001a}' +
+'.card{background:#fff;border:1px solid #eee;border-radius:12px;padding:14px;margin-top:12px}' +
+'h2{margin:4px 0 10px;font-size:18px}' +
+'table.diff{width:100%;border-collapse:collapse}' +
+'table.diff th, table.diff td{border:1px solid #eee;padding:8px;vertical-align:top}' +
+'table.diff th{background:#fafafa;text-align:left}' +
+'.muted{color:#666;font-size:12px}' +
+'.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}' +
+'.btn{background:#e2001a;color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:700}' +
+'.btn.secondary{background:#fff;color:#e2001a;border:2px solid #e2001a}' +
+'.empty{border:1px dashed #ddd;border-radius:12px;padding:14px;color:#777;text-align:center}' +
+'a{color:#0b69c7;text-decoration:none} a:hover{text-decoration:underline}' +
+'</style></head><body>' +
+'<header><div class="wrap"><h1>Review & Approve</h1></div></header>' +
+'<div class="wrap">' +
 
-  <h3>Edits (full)</h3>
-  <div class="grid2">
-    <div>
-      <div><b>full_name:</b> ${esc(sess.edits?.full_name)}</div>
-      <div><b>email:</b> ${esc(sess.edits?.email)}</div>
-      <div><b>phone:</b> ${esc(sess.edits?.phone)}</div>
-      <div><b>passport:</b> ${esc(sess.edits?.passport)}</div>
-    </div>
-    <div>
-      <div><b>street:</b> ${esc(sess.edits?.street)}</div>
-      <div><b>city:</b> ${esc(sess.edits?.city)}</div>
-      <div><b>zip:</b> ${esc(sess.edits?.zip)}</div>
-    </div>
-  </div>
+  '<div class="card">' +
+    '<div class="row">' +
+      '<button class="btn secondary" onclick="location.href=\'/\'">Back to Dashboard</button>' +
+      '<div class="muted">Link: ' + esc(linkid) + '</div>' +
+    '</div>' +
+  '</div>' +
 
-  <h3>Uploads</h3>
-  ${
-    uploads.length
-      ? `<table>
-           <thead><tr><th>Label</th><th>File</th><th>Size</th></tr></thead>
-           <tbody>
-             ${uploads.map(u => {
-               const url = String(r2PublicBase || "") + "/" + String(u.key || "");
-               const name = esc(u.name || u.key || "");
-               const sizeStr = ${fmtKB.toString()}(u.size);
-               return '<tr>'
-                 + '<td>' + esc(u.label||"") + '</td>'
-                 + '<td><a href="' + esc(url) + '" target="_blank">' + name + '</a></td>'
-                 + '<td>' + sizeStr + '</td>'
-                 + '</tr>';
-             }).join("")}
-           </tbody>
-         </table>`
-      : `<div class="note">No uploads.</div>`
-  }
+  '<div class="card">' +
+    '<h2>Client‑edited details</h2>' +
+    diffTable +
+  '</div>' +
 
-  <h3>Agreement</h3>
-  <div class="chips">
-    <span class="pill">Accepted: ${sess.agreement_signed ? "Yes" : "No"}</span>
-    <span class="pill">Payment: ${esc(sess.pay_method || "unknown")}</span>
-  </div>
+  '<div class="card">' +
+    '<h2>Attachments</h2>' +
+    filesHTML +
+  '</div>' +
 
-  <div style="margin-top:10px">
-    <div><b>MSA</b>:
-      ${
-        msaReady
-          ? `<a href="/pdf/msa/${esc(linkid)}" target="_blank">PDF</a> ·
-             <a href="/agreements/msa/${esc(linkid)}" target="_blank">HTML</a>`
-          : `<span class="note">Not signed yet</span>`
-      }
-    </div>
-    <div style="margin-top:6px"><b>Debit Order</b>:
-      ${
-        debitReady
-          ? `<a href="/pdf/debit/${esc(linkid)}" target="_blank">PDF</a> ·
-             <a href="/agreements/debit/${esc(linkid)}" target="_blank">HTML</a>`
-          : (sess.pay_method === "debit"
-              ? `<span class="note">Awaiting signature</span>`
-              : `<span class="note">Not applicable</span>`)
-      }
-    </div>
-  </div>
+  '<div class="card">' +
+    '<h2>Agreements</h2>' +
+    '<div class="row">' +
+      '<a class="btn" target="_blank" href="' + esc(msaPdf) + '">MSA PDF</a>' +
+      '<a class="btn secondary" target="_blank" href="' + esc(msaHtml) + '">MSA (HTML)</a>' +
+      '<a class="btn" target="_blank" href="' + esc(debitPdf) + '">Debit Order PDF</a>' +
+      '<a class="btn secondary" target="_blank" href="' + esc(debitHtml) + '">Debit (HTML)</a>' +
+    '</div>' +
+  '</div>' +
 
-  <div style="display:flex;gap:.6em;flex-wrap:wrap;margin-top:14px">
-    <button class="btn" id="approve">Approve & Push</button>
-    <button class="btn-outline" id="reject">Reject</button>
-    <button class="btn-outline btn-danger" id="delete">Delete</button>
-  </div>
-</div>
+  '<div class="card">' +
+    '<h2>Decision</h2>' +
+    '<div class="row">' +
+      '<button class="btn" id="approve">Approve</button>' +
+      '<button class="btn secondary" id="reject">Reject</button>' +
+      '<button class="btn secondary" id="del">Delete</button>' +
+    '</div>' +
+  '</div>' +
 
-<script>
-(function(){
-  const linkid = ${JSON.stringify(linkid)};
-  async function post(url, body){
-    const r = await fetch(url, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body || {}) });
-    return r.json().catch(()=>({ ok:false }));
-  }
-  document.getElementById("approve").onclick = async ()=>{
-    const res = await post("/api/admin/approve", { linkid });
-    if (!res.ok) alert(res.error || "Approve failed"); else location.href = "/";
-  };
-  document.getElementById("reject").onclick = async ()=>{
-    const reason = prompt("Reason for rejection (visible to audit):","Incomplete documents");
-    if (reason == null) return;
-    const res = await post("/api/admin/reject", { linkid, reason });
-    if (!res.ok) alert(res.error || "Reject failed"); else location.href = "/";
-  };
-  document.getElementById("delete").onclick = async ()=>{
-    if (!confirm("Delete this onboarding session? KV, R2 uploads and DB traces will be removed.")) return;
-    const res = await post("/api/admin/delete", { linkid });
-    if (!res.ok) alert(res.error || "Delete failed"); else location.href = "/";
-  };
-})();
-</script>
-</body></html>`;
+'</div>' +
+
+'<script>' +
+'const linkid = ' + JSON.stringify(linkid) + ';' +
+'document.getElementById("approve").onclick = async()=>{' +
+'  const r=await fetch("/api/admin/approve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
+'  if(!r.ok){ alert("Approve failed"); return; }' +
+'  location.href="/";' +
+'};' +
+'document.getElementById("reject").onclick = async()=>{' +
+'  const reason = prompt("Reason for rejection? (optional)","");' +
+'  const r=await fetch("/api/admin/reject",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid,reason})});' +
+'  if(!r.ok){ alert("Reject failed"); return; }' +
+'  location.href="/";' +
+'};' +
+'document.getElementById("del").onclick = async()=>{' +
+'  if(!confirm("Delete this onboarding session and all associated records?")) return;' +
+'  const r=await fetch("/api/admin/delete",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
+'  if(!r.ok){ alert("Delete failed"); return; }' +
+'  location.href="/";' +
+'};' +
+'</script>' +
+'</body></html>'
+  );
 }
