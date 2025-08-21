@@ -1,170 +1,128 @@
 // src/ui/admin.js
 
-export function renderAdminDashboardHTML() {
-  return /*html*/`
-    <div class="admin-dashboard">
-      <h1>Onboarding Admin Dashboard</h1>
-      <div class="tabs">
-        <button data-tab="inprogress" class="active">In Progress</button>
-        <button data-tab="pending">Pending Review</button>
-        <button data-tab="approved">Approved</button>
-      </div>
-      <div id="tabContent">Loading...</div>
-    </div>
-
-    <script>
-      const tabs = document.querySelectorAll(".tabs button");
-      const tabContent = document.getElementById("tabContent");
-
-      async function loadTab(status) {
-        tabContent.innerHTML = "Loading...";
-        try {
-          const res = await fetch("/api/admin/list?status=" + status);
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          if (!data.length) {
-            tabContent.innerHTML = "<p>No entries found.</p>";
-            return;
+export function renderAdminReviewHTML(sessions) {
+  return /*html*/ `
+    <div class="admin-list">
+      ${sessions
+        .map(
+          (s) => `
+        <div class="session-card" data-id="${s.id}">
+          <h3>${s.full_name || "Unnamed"} (${s.status})</h3>
+          <p><strong>Email:</strong> ${s.email || "-"}<br/>
+             <strong>Phone:</strong> ${s.phone || "-"}<br/>
+             <strong>Passport:</strong> ${s.passport || "-"}<br/>
+             <strong>Address:</strong> ${s.address || "-"}, ${s.city || ""} ${s.zip || ""}</p>
+          <p><strong>Created:</strong> ${new Date(s.created_at).toLocaleString()}</p>
+          
+          ${
+            s.splynx_id
+              ? `<p class="splynx-id"><strong>Splynx ID:</strong> ${s.splynx_id}</p>`
+              : ""
           }
-          tabContent.innerHTML = "<ul>" + data.map(d => 
-            \`<li><a href="#" data-id="\${d.id}">\${d.full_name || d.email || d.id}</a></li>\`
-          ).join("") + "</ul>";
 
-          tabContent.querySelectorAll("a").forEach(a => {
-            a.addEventListener("click", async (e) => {
-              e.preventDefault();
-              const id = a.dataset.id;
-              const res = await fetch("/api/admin/profile?id=" + id);
-              if (!res.ok) {
-                tabContent.innerHTML = "Failed to load profile";
-                return;
-              }
-              const profile = await res.json();
-              tabContent.innerHTML = renderAdminReviewHTML(profile);
-            });
-          });
-        } catch (err) {
-          tabContent.innerHTML = "❌ " + err.message;
-        }
-      }
-
-      tabs.forEach(btn => {
-        btn.addEventListener("click", () => {
-          tabs.forEach(b => b.classList.remove("active"));
-          btn.classList.add("active");
-          loadTab(btn.dataset.tab);
-        });
-      });
-
-      loadTab("inprogress");
-    </script>
-  `;
-}
-
-export function renderAdminReviewHTML(profile) {
-  return /*html*/`
-    <div class="admin-review">
-      <h2>Review Onboarding Profile</h2>
-      <form id="reviewForm">
-        <input type="hidden" name="id" value="${profile.id}" />
-
-        <label>Full Name</label>
-        <input name="full_name" value="${profile.full_name || ""}" />
-
-        <label>Email</label>
-        <input name="email" value="${profile.email || ""}" />
-
-        <label>Billing Email</label>
-        <input name="billing_email" value="${profile.billing_email || ""}" />
-
-        <label>Phone</label>
-        <input name="phone" value="${profile.phone || ""}" />
-
-        <label>ID / Passport</label>
-        <input name="id_number" value="${profile.id_number || profile.passport || ""}" />
-
-        <label>Street Address</label>
-        <input name="address" value="${profile.address || ""}" />
-
-        <label>City</label>
-        <input name="city" value="${profile.city || ""}" />
-
-        <label>ZIP</label>
-        <input name="zip" value="${profile.zip || ""}" />
-
-        <h3>Banking Details</h3>
-        <label>Payment Method</label>
-        <input name="payment_method" value="${profile.payment_method || ""}" />
-
-        <label>Bank Name</label>
-        <input name="bank_name" value="${profile.bank_name || ""}" />
-
-        <label>Bank Account</label>
-        <input name="bank_account" value="${profile.bank_account || ""}" />
-
-        <label>Bank Branch</label>
-        <input name="bank_branch" value="${profile.bank_branch || ""}" />
-
-        <h3>Agreement Metadata</h3>
-        <label>Signed IP</label>
-        <input name="signed_ip" value="${profile.signed_ip || ""}" />
-
-        <label>Signed Device</label>
-        <input name="signed_device" value="${profile.signed_device || ""}" />
-
-        <label>Signed Date</label>
-        <input name="signed_date" value="${profile.signed_date || ""}" />
-
-        <div class="actions">
-          <button type="submit">💾 Save Changes</button>
-          <button type="button" id="approveBtn">✅ Approve</button>
-          <button type="button" id="rejectBtn">❌ Reject</button>
+          <div class="actions">
+            ${
+              s.status === "inprogress"
+                ? `
+                  <button class="approve-btn" data-id="${s.id}">Approve</button>
+                  <button class="reject-btn" data-id="${s.id}">Reject</button>
+                `
+                : ""
+            }
+            <button class="edit-btn" data-id="${s.id}">Edit</button>
+            <button class="delete-btn" data-id="${s.id}">Delete</button>
+          </div>
         </div>
-      </form>
-      <div id="saveStatus"></div>
+      `
+        )
+        .join("")}
     </div>
 
     <script>
-      const form = document.getElementById("reviewForm");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const formData = new FormData(form);
-        const payload = {};
-        formData.forEach((v, k) => payload[k] = v);
-
-        document.getElementById("saveStatus").innerText = "Saving...";
-
-        const res = await fetch("/api/admin/update", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+      document.querySelectorAll(".approve-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.id;
+          if (!confirm("Approve this onboarding?")) return;
+          const res = await fetch("/api/admin/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, status: "approved" })
+          });
+          const data = await res.json();
+          alert("Approved. Splynx ID: " + (data.splynx_id || "unknown"));
+          location.reload();
         });
-
-        if (res.ok) {
-          document.getElementById("saveStatus").innerText = "✅ Saved successfully!";
-        } else {
-          const err = await res.text();
-          document.getElementById("saveStatus").innerText = "❌ Save failed: " + err;
-        }
       });
 
-      async function changeStatus(status) {
-        document.getElementById("saveStatus").innerText = "Updating status...";
-        const res = await fetch("/api/admin/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: "${profile.id}", status })
+      document.querySelectorAll(".reject-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.id;
+          if (!confirm("Reject this onboarding?")) return;
+          await fetch("/api/admin/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, status: "rejected" })
+          });
+          location.reload();
         });
-        if (res.ok) {
-          document.getElementById("saveStatus").innerText = "✅ Status updated to " + status;
-        } else {
-          const err = await res.text();
-          document.getElementById("saveStatus").innerText = "❌ Failed: " + err;
-        }
-      }
+      });
 
-      document.getElementById("approveBtn").addEventListener("click", () => changeStatus("approved"));
-      document.getElementById("rejectBtn").addEventListener("click", () => changeStatus("rejected"));
+      document.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.id;
+          if (!confirm("Delete this onboarding? This will remove all KV/R2 docs as well.")) return;
+          await fetch("/api/admin/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id })
+          });
+          location.reload();
+        });
+      });
+
+      document.querySelectorAll(".edit-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.id;
+          window.location.href = "/admin/edit?id=" + id;
+        });
+      });
     </script>
+
+    <style>
+      .admin-list {
+        display: grid;
+        gap: 1rem;
+        padding: 1rem;
+      }
+      .session-card {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+      }
+      .session-card h3 {
+        margin-top: 0;
+        color: #b30000;
+      }
+      .session-card .splynx-id {
+        color: #006600;
+        font-weight: bold;
+      }
+      .actions {
+        margin-top: 0.5rem;
+      }
+      .actions button {
+        margin-right: 0.5rem;
+        padding: 0.3rem 0.7rem;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+      }
+      .approve-btn { background: #28a745; color: #fff; }
+      .reject-btn { background: #dc3545; color: #fff; }
+      .delete-btn { background: #6c757d; color: #fff; }
+      .edit-btn { background: #007bff; color: #fff; }
+    </style>
   `;
 }
