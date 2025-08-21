@@ -1,119 +1,142 @@
 // src/splynx.js
+// Splynx API helpers for onboarding + admin
 
-const BASE = "https://splynx.vinet.co.za/api/2.0";
-
-/**
- * Make a GET request to Splynx API
- */
-export async function splynxGET(env, ep) {
-  const url = `${BASE}${ep}`;
+// --------------------
+// Core fetch wrapper
+// --------------------
+export async function splynxGET(env, endpoint) {
+  const url = `${env.SPLYNX_URL}/api/2.0${endpoint}`;
   const res = await fetch(url, {
     headers: {
-      Authorization: env.SPLYNX_AUTH,
-      "Content-Type": "application/json",
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
     },
   });
-  if (!res.ok) {
-    throw new Error(`Splynx fetch failed: ${res.status} ${await res.text()}`);
-  }
+  if (!res.ok) throw new Error(`Splynx GET failed: ${res.status}`);
   return res.json();
 }
 
-/**
- * Make a PUT request to Splynx API
- */
-export async function splynxPUT(env, ep, body) {
-  const url = `${BASE}${ep}`;
+export async function splynxPUT(env, endpoint, payload) {
+  const url = `${env.SPLYNX_URL}/api/2.0${endpoint}`;
   const res = await fetch(url, {
     method: "PUT",
     headers: {
-      Authorization: env.SPLYNX_AUTH,
-      "Content-Type": "application/json",
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
     },
-    body: JSON.stringify(body),
+    body: payload instanceof FormData ? payload : JSON.stringify(payload),
+    ...(payload instanceof FormData ? {} : { headers: { "Content-Type": "application/json", Authorization: `Basic ${env.SPLYNX_AUTH}` } }),
   });
-  if (!res.ok) {
-    throw new Error(`Splynx PUT failed: ${res.status} ${await res.text()}`);
-  }
+  if (!res.ok) throw new Error(`Splynx PUT failed: ${res.status}`);
   return res.json();
 }
 
-/**
- * Fetch a customer or lead by ID and normalise fields
- */
-export async function fetchProfileForDisplay(env, id) {
-  // try customer first
-  const endpoints = [
-    `/admin/customers/customer/${id}`,
-    `/admin/crm/leads/${id}`,
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const data = await splynxGET(env, ep);
-
-      if (data && data.id) {
-        let type = ep.includes("/leads/") ? "lead" : "customer";
-
-        // If it's a customer, fetch customer-info as well (passport, birthday, etc)
-        let passport = "";
-        if (type === "customer") {
-          try {
-            const extra = await splynxGET(env, `/admin/customers/customer-info/${id}`);
-            passport = extra.passport || "";
-          } catch (e) {
-            console.warn("Failed to fetch customer-info:", e.message);
-          }
-        }
-
-        // Build normalised object
-        data.normalised = {
-          id: data.id,
-          type,
-          name: data.name || "",
-          email: data.email || "",
-          phone: data.phone || "",
-          street: data.street_1 || "",
-          city: data.city || "",
-          zip: data.zip_code || "",
-          passport,
-          contacts: data.contacts || [],
-        };
-
-        return data;
-      }
-    } catch (err) {
-      // ignore and try next endpoint
-    }
-  }
-
-  return null;
+export async function splynxPOST(env, endpoint, payload) {
+  const url = `${env.SPLYNX_URL}/api/2.0${endpoint}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+    },
+    body: payload instanceof FormData ? payload : JSON.stringify(payload),
+    ...(payload instanceof FormData ? {} : { headers: { "Content-Type": "application/json", Authorization: `Basic ${env.SPLYNX_AUTH}` } }),
+  });
+  if (!res.ok) throw new Error(`Splynx POST failed: ${res.status}`);
+  return res.json();
 }
 
-/**
- * Fetch customer MSISDN (phone numbers)
- */
-export async function fetchCustomerMsisdn(env, id) {
-  const eps = [
+// --------------------
+// Profile fetch + normalisation
+// --------------------
+export async function fetchProfileForDisplay(env, id) {
+  // try customer endpoints first, then lead
+  const endpoints = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
     `/admin/crm/leads/${id}`,
-    `/admin/customers/${id}/contacts`,
-    `/admin/crm/leads/${id}/contacts`,
   ];
 
-  for (const ep of eps) {
+  let profile = null;
+  for (const ep of endpoints) {
     try {
-      const data = await splynxGET(env, ep);
-      if (data && (data.phone || (data.contacts && data.contacts.length))) {
-        return {
-          phone: data.phone || "",
-          contacts: data.contacts || [],
-        };
-      }
-    } catch (err) {
-      // try next
+      profile = await splynxGET(env, ep);
+      if (profile && profile.id) break;
+    } catch {
+      // ignore and continue
     }
   }
-  return null;
+
+  if (!profile) return null;
+
+  // also fetch passport from customer-info if available
+  try {
+    const info = await splynxGET(env, `/admin/customers/customer-info/${id}`);
+    if (info && info.passport) {
+      profile.passport = info.passport;
+    }
+  } catch {
+    // not all leads/customers have info record
+  }
+
+  // fetch contacts if exist
+  let contacts = [];
+  try {
+    const c = await splynxGET(env, `/admin/customers/${id}/contacts`);
+    if (Array.isArray(c)) contacts = contacts.concat(c);
+  } catch {}
+  try {
+    const c = await splynxGET(env, `/admin/crm/leads/${id}/contacts`);
+    if (Array.isArray(c)) contacts = contacts.concat(c);
+  } catch {}
+
+  return {
+    ...profile,
+    normalised: normaliseProfile(profile, contacts),
+  };
+}
+
+export function normaliseProfile(profile, contacts = []) {
+  return {
+    id: profile.id,
+    type: profile.login ? "customer" : "lead",
+    name: profile.name || "",
+    email: profile.email || "",
+    phone: profile.phone || "",
+    street: profile.street_1 || "",
+    city: profile.city || "",
+    zip: profile.zip_code || "",
+    passport: profile.passport || "",
+    contacts,
+  };
+}
+
+// --------------------
+// Extra helpers for admin.js
+// --------------------
+
+// Map admin edits into Splynx API payload
+export function mapEditsToSplynxPayload(edits) {
+  const payload = {};
+  if (!edits) return payload;
+
+  if (edits.name) payload.name = edits.name;
+  if (edits.email) payload.email = edits.email;
+  if (edits.phone) payload.phone = edits.phone;
+  if (edits.street) payload.street_1 = edits.street;
+  if (edits.city) payload.city = edits.city;
+  if (edits.zip) payload.zip_code = edits.zip;
+  if (edits.passport) payload.passport = edits.passport;
+
+  return payload;
+}
+
+// Upload a document into Splynx (lead or customer)
+export async function splynxCreateAndUpload(env, type, id, file, filename) {
+  const url =
+    type === "lead"
+      ? `/admin/crm/lead-documents/${id}`
+      : `/admin/customers/customer-documents/${id}`;
+
+  const formData = new FormData();
+  formData.append("file", new Blob([file]), filename);
+
+  return await splynxPOST(env, url, formData);
 }
