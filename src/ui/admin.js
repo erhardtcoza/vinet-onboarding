@@ -1,5 +1,4 @@
-// /src/ui/admin.js
-import { LOGO_URL } from "../constants.js";
+// src/ui/admin.js
 
 // ---- small helpers (no external deps) ----
 const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -10,25 +9,6 @@ function fmtKB(bytes) {
   const kb = bytes / 1024;
   if (kb < 1024) return kb.toFixed(1) + " KB";
   return (kb / 1024).toFixed(1) + " MB";
-}
-function at(obj, path, defv = "") {
-  try {
-    return path.split(".").reduce((v, k) => (v && v[k] !== undefined ? v[k] : undefined), obj) ?? defv;
-  } catch { return defv; }
-}
-function diffRow(label, beforeVal, afterVal) {
-  const b = esc(beforeVal ?? "");
-  const a = esc(afterVal ?? "");
-  const changed = (b !== a);
-  const mark = changed ? '<span class="badge changed">changed</span>' : '<span class="badge same">same</span>';
-  return (
-    '<tr>' +
-      '<th>' + esc(label) + '</th>' +
-      '<td class="mono">' + b + '</td>' +
-      '<td class="mono">' + a + '</td>' +
-      '<td>' + mark + '</td>' +
-    '</tr>'
-  );
 }
 
 // ---- MAIN DASHBOARD PAGE ----
@@ -60,9 +40,6 @@ export function renderAdminPage() {
 '.row a{color:#0b69c7;text-decoration:none} .row a:hover{text-decoration:underline}' +
 '.chip{background:#f1f3f7;border-radius:999px;padding:4px 10px;font-size:12px}' +
 '.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}' +
-'.badge{display:inline-block;border-radius:6px;padding:2px 6px;font-size:11px;margin-left:6px}' +
-'.badge.changed{background:#ffefe8;color:#9b2c00;border:1px solid #ffd7c2}' +
-'.badge.same{background:#eef8f0;color:#1f6f3f;border:1px solid #cfead7}' +
 '.mono{font-family:ui-monospace,Menlo,Consolas,monospace}' +
 '.empty{border:1px dashed #ddd;border-radius:12px;padding:14px;color:#777;text-align:center}' +
 '.tabs{display:flex;gap:8px;margin:12px 0 8px}' +
@@ -127,7 +104,6 @@ export function renderAdminPage() {
 'const modal=$("#modal"), mTitle=$("#modal_title"), mBody=$("#modal_body");' +
 '$("#modal_close").onclick=()=>{ modal.style.display="none"; };' +
 '$("#modal_copy").onclick=()=>{ const txt=mBody.textContent||""; navigator.clipboard.writeText(txt).catch(()=>{}); };' +
-
 'function showModal(title, body){ mTitle.textContent=title; mBody.textContent=body; modal.style.display="flex"; }' +
 
 'const rBase = (window.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org");' +
@@ -254,15 +230,14 @@ export function renderAdminPage() {
   );
 }
 
-// ---- REVIEW PAGE (shows diffs + links + back) ----
+// ---- REVIEW PAGE (now loads LIVE Splynx profile and shows side‑by‑side diff) ----
 export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
-  const edits = sess?.edits || {};
-  const orig  = sess?.original || {}; // optional: if you store the original snapshot
   const uploads = Array.isArray(sess?.uploads) ? sess.uploads : [];
   const msaPdf   = "/pdf/msa/"   + linkid;
   const msaHtml  = "/agreements/msa/" + linkid;
   const debitPdf = "/pdf/debit/" + linkid;
   const debitHtml= "/agreements/debit/" + linkid;
+  const splynxId = String(sess?.id || "");
 
   // Build attachment list (R2 public)
   const filesHTML = uploads.length
@@ -272,21 +247,6 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
         return '<li><a target="_blank" href="' + url + '">' + name + '</a> <span class="muted">' + esc(fmtKB(u.size)) + '</span></li>';
       }).join("") + '</ul>')
     : '<div class="empty">No attachments uploaded</div>';
-
-  // Diffs (if no original provided, we still show the “after” values nicely)
-  const diffTable =
-    '<table class="diff">' +
-      '<thead><tr><th>Field</th><th>Original</th><th>Submitted</th><th>Status</th></tr></thead>' +
-      '<tbody>' +
-        diffRow('Full name',  at(orig,'full_name',''), at(edits,'full_name','')) +
-        diffRow('Email',      at(orig,'email',''),     at(edits,'email','')) +
-        diffRow('Phone',      at(orig,'phone',''),     at(edits,'phone','')) +
-        diffRow('ID/Passport',at(orig,'passport',''),  at(edits,'passport','')) +
-        diffRow('Street',     at(orig,'street',''),    at(edits,'street','')) +
-        diffRow('City',       at(orig,'city',''),      at(edits,'city','')) +
-        diffRow('ZIP',        at(orig,'zip',''),       at(edits,'zip','')) +
-      '</tbody>' +
-    '</table>';
 
   return (
 '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>' +
@@ -308,6 +268,10 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
 '.btn.secondary{background:#fff;color:#e2001a;border:2px solid #e2001a}' +
 '.empty{border:1px dashed #ddd;border-radius:12px;padding:14px;color:#777;text-align:center}' +
 'a{color:#0b69c7;text-decoration:none} a:hover{text-decoration:underline}' +
+'.badge{display:inline-block;border-radius:6px;padding:2px 6px;font-size:11px;margin-left:6px}' +
+'.badge.changed{background:#ffefe8;color:#9b2c00;border:1px solid #ffd7c2}' +
+'.badge.same{background:#eef8f0;color:#1f6f3f;border:1px solid #cfead7}' +
+'.mono{font-family:ui-monospace,Menlo,Consolas,monospace}' +
 '</style></head><body>' +
 '<header><div class="wrap"><h1>Review & Approve</h1></div></header>' +
 '<div class="wrap">' +
@@ -315,13 +279,13 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
   '<div class="card">' +
     '<div class="row">' +
       '<button class="btn secondary" onclick="location.href=\'/\'">Back to Dashboard</button>' +
-      '<div class="muted">Link: ' + esc(linkid) + '</div>' +
+      '<div class="muted">Link: ' + esc(linkid) + ' &nbsp;·&nbsp; Splynx ID: ' + esc(splynxId) + '</div>' +
     '</div>' +
   '</div>' +
 
   '<div class="card">' +
     '<h2>Client‑edited details</h2>' +
-    diffTable +
+    '<div id="diff_box" class="muted">Loading live Splynx profile…</div>' +
   '</div>' +
 
   '<div class="card">' +
@@ -351,7 +315,52 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
 '</div>' +
 
 '<script>' +
+// safe esc in page
+'const ESC_MAP={ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\\' + "'" + '":"&#39;" };' +
+'function esc(s){ return String(s??"").replace(/[&<>\"\\' + "'" + ']/g,m=>ESC_MAP[m]); }' +
+'function diffRow(label, beforeVal, afterVal){' +
+'  const b = esc(beforeVal ?? "");' +
+'  const a = esc(afterVal ?? "");' +
+'  const changed = (b !== a);' +
+'  const mark = changed ? \'<span class="badge changed">changed</span>\' : \'<span class="badge same">same</span>\';' +
+'  return (' +
+'    "<tr>" +' +
+'      "<th>" + esc(label) + "</th>" +' +
+'      "<td class=\\"mono\\">" + b + "</td>" +' +
+'      "<td class=\\"mono\\">" + a + "</td>" +' +
+'      "<td>" + mark + "</td>" +' +
+'    "</tr>"' +
+'  );' +
+'}' +
 'const linkid = ' + JSON.stringify(linkid) + ';' +
+'const splynxId = ' + JSON.stringify(splynxId) + ';' +
+'const edits = ' + JSON.stringify(sess?.edits || {}) + ';' +
+
+'async function loadLive(){' +
+'  const box = document.getElementById("diff_box");' +
+'  if(!splynxId){ box.textContent = "No Splynx ID on record."; return; }' +
+'  try{' +
+'    const r = await fetch("/api/splynx/profile?id="+encodeURIComponent(splynxId));' +
+'    if(!r.ok) throw new Error("lookup failed");' +
+'    const p = await r.json();' +
+'    const rows = [' +
+'      diffRow("Full name",  p.full_name, edits.full_name),' +
+'      diffRow("Email",      p.email,     edits.email),' +
+'      diffRow("Phone",      p.phone,     edits.phone),' +
+'      diffRow("ID/Passport",p.passport,  edits.passport),' +
+'      diffRow("Street",     p.street,    edits.street),' +
+'      diffRow("City",       p.city,      edits.city),' +
+'      diffRow("ZIP",        p.zip,       edits.zip)' +
+'    ].join("");' +
+'    box.innerHTML = ' +
+'      "<table class=\\"diff\\">" +' +
+'        "<thead><tr><th>Field</th><th>Original (Splynx)</th><th>Submitted</th><th>Status</th></tr></thead>" +' +
+'        "<tbody>" + rows + "</tbody>" +' +
+'      "</table>";' +
+'  }catch(e){ box.textContent = "Failed to load Splynx profile."; }' +
+'}' +
+'loadLive();' +
+
 'document.getElementById("approve").onclick = async()=>{' +
 '  const r=await fetch("/api/admin/approve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({linkid})});' +
 '  if(!r.ok){ alert("Approve failed"); return; }' +
