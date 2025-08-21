@@ -7,19 +7,21 @@ import {
   PDF_FONTS,
   VINET_BLACK,
   VINET_RED,
+  // If you have this constant defined; otherwise the string fallback below is used.
+  DEFAULT_SERVICE_TERMS_URL,
 } from "../constants.js";
 import {
   drawDashedLine,
   embedLogo,
   fetchR2Bytes,
+  fetchTextCached,
   getWrappedLinesCached,
   localDateZAISO,
   localDateTimePrettyZA,
 } from "../helpers.js";
 
-// IMPORTANT: named export exactly as used by routes
 export async function renderMSAPdf(env, linkid, reqMeta = {}) {
-  const cacheKey = `pdf:msa:${linkid}`;          // <-- distinct MSA cache key
+  const cacheKey = `pdf:msa:${linkid}`;
   const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
   if (cached) {
     return new Response(cached, {
@@ -28,9 +30,19 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   }
 
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_sig_key) {        // <-- check agreement_sig_key (MSA)
+  if (!sess || !sess.agreement_sig_key) {
     return new Response("MSA not available for this link.", { status: 409 });
   }
+
+  // --- pull terms (service/MSA) ---
+  const termsUrl =
+    env.TERMS_MSA_URL ||
+    env.TERMS_SERVICE_URL ||
+    DEFAULT_SERVICE_TERMS_URL ||
+    ""; // if constant not present, empty -> fallback string below
+  const terms =
+    (termsUrl && (await fetchTextCached(termsUrl, env, "terms:msa"))) ||
+    "Service terms are currently unavailable. Please contact Vinet for a copy of the Master Service Agreement.";
 
   const edits = sess.edits || {};
   const idOnly = String(linkid).split("_")[0];
@@ -38,18 +50,20 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(PDF_FONTS.body);
   const bold = await pdf.embedFont(PDF_FONTS.bold);
+
   const W = 595, H = 842, M = 40;
 
-  // PAGE 1
-  const page = pdf.addPage([W, H]);
+  // ===== PAGE 1 =====
+  let page = pdf.addPage([W, H]);
   let y = H - 40;
 
-  // header
+  // Header (logo 25% bigger; phone + web below)
   const logoImg = await embedLogo(pdf, env);
   if (logoImg) {
-    const targetH = 52.5; // 25% larger than 42
-    const ratio = targetH / logoImg.scale(1).height;
-    const lw = logoImg.scale(1).width * ratio;
+    const targetH = 52.5; // 42 * 1.25
+    const s1 = logoImg.scale(1);
+    const ratio = targetH / s1.height;
+    const lw = s1.width * ratio;
     page.drawImage(logoImg, { x: W - M - lw, y: y - targetH, width: lw, height: targetH });
   }
   page.drawText("Vinet Master Service Agreement", { x: M, y: y - 8, size: 18, font: bold, color: VINET_RED });
@@ -59,16 +73,16 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     { x: M, y, size: 10, font, color: VINET_BLACK }
   );
 
-  // dashed rule a little lower
+  // dashed rule slightly lower
   y -= 18;
   drawDashedLine(page, M, y, W - M);
   y -= 24;
 
-  // headings
+  // Sub-heading + “Client details”
   page.drawText("Client Details", { x: M, y, size: 12, font: bold, color: VINET_RED });
   y -= 16;
 
-  // client block
+  // Client block
   let yL = y;
   const row = (k, v) => {
     page.drawText(k, { x: M, y: yL, size: 10, font: bold, color: VINET_BLACK });
@@ -87,21 +101,43 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const infoBottom = yL - 8;
   drawDashedLine(page, M, infoBottom, W - M);
 
-  // (You can draw MSA body text here, if needed, using getWrappedLinesCached like the debit form)
+  // --- Terms block (8pt), auto-flow to new pages ---
+  let yT = infoBottom - 14;
+  const sizeT = 8, lineH = 11.2, colWidth = W - M * 2;
+  const wrapped = await getWrappedLinesCached(env, terms, font, sizeT, colWidth, "msa");
 
-  // footer: name | signature | date (no overlap)
+  const footerReserve = 120; // keep room on last content page for footer/signature
+  let i = 0;
+
+  function newContentPage() {
+    page = pdf.addPage([W, H]);
+    yT = H - 40; // top
+    // light header continuation marker (optional)
+    page.drawText("Master Service Agreement (continued)", {
+      x: M, y: yT - 8, size: 10, font: bold, color: VINET_RED
+    });
+    yT -= 22;
+  }
+
+  // draw terms, add pages as needed, but stop before we need footer on last page
+  for (; i < wrapped.length; i++) {
+    if (yT < footerReserve) { newContentPage(); }
+    page.drawText(wrapped[i], { x: M, y: yT, size: sizeT, font, color: VINET_BLACK });
+    yT -= lineH;
+  }
+
+  // Footer (Name | Signature | Date) on the last terms page
   const footY = 90;
   page.drawText("Name:", { x: M, y: footY, size: 10, font: bold, color: VINET_BLACK });
   page.drawText(String(edits.full_name || ""), { x: M + 45, y: footY, size: 10, font, color: VINET_BLACK });
 
   page.drawText("Signature:", { x: M + (W / 2 - 50), y: footY, size: 10, font: bold, color: VINET_BLACK });
-  // NOTE: use agreement_sig_key for MSA signature
-  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
+  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key); // MSA signature
   if (sigBytes) {
     const sigImg = await pdf.embedPng(sigBytes);
+    const s2 = sigImg.scale(1);
     const sigW = 160;
-    const ratioSig = sigImg.scale(1);
-    const sigH = (ratioSig.height / ratioSig.width) * sigW;
+    const sigH = (s2.height / s2.width) * sigW;
     page.drawImage(sigImg, {
       x: M + (W / 2 - 50) + 70,
       y: footY - sigH + 8,
@@ -119,13 +155,14 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     color: VINET_BLACK,
   });
 
-  // PAGE 2 — Security Audit
+  // ===== FINAL PAGE — Security Audit =====
   const audit = pdf.addPage([W, H]);
   let ay = H - 40;
   if (logoImg) {
     const targetH = 36;
-    const ratio2 = targetH / logoImg.scale(1).height;
-    const lw2 = logoImg.scale(1).width * ratio2;
+    const s3 = logoImg.scale(1);
+    const ratio2 = targetH / s3.height;
+    const lw2 = s3.width * ratio2;
     audit.drawImage(logoImg, { x: W - M - lw2, y: ay - targetH, width: lw2, height: targetH });
   }
   audit.drawText("Security Audit", { x: M, y: ay - 8, size: 16, font: bold, color: VINET_RED });
@@ -141,8 +178,8 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     `© Vinet Internet Solutions (Pty) Ltd`,
   ];
   let ay2 = ay - 20;
-  for (const line of auditLines) {
-    audit.drawText(line, { x: M, y: ay2, size: 10, font, color: VINET_BLACK });
+  for (const ln of auditLines) {
+    audit.drawText(ln, { x: M, y: ay2, size: 10, font, color: VINET_BLACK });
     ay2 -= 14;
   }
 
