@@ -1,5 +1,4 @@
 // src/routes/api-splynx.js
-import { Router } from "itty-router";
 import {
   fetchProfileForDisplay,
   fetchCustomerMsisdn,
