@@ -105,7 +105,7 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const colW = (W - 2 * M - GUTTER) / 2;
 
   // Left column — Client details
-  page.drawText("Client Details", { x: M, y, size: 12, font: bold, color: VINET_RED });
+  page.drawText("Client Details", { x: M, y, size: 11, font: bold, color: VINET_RED });
   y -= 16;
 
   let yL = y;
@@ -123,7 +123,7 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   // Right column — Address, Payment method, IDs, Dates
   let xR = M + colW + GUTTER;
   let yR = y;
-  page.drawText("Details", { x: xR, y: yR, size: 12, font: bold, color: VINET_RED });
+  page.drawText("Details", { x: xR, y: yR, size: 11, font: bold, color: VINET_RED });
   yR -= 16;
 
   const rightRow = (k, v) => {
@@ -141,10 +141,10 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const infoBottom = Math.min(yL, yR) - 8;
   drawDashedLine(page, M, infoBottom, W - M);
 
-  // Terms — **two columns**, size 7
-  let yText = infoBottom - 14;
-  const sizeT = 7;
-  const lineH = 10; // comfortable for 7pt
+  // Terms — **two columns**, size 6
+  let yText = infoBottom - 12;
+  const sizeT = 6;
+  const lineH = 8.5; // comfortable for 7pt
   const col1X = M;
   const col2X = M + colW + GUTTER;
 
