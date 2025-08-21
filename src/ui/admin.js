@@ -1,87 +1,88 @@
 // src/ui/admin.js
-
 export function renderAdminReviewHTML(profile) {
-  return /*html*/ `
+  return /*html*/`
     <div class="admin-review">
-      <h2>Review Client Information</h2>
+      <h2>Review Onboarding Profile</h2>
+      <form id="reviewForm">
+        <input type="hidden" name="id" value="${profile.id}" />
 
-      <form id="review-form">
-        <!-- Identity -->
-        <label>Full Name
-          <input type="text" name="full_name" value="${profile.full_name || ""}" />
-        </label>
+        <label>Full Name</label>
+        <input name="full_name" value="${profile.full_name || ""}" />
 
-        <label>Email
-          <input type="email" name="email" value="${profile.email || ""}" />
-        </label>
+        <label>Email</label>
+        <input name="email" value="${profile.email || ""}" />
 
-        <label>Billing Email
-          <input type="email" name="billing_email" value="${profile.billing_email || ""}" />
-        </label>
+        <label>Billing Email</label>
+        <input name="billing_email" value="${profile.billing_email || ""}" />
 
-        <label>Phone
-          <input type="text" name="phone" value="${profile.phone || ""}" />
-        </label>
+        <label>Phone</label>
+        <input name="phone" value="${profile.phone || ""}" />
 
-        <!-- ID / Passport -->
-        <label>Passport / ID Number
-          <input type="text" name="passport" value="${profile.passport || ""}" />
-        </label>
-        <label>National ID (additional_attributes.social_id)
-          <input type="text" name="id_number" value="${profile.id_number || ""}" />
-        </label>
+        <label>ID / Passport</label>
+        <input name="id_number" value="${profile.id_number || profile.passport || ""}" />
 
-        <!-- Address -->
-        <label>Street Address
-          <input type="text" name="address" value="${profile.address || ""}" />
-        </label>
+        <label>Street Address</label>
+        <input name="address" value="${profile.address || ""}" />
 
-        <label>City
-          <input type="text" name="city" value="${profile.city || ""}" />
-        </label>
+        <label>City</label>
+        <input name="city" value="${profile.city || ""}" />
 
-        <label>ZIP Code
-          <input type="text" name="zip" value="${profile.zip || ""}" />
-        </label>
+        <label>ZIP</label>
+        <input name="zip" value="${profile.zip || ""}" />
 
-        <!-- Banking / Payment -->
-        <h3>Banking & Payment</h3>
+        <h3>Banking Details</h3>
+        <label>Payment Method</label>
+        <input name="payment_method" value="${profile.payment_method || ""}" />
 
-        <label>Payment Method
-          <input type="text" name="payment_method" value="${profile.payment_method || ""}" />
-        </label>
+        <label>Bank Name</label>
+        <input name="bank_name" value="${profile.bank_name || ""}" />
 
-        <label>Bank Name
-          <input type="text" name="bank_name" value="${profile.bank_name || ""}" />
-        </label>
+        <label>Bank Account</label>
+        <input name="bank_account" value="${profile.bank_account || ""}" />
 
-        <label>Bank Account
-          <input type="text" name="bank_account" value="${profile.bank_account || ""}" />
-        </label>
+        <label>Bank Branch</label>
+        <input name="bank_branch" value="${profile.bank_branch || ""}" />
 
-        <label>Bank Branch
-          <input type="text" name="bank_branch" value="${profile.bank_branch || ""}" />
-        </label>
-
-        <!-- Agreement Metadata -->
         <h3>Agreement Metadata</h3>
+        <label>Signed IP</label>
+        <input name="signed_ip" value="${profile.signed_ip || ""}" />
 
-        <label>Signed IP
-          <input type="text" name="signed_ip" value="${profile.signed_ip || ""}" />
-        </label>
+        <label>Signed Device</label>
+        <input name="signed_device" value="${profile.signed_device || ""}" />
 
-        <label>Signed Device
-          <input type="text" name="signed_device" value="${profile.signed_device || ""}" />
-        </label>
+        <label>Signed Date</label>
+        <input name="signed_date" value="${profile.signed_date || ""}" />
 
-        <label>Signed Date
-          <input type="text" name="signed_date" value="${profile.signed_date || ""}" />
-        </label>
-
-        <div class="actions">
-          <button type="submit">Save Changes</button>
-        </div>
+        <button type="submit">Save Changes</button>
       </form>
+      <div id="saveStatus"></div>
     </div>
+
+    <script>
+      const form = document.getElementById("reviewForm");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const formData = new FormData(form);
+        const payload = {};
+        formData.forEach((v, k) => payload[k] = v);
+
+        document.getElementById("saveStatus").innerText = "Saving...";
+
+        const res = await fetch("/api/admin/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (res.ok) {
+          const updated = await res.json();
+          document.getElementById("saveStatus").innerText = "✅ Saved successfully!";
+          console.log("Updated profile:", updated);
+        } else {
+          const err = await res.text();
+          document.getElementById("saveStatus").innerText = "❌ Save failed: " + err;
+        }
+      });
+    </script>
   `;
 }
