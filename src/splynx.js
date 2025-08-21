@@ -138,8 +138,8 @@ export async function fetchProfileForDisplay(env, id) {
     profile.passport = "";
   }
 
-  // --- Build normalised profile ---
-  const normalised = {
+  // --- Build normalised profile alongside raw ---
+  profile.normalised = {
     id: profile.id,
     type: profile.category === "lead" ? "lead" : "customer",
     name: profile.name || "",
@@ -152,10 +152,8 @@ export async function fetchProfileForDisplay(env, id) {
     contacts: profile.contacts || [],
   };
 
-  profile.normalised = normalised;
-
   console.log(`[Splynx] Returning merged+normalised profile for id=${id}`);
-  return profile; // raw + contacts + normalised
+  return profile; // raw + normalised
 }
 
 // ---------------------
