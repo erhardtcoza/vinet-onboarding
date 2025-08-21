@@ -1,8 +1,6 @@
 // src/splynx.js
-// Splynx helpers: GET/PUT, profile fetch, phone pickers, payload mapping,
-// and document create+upload for both LEADS and CUSTOMERS (lead-first).
 
-// ---------- Core HTTP ----------
+// ---------- Basic HTTP helpers ----------
 export async function splynxGET(env, endpoint) {
   const r = await fetch(`${env.SPLYNX_API}${endpoint}`, {
     headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
@@ -18,7 +16,7 @@ export async function splynxPUT(env, endpoint, body) {
       Authorization: `Basic ${env.SPLYNX_AUTH}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(body),
   });
   if (!r.ok) {
     const t = await r.text().catch(() => "");
@@ -27,212 +25,226 @@ export async function splynxPUT(env, endpoint, body) {
   return r.json().catch(() => ({}));
 }
 
-// ---------- Entity detection (lead-first) ----------
+// ---------- Entity-kind detection (prefer LEAD; else CUSTOMER) ----------
 export async function detectEntityKind(env, id) {
   try {
-    await splynxGET(env, `/admin/crm/leads/${id}`);
-    return "lead";
+    const lead = await splynxGET(env, `/admin/crm/leads/${id}`);
+    if (lead && lead.id) return { kind: "lead", data: lead };
   } catch {}
   try {
-    await splynxGET(env, `/admin/customers/customer/${id}`);
-    return "customer";
+    const cust = await splynxGET(env, `/admin/customers/customer/${id}`);
+    if (cust && cust.id) return { kind: "customer", data: cust };
   } catch {}
-  return null;
+  return { kind: "unknown", data: null };
 }
 
-// ---------- Utilities to extract phones/fields ----------
-function ok27(s) {
-  return /^27\d{8,13}$/.test(String(s || "").trim());
-}
-export function pickPhone(obj) {
-  if (!obj) return null;
-  if (typeof obj === "string") return ok27(obj) ? String(obj).trim() : null;
-  if (Array.isArray(obj)) {
-    for (const it of obj) { const m = pickPhone(it); if (m) return m; }
-    return null;
-  }
-  if (typeof obj === "object") {
-    const direct = [
-      obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp, obj.msisdn,
-      obj.primary_phone, obj.contact_number, obj.billing_phone,
-      obj.contact_number_2nd, obj.contact_number_3rd, obj.alt_phone, obj.alt_mobile,
-    ];
-    for (const v of direct) if (ok27(v)) return String(v).trim();
-    for (const [, v] of Object.entries(obj)) {
-      if (typeof v === "string" && ok27(v)) return String(v).trim();
-      if (v && typeof v === "object") { const m = pickPhone(v); if (m) return m; }
-    }
-  }
-  return null;
-}
-export function pickFrom(obj, keys) {
-  if (!obj) return null;
-  const wanted = keys.map(k => String(k).toLowerCase());
-  const stack = [obj];
-  while (stack.length) {
-    const cur = stack.pop();
-    if (Array.isArray(cur)) { for (const it of cur) stack.push(it); continue; }
-    if (cur && typeof cur === "object") {
-      for (const [k, v] of Object.entries(cur)) {
-        if (wanted.includes(String(k).toLowerCase())) {
-          const s = String(v ?? "").trim(); if (s) return s;
-        }
-        if (v && typeof v === "object") stack.push(v);
-      }
-    }
-  }
-  return null;
-}
-
-// ---------- Display profile (used by onboarding UI & admin review) ----------
+// ---------- Profile fetch for UI (simple fields only) ----------
 export async function fetchProfileForDisplay(env, id) {
-  let cust = null, lead = null, contacts = null, custInfo = null;
-  try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
-  if (!cust) { try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {} }
-  try { contacts = await splynxGET(env, `/admin/customers/${id}/contacts`); } catch {}
+  let lead = null, cust = null, custInfo = null;
+
+  try { lead = await splynxGET(env, `/admin/crm/leads/${id}`); } catch {}
+  if (!lead) { try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {} }
   try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
 
-  const src = cust || lead || {};
-  const phone = pickPhone({ ...src, contacts });
+  const src = lead || cust || {};
+  const phone = typeof src.phone === "string" ? src.phone.trim() : "";
 
-  const street =
-    src.street ?? src.address ?? src.address_1 ?? src.street_1 ??
-    (src.addresses && (src.addresses.street || src.addresses.address_1)) ?? "";
-  const city   = src.city ?? (src.addresses && src.addresses.city) ?? "";
-  const zip    = src.zip_code ?? src.zip ??
-                 (src.addresses && (src.addresses.zip || src.addresses.zip_code)) ?? "";
+  const street = src.street_1 ?? src.street ?? src.address ?? "";
+  const city   = src.city ?? "";
+  const zip    = src.zip_code ?? src.zip ?? "";
 
   const passport =
     (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
-    src.passport || src.id_number ||
-    (pickFrom(src, ["passport","id_number","idnumber","national_id","id_card","identity","identity_number","document_number"]) || "");
+    src.passport || src.id_number || "";
 
   return {
-    kind: cust ? "customer" : lead ? "lead" : "unknown",
+    kind: lead ? "lead" : cust ? "customer" : "unknown",
     id,
     full_name: src.full_name || src.name || "",
     email: src.email || src.billing_email || "",
-    phone: phone || "",
+    phone,
     city, street, zip, passport,
     partner: src.partner || src.location || "",
     payment_method: src.payment_method || "",
   };
 }
 
-// ---------- Map onboarding edits -> Splynx payload ----------
-// IMPORTANT: Splynx expects "name" (not "full_name"). Also update BOTH email & billing_email.
-export function mapEditsToSplynxPayload(edits = {}, pay_method, debit) {
-  const name = (edits.full_name || "").trim() || undefined;
-  const email = (edits.email || "").trim() || undefined;
-  const phone_mobile = (edits.phone || "").trim() || undefined;
-  const street_1 = (edits.street || "").trim() || undefined;
-  const city = (edits.city || "").trim() || undefined;
-  const zip_code = (edits.zip || "").trim() || undefined;
+// ---------- WhatsApp MSISDN fetch (single canonical field) ----------
+export async function fetchCustomerMsisdn(env, id) {
+  // Prefer lead, then customer – and only the canonical `phone` field.
+  try {
+    const d = await splynxGET(env, `/admin/crm/leads/${id}`);
+    const msisdn = d && typeof d.phone === "string" ? d.phone.trim() : null;
+    if (msisdn) return msisdn;
+  } catch {}
+  try {
+    const d = await splynxGET(env, `/admin/customers/customer/${id}`);
+    const msisdn = d && typeof d.phone === "string" ? d.phone.trim() : null;
+    if (msisdn) return msisdn;
+  } catch {}
+  return null;
+}
+
+// ---------- Map onboarding edits to Splynx payload ----------
+// Ensures:
+//  - name updates (Splynx expects `name`; we also set `full_name` for safety)
+//  - both `email` and `billing_email` are kept in sync
+export function mapEditsToSplynxPayload(edits = {}, extra = {}) {
+  const name = (edits.full_name || "").trim();
+  const email = (edits.email || "").trim();
+  const phone = (edits.phone || "").trim();
 
   const body = {
-    name,
-    email,
-    billing_email: email,   // keep in sync
-    phone_mobile,
-    street_1,
-    city,
-    zip_code,
-  };
+    // name fields
+    ...(name ? { name } : {}),
+    ...(name ? { full_name: name } : {}),
 
-  if (pay_method) body.payment_method = pay_method;
-  if (debit && typeof debit === "object") body.debit = debit;
+    // emails (both)
+    ...(email ? { email } : {}),
+    ...(email ? { billing_email: email } : {}),
+
+    // phone
+    ...(phone ? { phone } : {}),         // canonical
+    ...(phone ? { phone_mobile: phone } : {}), // some installs also use this
+
+    // address
+    ...(edits.street ? { street_1: edits.street } : {}),
+    ...(edits.city ?   { city: edits.city } : {}),
+    ...(edits.zip ?    { zip_code: edits.zip } : {}),
+    ...extra,
+  };
 
   return body;
 }
 
-// ---------- Document Create + Upload (lead-first) ----------
-// Accepts bytes (ArrayBuffer/Uint8Array) OR fileUrl to fetch.
-// Returns { kind, docId }.
-export async function splynxCreateAndUpload(env, {
-  id,                   // numeric id
-  preferKind,           // 'lead' | 'customer' | null (if provided, try first)
-  title,
-  description = "",
-  contentType = "application/octet-stream",
-  filename = "document.bin",
-  bytes,                // ArrayBuffer | Uint8Array (optional)
-  fileUrl,              // string (optional)
-}) {
-  if (!id) throw new Error("splynxCreateAndUpload: missing id");
-  if (!title) throw new Error("splynxCreateAndUpload: missing title");
+// ---------- MIME guessing (lightweight) ----------
+function guessMime(fileName = "", fallback = "application/octet-stream") {
+  const n = String(fileName).toLowerCase();
+  if (n.endsWith(".pdf")) return "application/pdf";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  return fallback;
+}
 
-  // Choose entity kind (lead-first or forced)
-  let kind = preferKind || null;
-  if (!kind) kind = await detectEntityKind(env, id) || "customer";
+// ---------- Create doc + upload file (customer or lead) ----------
+/**
+ * splynxCreateAndUpload(env, {
+ *   entityId: "319",
+ *   entityKind: "lead" | "customer" | "auto",  // "auto" -> try lead then customer
+ *   title: "ID Document",
+ *   description: "RICA ID upload",
+ *   fileBytes: <Uint8Array|ArrayBuffer>,
+ *   fileName: "id.pdf",
+ *   mime: "application/pdf"
+ * }) -> { ok: true, docId }
+ */
+export async function splynxCreateAndUpload(env, opts) {
+  const {
+    entityId,
+    title = "Uploaded file",
+    description = "",
+    fileBytes,
+    fileName = "file.bin",
+    mime,
+  } = opts || {};
+  let { entityKind = "auto" } = opts || {};
 
-  // Prepare file data
-  let fileBytes = bytes;
-  let ct = contentType;
-  let fname = filename;
+  if (!entityId) throw new Error("splynxCreateAndUpload: missing entityId");
+  if (!fileBytes) throw new Error("splynxCreateAndUpload: missing fileBytes");
 
-  if (!fileBytes && fileUrl) {
-    const rf = await fetch(fileUrl);
-    if (!rf.ok) throw new Error(`fetch fileUrl failed ${rf.status}`);
-    const ab = await rf.arrayBuffer();
-    fileBytes = ab;
-    const hdrCT = rf.headers.get("content-type");
-    if (hdrCT) ct = hdrCT;
-    // try to infer filename from URL
-    try {
-      const u = new URL(fileUrl);
-      const last = u.pathname.split("/").pop();
-      if (last) fname = last;
-    } catch {}
+  // Resolve kind when "auto"
+  if (entityKind === "auto") {
+    const det = await detectEntityKind(env, entityId);
+    entityKind = det.kind;
   }
-  if (!fileBytes) throw new Error("splynxCreateAndUpload: missing bytes/fileUrl");
+  if (entityKind !== "lead" && entityKind !== "customer") {
+    throw new Error("splynxCreateAndUpload: unknown entity kind");
+  }
 
-  const createEndpoint =
-    kind === "lead" ? "/admin/crm/leads-documents" : "/admin/customers/customer-documents";
-  const uploadEndpointPrefix =
-    kind === "lead" ? "/admin/crm/leads-documents" : "/admin/customers/customer-documents";
+  // Endpoints per kind
+  const cfg = (kind) => kind === "lead"
+    ? {
+        create:  `/admin/crm/leads-documents`,
+        uploadA: (docId) => `/admin/crm/leads-documents/${docId}/upload-file`,
+        uploadB: `/admin/crm/leads-documents-upload-file`,
+        idField: "customer_id", // API expects "customer_id" in payload even for leads-docs
+      }
+    : {
+        create:  `/admin/customers/customer-documents`,
+        uploadA: (docId) => `/admin/customers/customer-documents/${docId}/upload-file`,
+        uploadB: `/admin/customers/customer-documents-upload-file`,
+        idField: "customer_id",
+      };
 
-  // Create metadata
-  const meta = {
-    customer_id: Number(id),   // APIary shows "customer_id" even for leads; include both to be safe
-    lead_id:     Number(id),
+  const c = cfg(entityKind);
+
+  // 1) Create the document shell (type must be "uploaded")
+  const createBody = {
+    [c.idField]: Number(entityId),
     type: "uploaded",
     title,
     description,
     visible_by_customer: "0",
   };
-  const createRes = await fetch(`${env.SPLYNX_API}${createEndpoint}`, {
+  const created = await fetch(`${env.SPLYNX_API}${c.create}`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${env.SPLYNX_AUTH}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(meta),
+    body: JSON.stringify(createBody),
   });
-  if (!createRes.ok) {
-    const t = await createRes.text().catch(() => "");
-    throw new Error(`Create document failed (${kind}) ${createRes.status} ${t}`);
+  if (!created.ok) {
+    const t = await created.text().catch(() => "");
+    throw new Error(`Splynx create-doc ${c.create} ${created.status} ${t}`);
   }
-  const created = await createRes.json().catch(() => ({}));
-  const docId = created && (created.id || created.document_id || created.data?.id);
+  const createdJson = await created.json().catch(() => ({}));
+  const docId = createdJson && (createdJson.id || createdJson.document_id);
+  if (!docId) throw new Error("Splynx create-doc: no id returned");
 
-  if (!docId) throw new Error("Create document returned no id");
+  // 2) Upload the file
+  const mimeType = mime || guessMime(fileName);
+  const bytes = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
+  const blob = new Blob([bytes], { type: mimeType });
+  const form = new FormData();
+  // Some installs require both; harmless to include:
+  form.append("customer_id", String(entityId));
+  form.append("document_id", String(docId));
+  form.append("file", new File([blob], fileName, { type: mimeType }));
 
-  // Upload file to .../{docId}--upload
-  const fd = new FormData();
-  fd.append("file", new Blob([fileBytes], { type: ct }), fname);
-
-  const uploadRes = await fetch(
-    `${env.SPLYNX_API}${uploadEndpointPrefix}/${docId}--upload`,
-    {
+  // Try canonical path first: /{docId}/upload-file
+  let uploadedOK = false;
+  try {
+    const upA = await fetch(`${env.SPLYNX_API}${c.uploadA(docId)}`, {
       method: "POST",
       headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
-      body: fd,
+      body: form,
+    });
+    if (upA.ok) uploadedOK = true;
+  } catch {}
+
+  // Fallback: flat upload endpoint with IDs in form
+  if (!uploadedOK) {
+    const upB = await fetch(`${env.SPLYNX_API}${c.uploadB}`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+      body: form,
+    });
+    if (!upB.ok) {
+      const t = await upB.text().catch(() => "");
+      throw new Error(`Splynx upload ${c.uploadB} ${upB.status} ${t}`);
     }
-  );
-  if (!uploadRes.ok) {
-    const t = await uploadRes.text().catch(() => "");
-    throw new Error(`Upload document failed (${kind}) ${docId} ${uploadRes.status} ${t}`);
   }
 
-  return { kind, docId };
+  return { ok: true, docId, kind: entityKind };
 }
+
+export default {
+  splynxGET,
+  splynxPUT,
+  detectEntityKind,
+  fetchProfileForDisplay,
+  fetchCustomerMsisdn,
+  mapEditsToSplynxPayload,
+  splynxCreateAndUpload,
+};
