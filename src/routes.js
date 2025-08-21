@@ -4,14 +4,7 @@ import { renderMSAPdf } from "./pdf/msa.js";
 import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
 import { fetchTextCached, getClientMeta } from "./helpers.js";
-import {
-  fetchProfileForDisplay,
-  fetchCustomerMsisdn,
-  splynxPUT,
-  detectEntityKind,
-  mapEditsToSplynxPayload,
-  splynxCreateAndUpload,
-} from "./splynx.js";
+import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT, detectEntityKind, mapEditsToSplynxPayload, splynxCreateAndUpload } from "./splynx.js";
 import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
