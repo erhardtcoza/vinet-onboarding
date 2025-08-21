@@ -109,9 +109,6 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     rowL("ID / Passport:", edits.passport);
     rowL("Email:", edits.email);
     rowL("Phone:", edits.phone);
-    rowL("Street:", edits.street);
-    rowL("City:", edits.city);
-    rowL("ZIP:", edits.zip);
 
     // Right (agreement info)
     const xR = M + colW + 12;
@@ -122,8 +119,10 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     };
     rowR("Agreement ID:", linkid);
     rowR("Generated (ZA):", localDateTimePrettyZA());
-    rowR("Website:", env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT);
-    rowR("Telephone:", env.HEADER_PHONE || HEADER_PHONE_DEFAULT);
+    rowR("Street:", edits.street);
+    rowR("City:", edits.city);
+    rowR("ZIP:", edits.zip);
+
 
     const yAfter = Math.min(yL, yR) - 8;
     drawDashedLine(page, M, yAfter, W - M);
@@ -134,7 +133,7 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const drawTermsTwoColumns = async (page, yStart, text) => {
     const gap = 22;
     const colW = Math.floor((W - (M * 2) - gap) / 2);
-    const size = 9.5;
+    const size = 7.5;
     const wrapKey = "msa:twocol";
     let y = yStart;
 
@@ -182,28 +181,6 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
   const drawSignaturePage = async () => {
     const page = pdf.addPage([W, H]);
     const yStart = header(page, { continued: true }); // keep the continued header style here per your preference
-
-    // A small "Client Details" strip above the signature block (like DO has details above Name/Signature/Date)
-    let y = yStart;
-    page.drawText("Client Details", { x: M, y, size: 12, font: bold, color: VINET_RED });
-    y -= 16;
-
-    const row = (k, v) => {
-      page.drawText(k, { x: M, y, size: 10, font: bold, color: VINET_BLACK });
-      page.drawText(String(v || ""), { x: M + 120, y, size: 10, font, color: VINET_BLACK });
-      y -= 14;
-    };
-    row("Client code:", idOnly);
-    row("Full Name:", edits.full_name);
-    row("ID / Passport:", edits.passport);
-    row("Email:", edits.email);
-    row("Phone:", edits.phone);
-    row("Street:", edits.street);
-    row("City:", edits.city);
-    row("ZIP:", edits.zip);
-
-    const sepY = y - 6;
-    drawDashedLine(page, M, sepY, W - M);
 
     // Footer style like debit: Full Name | Signature | Date
     const footY = sepY - 28;
