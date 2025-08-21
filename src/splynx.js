@@ -9,7 +9,7 @@ export async function splynxGET(env, endpoint) {
   console.log(`[Splynx] GET ${url}`);
   const res = await fetch(url, {
     headers: {
-    Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
       "Content-Type": "application/json",
     },
   });
@@ -47,7 +47,6 @@ export async function splynxPUT(env, endpoint, body) {
 // Map edits into Splynx payload format
 // ---------------------
 export function mapEditsToSplynxPayload(edits) {
-  // TODO: adapt mapping rules as needed for Splynx schema
   console.log("[Splynx] Mapping edits", edits);
   return edits;
 }
@@ -78,32 +77,69 @@ export async function splynxCreateAndUpload(env, type, id, file) {
 }
 
 // ---------------------
-// Fetch profile for onboarding display
+// Fetch and merge profile for onboarding
 // ---------------------
 export async function fetchProfileForDisplay(env, id) {
-  const eps = [
-    `/admin/customers/customer/${id}`,
-    `/admin/customers/${id}`,
-    `/admin/crm/leads/${id}`,
-    `/admin/customers/${id}/contacts`,
-    `/admin/crm/leads/${id}/contacts`,
-  ];
+  const customerEndpoints = {
+    main: `/admin/customers/customer/${id}`,
+    contacts: `/admin/customers/${id}/contacts`,
+  };
 
-  for (const ep of eps) {
+  const leadEndpoints = {
+    main: `/admin/crm/leads/${id}`,
+    contacts: `/admin/crm/leads/${id}/contacts`,
+  };
+
+  let profile = null;
+
+  // --- Try customer ---
+  try {
+    console.log(`[Splynx] Trying customer ${id}`);
+    profile = await splynxGET(env, customerEndpoints.main);
+    console.log(`[Splynx] Customer profile success`);
     try {
-      console.log(`[Splynx] Trying ${ep}`);
-      const data = await splynxGET(env, ep);
-      if (data && Object.keys(data).length > 0) {
-        console.log(`[Splynx] Success: ${ep}`);
-        return data;
+      const contacts = await splynxGET(env, customerEndpoints.contacts);
+      if (contacts && contacts.length > 0) {
+        profile.contacts = contacts;
       }
     } catch (err) {
-      console.log(`[Splynx] Failed: ${ep} → ${err.message}`);
+      console.log(`[Splynx] No customer contacts: ${err.message}`);
+    }
+  } catch (err) {
+    console.log(`[Splynx] No customer profile: ${err.message}`);
+  }
+
+  // --- If not found, try lead ---
+  if (!profile) {
+    try {
+      console.log(`[Splynx] Trying lead ${id}`);
+      profile = await splynxGET(env, leadEndpoints.main);
+      console.log(`[Splynx] Lead profile success`);
+      try {
+        const contacts = await splynxGET(env, leadEndpoints.contacts);
+        if (contacts && contacts.length > 0) {
+          profile.contacts = contacts;
+        }
+      } catch (err) {
+        console.log(`[Splynx] No lead contacts: ${err.message}`);
+      }
+    } catch (err) {
+      console.log(`[Splynx] No lead profile: ${err.message}`);
     }
   }
 
-  console.log(`[Splynx] No profile found for id=${id}`);
-  return null;
+  if (!profile) {
+    console.log(`[Splynx] No profile found for id=${id}`);
+    return null;
+  }
+
+  // --- Ensure passport always present ---
+  if (!profile.passport) {
+    profile.passport = "";
+  }
+
+  console.log(`[Splynx] Returning profile for id=${id}`);
+  return profile; // keep raw JSON + attached contacts
 }
 
 // ---------------------
