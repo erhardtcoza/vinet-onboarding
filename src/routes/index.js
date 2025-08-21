@@ -1,39 +1,53 @@
 // src/routes/index.js
-import * as publicRoutes from "./public.js";
-import * as apiTerms from "./api-terms.js";
-import * as apiOtp from "./api-otp.js";
-import * as apiOnboard from "./api-onboard.js";
-import * as pdfRoutes from "./pdf.js";
-import * as agreements from "./agreements.js";
-import * as admin from "./admin.js";
-import * as onboard from "./onboard.js";
-import * as apiSplynx from "./api-splynx.js"; // <-- include Splynx routes
+
+import { handleSplynxApi } from "./splynx.js";
 
 export async function route(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
 
-  // Debug log
-  console.log(`[router] ${method} ${path}`);
+  // --- ADMIN ROUTES ---
+  if (url.pathname === "/api/admin/genlink" && request.method === "POST") {
+    try {
+      const data = await request.json();
+      const id = data.id;
+      if (!id) {
+        return new Response(JSON.stringify({ error: "missing id" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
 
-  const modules = [
-    publicRoutes,
-    apiTerms,
-    apiOtp,
-    apiOnboard,
-    pdfRoutes,
-    agreements,
-    admin,
-    onboard,
-    apiSplynx, // <-- Splynx API routes wired in
-  ];
+      // Generate token
+      const rand = Math.random().toString(36).substring(2, 8);
+      const token = `${id}_${rand}`;
 
-  for (const m of modules) {
-    if (m.match && m.handle && m.match(path, method)) {
-      return m.handle(request, env);
+      // Save to KV with 24h expiry
+      await env.SESSION_KV.put(
+        `onboard:${token}`,
+        JSON.stringify({ id, status: "pending" }),
+        { expirationTtl: 86400 }
+      );
+
+      // Build onboarding link
+      const link = `https://onboard.vinet.co.za/${token}`;
+
+      return new Response(JSON.stringify({ link }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ error: "genlink_failed", details: e.message }),
+        { status: 500, headers: { "content-type": "application/json" } }
+      );
     }
   }
 
-  return new Response("Not found", { status: 404 });
+  // --- SPLYNX ROUTES ---
+  if (url.pathname.startsWith("/api/splynx/")) {
+    return handleSplynxApi(request, env);
+  }
+
+  // --- FALLBACK ---
+  return new Response("Not Found", { status: 404 });
 }
