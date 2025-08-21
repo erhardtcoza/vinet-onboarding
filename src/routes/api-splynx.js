@@ -1,65 +1,43 @@
 // src/routes/api-splynx.js
-import { splynxGET, splynxPUT, splynxPOST } from "../splynx.js";
+// Minimal Splynx proxy helpers (no itty-router)
 
-/**
- * GET /api/splynx/customer/:id
- */
-export async function handleGetCustomer(request, env) {
+function match(path, method) {
+  return path.startsWith("/api/splynx/");
+}
+
+async function handle(request, env) {
   const url = new URL(request.url);
-  const id = url.pathname.split("/").pop();
+  const method = request.method;
 
-  if (!id) {
-    return Response.json({ error: "Missing customer ID" }, { status: 400 });
+  // Strip `/api/splynx` prefix
+  const splynxPath = url.pathname.replace(/^\/api\/splynx/, "");
+
+  if (!splynxPath) {
+    return new Response("Missing Splynx path", { status: 400 });
   }
 
-  try {
-    const data = await splynxGET(env, `/admin/customers/customer/${id}`);
-    return Response.json(data);
-  } catch (err) {
-    return Response.json({ error: err.message }, { status: 500 });
+  const splynxUrl = `${env.SPLYNX_API_URL}${splynxPath}${url.search}`;
+
+  const headers = {
+    Authorization: `Basic ${env.SPLYNX_AUTH}`,
+  };
+
+  // Forward JSON if present
+  let body = null;
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    body = await request.text();
+    headers["Content-Type"] = "application/json";
   }
+
+  // Proxy request to Splynx
+  const res = await fetch(splynxUrl, { method, headers, body });
+  const data = await res.text();
+
+  return new Response(data, {
+    status: res.status,
+    headers: { "Content-Type": res.headers.get("content-type") || "application/json" },
+  });
 }
 
-/**
- * GET /api/splynx/lead/:id
- */
-export async function handleGetLead(request, env) {
-  const url = new URL(request.url);
-  const id = url.pathname.split("/").pop();
-
-  if (!id) {
-    return Response.json({ error: "Missing lead ID" }, { status: 400 });
-  }
-
-  try {
-    const data = await splynxGET(env, `/admin/crm/leads/${id}`);
-    return Response.json(data);
-  } catch (err) {
-    return Response.json({ error: err.message }, { status: 500 });
-  }
-}
-
-/**
- * PUT /api/splynx/update
- * Body: { type: "customer"|"lead", id: string|number, updates: object }
- */
-export async function handleUpdateProfile(request, env) {
-  try {
-    const body = await request.json();
-    const { type, id, updates } = body;
-
-    if (!id || !type) {
-      return Response.json({ error: "Missing type or id" }, { status: 400 });
-    }
-
-    const endpoint =
-      type === "customer"
-        ? `/admin/customers/customer/${id}`
-        : `/admin/crm/leads/${id}`;
-
-    const result = await splynxPUT(env, endpoint, updates);
-    return Response.json(result);
-  } catch (err) {
-    return Response.json({ error: err.message }, { status: 500 });
-  }
-}
+export { match, handle };
