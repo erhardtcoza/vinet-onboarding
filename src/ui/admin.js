@@ -17,12 +17,14 @@ export function renderAdminReviewHTML(sections) {
       .adm-card{background:#fff;border:1px solid #e7e7e7;border-radius:10px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
       .adm-h{margin:0 0 6px;color:#b30000;font-weight:800}
       .adm-meta{font-size:13px;line-height:1.35;color:#344}
-      .adm-actions{margin-top:10px}
+      .adm-actions{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
       .adm-btn{padding:7px 12px;border:0;border-radius:7px;color:#fff;cursor:pointer}
       .adm-approve{background:#2e7d32}
-      .adm-reject{background:#c62828;margin-left:6px}
-      .adm-view{background:#0069c0;margin-left:6px}
+      .adm-reject{background:#c62828}
+      .adm-view{background:#0069c0}
       .adm-splynx{color:#0a662e;font-weight:700;margin:6px 0 0}
+      .adm-links{margin-top:6px;display:flex;flex-wrap:wrap;gap:8px}
+      .adm-link{display:inline-block;background:#f5f7ff;border:1px solid #dbe3ff;color:#174ea6;text-decoration:none;border-radius:8px;padding:6px 10px;font-size:12px}
       .adm-empty{font-style:italic;color:#666}
     </style>
   `);
@@ -50,6 +52,10 @@ export function renderAdminReviewHTML(sections) {
       const address = [s.address, s.city, s.zip].filter(Boolean).join(", ") || "—";
       const passport = s.passport || s.id_number || "—";
 
+      // Splynx UI links (we don’t know if ID is a customer or lead, so show both)
+      const splynxCustomerUrl = `https://splynx.vinet.co.za/admin/customers/customer/${encodeURIComponent(splynxId)}`;
+      const splynxLeadUrl = `https://splynx.vinet.co.za/admin/crm/leads/${encodeURIComponent(splynxId)}`;
+
       html.push(`
         <div class="adm-card">
           <div class="adm-h">${escapeHtml(name)}</div>
@@ -60,6 +66,11 @@ export function renderAdminReviewHTML(sections) {
             <div><b>Passport/ID:</b> ${escapeHtml(passport)}</div>
             <div><b>Address:</b> ${escapeHtml(address)}</div>
             ${splynxId ? `<div class="adm-splynx">Splynx ID: ${escapeHtml(String(splynxId))}</div>` : ""}
+            ${splynxId ? `
+              <div class="adm-links">
+                <a class="adm-link" href="${splynxCustomerUrl}" target="_blank" rel="noopener">Open in Splynx (Customer)</a>
+                <a class="adm-link" href="${splynxLeadUrl}" target="_blank" rel="noopener">Open in Splynx (Lead)</a>
+              </div>` : ""}
           </div>
           <div class="adm-actions">
             ${section !== "approved"
