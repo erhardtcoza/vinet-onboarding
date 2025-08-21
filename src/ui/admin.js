@@ -1,12 +1,9 @@
 // src/ui/admin.js
+import { LOGO_URL } from "../constants.js";
 
-/**
- * Server-side HTML renderer used by /api/admin/list
- * sections: { [sectionName]: Array<Session> }
- * Each session card renders Approve/Reject buttons wired to:
- *  - POST /api/admin/approve/:id
- *  - POST /api/admin/reject/:id
- */
+/* ===========================================================
+   SERVER-SIDE LIST RENDERER (used by /api/admin/list)
+   =========================================================== */
 export function renderAdminReviewHTML(sections) {
   const html = [];
 
@@ -35,10 +32,10 @@ export function renderAdminReviewHTML(sections) {
       section === "pending" ? "Pending Review" :
       section === "approved" ? "Approved" : section;
 
-    html.push(`<h2 class="adm-sec-title">${escapeHtml(pretty)}</h2>`);
+    html.push(`<h2 class="adm-sec-title">${esc(pretty)}</h2>`);
 
     if (!sessions || sessions.length === 0) {
-      html.push(`<p class="adm-empty">No sessions in ${escapeHtml(pretty)}.</p>`);
+      html.push(`<p class="adm-empty">No sessions in ${esc(pretty)}.</p>`);
       continue;
     }
 
@@ -46,40 +43,39 @@ export function renderAdminReviewHTML(sections) {
     for (const s of sessions) {
       const id = s.id ?? "";
       const name = s.full_name || s.name || "Unnamed";
-      const splynxId = s.splynx_id || "";
+      const splynxId = s.splynx_id || s.id || ""; // fallback if you store it as id
       const email = s.email || "—";
       const phone = s.phone || "—";
       const address = [s.address, s.city, s.zip].filter(Boolean).join(", ") || "—";
       const passport = s.passport || s.id_number || "—";
 
-      // Splynx UI links (we don’t know if ID is a customer or lead, so show both)
-      const splynxCustomerUrl = `https://splynx.vinet.co.za/admin/customers/customer/${encodeURIComponent(splynxId)}`;
-      const splynxLeadUrl = `https://splynx.vinet.co.za/admin/crm/leads/${encodeURIComponent(splynxId)}`;
+      const spC = `https://splynx.vinet.co.za/admin/customers/customer/${encodeURIComponent(splynxId)}`;
+      const spL = `https://splynx.vinet.co.za/admin/crm/leads/${encodeURIComponent(splynxId)}`;
 
       html.push(`
         <div class="adm-card">
-          <div class="adm-h">${escapeHtml(name)}</div>
+          <div class="adm-h">${esc(name)}</div>
           <div class="adm-meta">
-            <div><b>ID:</b> ${escapeHtml(String(id))}</div>
-            <div><b>Email:</b> ${escapeHtml(email)}</div>
-            <div><b>Phone:</b> ${escapeHtml(phone)}</div>
-            <div><b>Passport/ID:</b> ${escapeHtml(passport)}</div>
-            <div><b>Address:</b> ${escapeHtml(address)}</div>
-            ${splynxId ? `<div class="adm-splynx">Splynx ID: ${escapeHtml(String(splynxId))}</div>` : ""}
+            <div><b>ID:</b> ${esc(String(id))}</div>
+            <div><b>Email:</b> ${esc(email)}</div>
+            <div><b>Phone:</b> ${esc(phone)}</div>
+            <div><b>Passport/ID:</b> ${esc(passport)}</div>
+            <div><b>Address:</b> ${esc(address)}</div>
+            ${splynxId ? `<div class="adm-splynx">Splynx ID: ${esc(String(splynxId))}</div>` : ""}
             ${splynxId ? `
               <div class="adm-links">
-                <a class="adm-link" href="${splynxCustomerUrl}" target="_blank" rel="noopener">Open in Splynx (Customer)</a>
-                <a class="adm-link" href="${splynxLeadUrl}" target="_blank" rel="noopener">Open in Splynx (Lead)</a>
+                <a class="adm-link" href="${spC}" target="_blank" rel="noopener">Open in Splynx (Customer)</a>
+                <a class="adm-link" href="${spL}" target="_blank" rel="noopener">Open in Splynx (Lead)</a>
               </div>` : ""}
           </div>
           <div class="adm-actions">
             ${section !== "approved"
-              ? `<button class="adm-btn adm-approve" data-act="approve" data-id="${escapeAttr(id)}">Approve</button>`
+              ? `<button class="adm-btn adm-approve" data-act="approve" data-id="${escAttr(id)}">Approve</button>`
               : ""}
             ${section !== "approved"
-              ? `<button class="adm-btn adm-reject" data-act="reject" data-id="${escapeAttr(id)}">Reject</button>`
+              ? `<button class="adm-btn adm-reject" data-act="reject" data-id="${escAttr(id)}">Reject</button>`
               : ""}
-            <button class="adm-btn adm-view" data-act="edit" data-id="${escapeAttr(id)}">Edit</button>
+            <button class="adm-btn adm-view" data-act="edit" data-id="${escAttr(id)}">Edit</button>
           </div>
         </div>
       `);
@@ -87,82 +83,193 @@ export function renderAdminReviewHTML(sections) {
     html.push(`</div>`);
   }
 
-  // These handlers are added client-side by renderAdminPage(); here we only render markup.
   return html.join("\n");
 }
 
-/**
- * Full Admin page shell used by routes/public.js -> renderAdminPage()
- * Loads a section via /api/admin/list?section=... and injects the HTML,
- * then wires Approve/Reject/Edit buttons with robust error handling.
- */
+/* ===========================================================
+   FULL ADMIN PAGE (your original layout + generators on top)
+   =========================================================== */
 export function renderAdminPage() {
-  return /*html*/`
-<!DOCTYPE html>
+  return /*html*/`<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<title>Onboarding Admin</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="UTF-8">
+<title>Vinet Onboarding – Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:#f6f7fb;color:#222}
-  .wrap{max-width:1100px;margin:28px auto;padding:0 18px}
-  h1{margin:0 0 12px;color:#b30000}
-  .tabs{display:flex;gap:10px;margin:8px 0 16px;flex-wrap:wrap}
-  .tab{padding:8px 14px;border-radius:999px;border:2px solid #b30000;color:#b30000;background:#fff;cursor:pointer;font-weight:700}
-  .tab.active{background:#b30000;color:#fff}
-  #content{min-height:200px}
-  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#222;color:#fff;border-radius:8px;padding:9px 12px;font-size:13px;display:none;z-index:5}
-  .err{color:#b00020;margin:8px 0}
+  :root{
+    --vinet:#e2001a; --ink:#222; --muted:#666;
+    --card:#fff; --bg:#f7f8fb; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  a{color:var(--vinet);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:1100px;margin:30px auto;padding:0 18px}
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .brand img{height:60px}
+  .brand h1{font-size:32px;color:var(--vinet);margin:0;font-weight:900;line-height:1.1}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+  .card{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  .h{font-weight:800;color:var(--ink);margin:0 0 10px}
+  .sub{font-size:12px;color:var(--muted);margin:6px 0}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .input{width:100%;padding:11px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 16px;cursor:pointer;font-weight:700}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
+  .pill-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 2px}
+  .pill{padding:10px 16px;border-radius:999px;border:2px solid var(--vinet);color:var(--vinet);font-weight:800;background:#fff;cursor:pointer}
+  .pill.active{background:var(--vinet);color:#fff}
+  .list-col{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  .group-title{font-weight:900;margin:0 0 8px}
+  .empty{color:var(--muted);font-style:italic}
+  /* Modal & toast */
+  .modal-back{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:20}
+  .modal{background:#fff;border-radius:16px;box-shadow:0 10px 40px #0004;max-width:560px;width:min(92vw,560px);padding:16px 16px 14px}
+  .modal .title{font-weight:900;color:var(--vinet);margin:0 0 8px}
+  .modal .box{border:2px solid var(--vinet);border-radius:12px;padding:10px 12px;background:#fff;margin:6px 0;overflow:auto}
+  .modal .row{justify-content:flex-end}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222;color:#fff;border-radius:10px;padding:9px 12px;font-size:13px;display:none;z-index:25}
+  .err{color:#b00020;margin-top:10px}
 </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Onboarding Admin Dashboard</h1>
-
-    <div class="tabs">
-      <button class="tab active" data-sec="inprogress">In Progress</button>
-      <button class="tab" data-sec="pending">Pending Review</button>
-      <button class="tab" data-sec="approved">Approved</button>
+    <div class="brand">
+      <img src="${LOGO_URL}" alt="Vinet Logo">
+      <h1>Onboarding Admin<br/>Dashboard</h1>
     </div>
 
-    <div id="content">Loading…</div>
+    <!-- ======= TOP: GENERATORS (restored) ======= -->
+    <div class="grid-2">
+      <div class="card">
+        <p class="h">Generate Onboard link (Splynx ID)</p>
+        <input id="splynxId" class="input" placeholder="e.g. 319" />
+        <div style="display:flex;justify-content:center;margin-top:10px">
+          <button id="genLink" class="btn">Generate</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <p class="h">Generate Verification code (linkid)</p>
+        <input id="linkId" class="input" placeholder="e.g. 319_abcd1234" />
+        <div style="display:flex;justify-content:center;margin-top:10px">
+          <button id="genStaff" class="btn">Generate</button>
+        </div>
+        <p class="sub">Creates a one‑time staff code for the given link.</p>
+      </div>
+    </div>
+
+    <!-- ======= LISTS ======= -->
+    <div class="pill-tabs">
+      <button data-sec="inprogress" class="pill active">In Progress</button>
+      <button data-sec="pending" class="pill">Pending Review</button>
+      <button data-sec="approved" class="pill">Approved</button>
+    </div>
+
+    <div id="listWrap" class="list-col">
+      <p class="group-title" id="groupTitle">In Progress</p>
+      <div id="listBody">Loading…</div>
+    </div>
   </div>
 
-  <div id="toast" class="toast"></div>
+  <!-- Modal + toast -->
+  <div id="modalBack" class="modal-back" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <div class="modal">
+      <p id="mTitle" class="title">Onboarding link</p>
+      <div id="mBox" class="box"></div>
+      <div class="row">
+        <button id="mCopy" class="btn">Copy</button>
+        <button id="mOk" class="btn btn-ghost">OK</button>
+      </div>
+      <p class="sub" style="margin:8px 0 0">This window will close automatically.</p>
+    </div>
+  </div>
+  <div id="toast" class="toast">Copied!</div>
 
 <script>
 (function(){
-  const content = document.getElementById('content');
-  const tabs = Array.from(document.querySelectorAll('.tab'));
-  let current = 'inprogress';
+  const $ = (s)=>document.querySelector(s);
+  const listBody = $('#listBody');
+  const groupTitle = $('#groupTitle');
 
-  function toast(msg){
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.style.display = 'block';
-    setTimeout(()=>{ t.style.display='none'; }, 1600);
+  // ===== Modal helpers =====
+  let modalTimer=null;
+  function showModalLink(url){
+    $('#mBox').textContent = url;
+    $('#modalBack').style.display='flex';
+    clearTimeout(modalTimer);
+    modalTimer = setTimeout(()=> closeModal(true), 5000);
   }
+  function closeModal(reload){ $('#modalBack').style.display='none'; if(reload) location.reload(); }
+  $('#mOk').onclick = ()=> closeModal(true);
+  $('#mCopy').onclick = async ()=>{ try{ await navigator.clipboard.writeText($('#mBox').textContent); toast('Link copied'); }catch{} };
+
+  function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=> t.style.display='none', 1500); }
+
+  // ===== Generators (restored endpoints) =====
+  $('#genLink').onclick = async ()=>{
+    const id = ($('#splynxId').value||'').trim();
+    if (!id) return;
+    $('#genLink').disabled = true;
+    try{
+      const r = await fetch('/api/admin/genlink', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ id })
+      });
+      const d = await r.json().catch(()=> ({}));
+      if (d && d.url) showModalLink(d.url);
+      else toast('Failed to generate link');
+    }catch{ toast('Failed to generate link'); }
+    $('#genLink').disabled = false;
+  };
+
+  $('#genStaff').onclick = async ()=>{
+    const linkid = ($('#linkId').value||'').trim();
+    if (!linkid) return;
+    $('#genStaff').disabled = true;
+    try{
+      const r = await fetch('/api/staff/gen', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ linkid })
+      });
+      const d = await r.json().catch(()=> ({}));
+      if (d && (d.code || d.ok)) showModalLink(\`Staff code for \${linkid}: \${d.code || '(check logs)'}\`);
+      else toast('Failed to generate code');
+    }catch{ toast('Failed to generate code'); }
+    $('#genStaff').disabled = false;
+  };
+
+  // ===== Lists (server-rendered HTML, same endpoints you have now) =====
+  const tabs = Array.from(document.querySelectorAll('.pill'));
+  tabs.forEach(btn=>{
+    btn.onclick = ()=>{
+      tabs.forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      const sec = btn.getAttribute('data-sec');
+      groupTitle.textContent =
+        sec==='inprogress' ? 'In Progress' :
+        sec==='pending' ? 'Pending Review' : 'Approved';
+      loadSection(sec);
+    };
+  });
 
   async function loadSection(sec){
-    current = sec;
-    content.innerHTML = 'Loading…';
+    listBody.textContent = 'Loading…';
     try{
-      const r = await fetch('/api/admin/list?section=' + encodeURIComponent(sec), { method:'GET' });
-      if (!r.ok) {
-        const tx = await r.text().catch(()=> '');
-        throw new Error('Failed to load list (' + r.status + '): ' + tx);
-      }
+      const r = await fetch('/api/admin/list?section=' + encodeURIComponent(sec));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       const html = await r.text();
-      content.innerHTML = html;
-      wireButtons();
+      listBody.innerHTML = html;
+      wireRowButtons();
     }catch(e){
-      content.innerHTML = '<div class="err">Error: ' + (e.message || e) + '</div>';
+      listBody.innerHTML = '<div class="err">Failed to load list: ' + (e.message||e) + '</div>';
     }
   }
 
-  function wireButtons(){
-    content.querySelectorAll('[data-act]').forEach(btn=>{
+  function wireRowButtons(){
+    listBody.querySelectorAll('[data-act]').forEach(btn=>{
       const act = btn.getAttribute('data-act');
       const id = btn.getAttribute('data-id');
       if (!act || !id) return;
@@ -179,38 +286,21 @@ export function renderAdminPage() {
   async function doStatus(url, label){
     try{
       const r = await fetch(url, { method:'POST' });
-      if (!r.ok) {
-        const tx = await r.text().catch(()=> '');
-        throw new Error('Request failed (' + r.status + '): ' + tx);
-      }
-      const d = await r.json().catch(()=> ({}));
-      toast('Marked ' + (d.id || '') + ' as ' + label);
-      await loadSection(current);
-    }catch(e){
-      toast('Error: ' + (e.message || e));
-    }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      toast('Marked as ' + label);
+      // reload current section
+      const active = document.querySelector('.pill.active')?.getAttribute('data-sec') || 'inprogress';
+      await loadSection(active);
+    }catch(e){ toast('Error: ' + (e.message||e)); }
   }
-
-  tabs.forEach(b=>{
-    b.onclick = ()=>{
-      tabs.forEach(x=>x.classList.remove('active'));
-      b.classList.add('active');
-      loadSection(b.dataset.sec);
-    };
-  });
 
   loadSection('inprogress');
 })();
 </script>
 </body>
-</html>
-  `;
+</html>`;
 }
 
-/* ---------- small escape helpers for SSR ---------- */
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"]/g, m => m === "&" ? "&amp;" : m === "<" ? "&lt;" : m === ">" ? "&gt;" : "&quot;");
-}
-function escapeAttr(s) {
-  return escapeHtml(s).replace(/"/g, "&quot;");
-}
+/* ---------- escape helpers ---------- */
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, m => m==="&"?"&amp;":m==="<"?"&lt;":m===">"?"&gt;":"&quot;"); }
+function escAttr(s){ return esc(s).replace(/"/g,"&quot;"); }
