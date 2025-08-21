@@ -7,12 +7,15 @@ import * as pdfRoutes from "./pdf.js";
 import * as agreements from "./agreements.js";
 import * as admin from "./admin.js";
 import * as onboard from "./onboard.js";
-import * as apiSplynx from "./api-splynx.js"; // unified match/handle style
+import * as apiSplynx from "./api-splynx.js"; // <-- include Splynx routes
 
 export async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
+
+  // --- Debug log every request ---
+  console.log(`[router] ${method} ${path}`);
 
   const modules = [
     publicRoutes,
@@ -23,7 +26,7 @@ export async function route(request, env) {
     agreements,
     admin,
     onboard,
-    apiSplynx, // now handled like other modules
+    apiSplynx,   // <-- Splynx API routes
   ];
 
   for (const m of modules) {
