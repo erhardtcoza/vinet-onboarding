@@ -129,125 +129,139 @@ export async function handle(request, env) {
     }
   }
 
-  // approve (lead-first, then customer)
-  if (path === "/api/admin/approve") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+// ----- Admin: approve (push to Splynx + mark approved) -----
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+  const { linkid } = await request.json().catch(() => ({}));
+  if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
 
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return json({ ok: false, error: "Not found" }, 404);
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok: false, error: "Not found" }, 404);
 
-    const id = String(sess.id || "").trim();
-    if (!id) return json({ ok: false, error: "Missing customer/lead id in session" }, 400);
+  const id = String(sess.id || "").trim();
+  if (!id) return json({ ok: false, error: "Missing customer/lead id in session" }, 400);
 
-    // Decide entity: try lead first, then customer
-    let entity = "lead";
-    try {
-      await splynxGET(env, `/admin/crm/leads/${id}`);
-      entity = "lead";
-    } catch {
-      try {
-        await splynxGET(env, `/admin/customers/customer/${id}`);
-        entity = "customer";
-      } catch {
-        // neither reachable
-        return json({ ok: false, error: "Neither lead nor customer record found in Splynx" }, 404);
-      }
-    }
-
-    // Build payload (uses "name" primarily; updates email & billing_email)
-    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
-    const updateBody = mapEditsToSplynxPayload(sess.edits || {}, sess.pay_method, sess.debit, publicFiles);
-
-    // Push edits both to the chosen entity and to the alternative endpoint (best effort)
-    if (entity === "lead") {
-      try { await splynxPUT(env, `/admin/crm/leads/${id}`, updateBody); } catch {}
-      try { await splynxPUT(env, `/admin/customers/customer/${id}`, updateBody); } catch {}
-      try { await splynxPUT(env, `/admin/customers/${id}`, updateBody); } catch {}
-    } else {
-      try { await splynxPUT(env, `/admin/customers/customer/${id}`, updateBody); } catch {}
-      try { await splynxPUT(env, `/admin/customers/${id}`, updateBody); } catch {}
-      try { await splynxPUT(env, `/admin/crm/leads/${id}`, updateBody); } catch {}
-    }
-
-    // Helper to read R2 object
-    async function readR2Bytes(key) {
-      const obj = await env.R2_UPLOADS.get(key);
-      if (!obj) return null;
-      const bytes = await obj.arrayBuffer();
-      const mime =
-        (obj.httpMetadata && obj.httpMetadata.contentType) ||
-        (obj.customMetadata && obj.customMetadata.contentType) ||
-        "application/octet-stream";
-      return { bytes, mime };
-    }
-
-    // RICA uploads (ID + Proof of Address only)
-    for (const u of uploads) {
-      const isID = /id\s*document/i.test(u.label || "");
-      const isPOA = /proof\s*of\s*address/i.test(u.label || "");
-      if (!isID && !isPOA) continue;
-
-      const file = await readR2Bytes(u.key);
-      if (!file) continue;
-
-      const title = isID ? "ID Document" : "Proof of Address";
-      const description = isID ? "RICA ID upload" : "RICA Proof of Address (≤ 3 months)";
-      try {
-        await splynxCreateAndUpload(env, entity, id, {
-          title,
-          description,
-          filename: u.name || (isID ? "id-document" : "proof-of-address"),
-          mime: file.mime,
-          bytes: file.bytes,
-        });
-      } catch {}
-    }
-
-    // Agreement PDFs
-    // MSA
-    try {
-      const msaRes = await fetch(`${url.origin}/pdf/msa/${linkid}`, { cf: { cacheTtl: 0 } });
-      if (msaRes.ok) {
-        const bytes = await msaRes.arrayBuffer();
-        await splynxCreateAndUpload(env, entity, id, {
-          title: "Vinet Master Service Agreement",
-          description: "Signed MSA PDF",
-          filename: `MSA_${id}.pdf`,
-          mime: "application/pdf",
-          bytes,
-        });
-      }
-    } catch {}
-
-    // Debit Order if applicable
-    if (sess.pay_method === "debit" && sess.debit_sig_key) {
-      try {
-        const doRes = await fetch(`${url.origin}/pdf/debit/${linkid}`, { cf: { cacheTtl: 0 } });
-        if (doRes.ok) {
-          const bytes = await doRes.arrayBuffer();
-          await splynxCreateAndUpload(env, entity, id, {
-            title: "Debit Order Instruction",
-            description: "Signed Debit Order PDF",
-            filename: `DO_${id}.pdf`,
-            mime: "application/pdf",
-            bytes,
-          });
-        }
-      } catch {}
-    }
-
-    // Mark approved
-    await env.ONBOARD_KV.put(
-      `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now() }),
-      { expirationTtl: 86400 }
-    );
-    return json({ ok: true });
+  // Decide entity: try CUSTOMER, else LEAD
+  let entity = "customer";
+  try {
+    await splynxGET(env, `/admin/customers/customer/${id}`);
+    entity = "customer";
+  } catch {
+    entity = "lead";
   }
 
+  // Build updates
+  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+  const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
+  const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
+
+  const updateBody = mapEditsToSplynxPayload(
+    sess.edits || {},
+    sess.pay_method,
+    sess.debit,
+    publicFiles
+  );
+
+  // Push updates to both sides (best-effort)
+  try { await splynxPUT(env, `/admin/customers/customer/${id}`, updateBody); } catch {}
+  try { await splynxPUT(env, `/admin/customers/${id}`, updateBody); } catch {}
+  try { await splynxPUT(env, `/admin/crm/leads/${id}`, updateBody); } catch {}
+  try { await splynxPUT(env, `/admin/customers/${id}/contacts`, updateBody); } catch {}
+  try { await splynxPUT(env, `/admin/crm/leads/${id}/contacts`, updateBody); } catch {}
+
+  // Helpers
+  async function readR2Bytes(key) {
+    const obj = await env.R2_UPLOADS.get(key);
+    if (!obj) return null;
+    const bytes = await obj.arrayBuffer();
+    const mime =
+      (obj.httpMetadata && obj.httpMetadata.contentType) ||
+      (obj.customMetadata && obj.customMetadata.contentType) ||
+      "application/octet-stream";
+    return { bytes, mime };
+  }
+
+  async function createAndUpload(title, description, filename, mime, bytes) {
+    try {
+      await splynxCreateAndUpload(env, entity, id, {
+        title,
+        description,
+        filename,
+        mime,
+        bytes
+      });
+    } catch (e) {
+      // Optional: console.log for debugging in Wrangler logs
+      // console.log(`${title} upload failed:`, String(e && e.message || e));
+    }
+  }
+
+  // RICA uploads (ID + Proof of Address only)
+  for (const u of uploads) {
+    const isID  = /id\s*document/i.test(u.label || "");
+    const isPOA = /proof\s*of\s*address/i.test(u.label || "");
+    if (!isID && !isPOA) continue;
+
+    const file = await readR2Bytes(u.key);
+    if (!file) continue;
+
+    const title = isID ? "ID Document" : "Proof of Address";
+    const description = isID ? "RICA ID upload" : "RICA Proof of Address (≤ 3 months)";
+    const filename = u.name || (isID ? "id-document" : "proof-of-address");
+
+    await createAndUpload(title, description, filename, file.mime || "application/octet-stream", file.bytes);
+  }
+
+  // Robust PDF fetch (cache-bypass, tolerant content-type)
+  async function fetchPdfBytes(kind) {
+    const ts = Date.now();
+    const endpoint = kind === "msa"
+      ? `${url.origin}/pdf/msa/${linkid}?_=${ts}`
+      : `${url.origin}/pdf/debit/${linkid}?_=${ts}`;
+
+    const res = await fetch(endpoint, { cf: { cacheTtl: 0 } });
+    if (!res.ok) throw new Error(`${kind.toUpperCase()} fetch ${res.status}`);
+    return await res.arrayBuffer();
+  }
+
+  // Upload MSA PDF (always, once agreement is signed)
+  try {
+    const msaBytes = await fetchPdfBytes("msa");
+    await createAndUpload(
+      "Vinet Master Service Agreement",
+      "Signed MSA PDF",
+      `MSA_${id}.pdf`,
+      "application/pdf",
+      msaBytes
+    );
+  } catch (e) {
+    // console.log("MSA upload failed:", String(e && e.message || e));
+  }
+
+  // Upload Debit Order PDF if the debit form was actually signed
+  if (sess.debit_signed) {
+    try {
+      const doBytes = await fetchPdfBytes("debit");
+      await createAndUpload(
+        "Debit Order Instruction",
+        "Signed Debit Order PDF",
+        `DO_${id}.pdf`,
+        "application/pdf",
+        doBytes
+      );
+    } catch (e) {
+      // console.log("Debit upload failed:", String(e && e.message || e));
+    }
+  }
+
+  // Mark approved
+  await env.ONBOARD_KV.put(
+    `onboard/${linkid}`,
+    JSON.stringify({ ...sess, status: "approved", approved_at: Date.now() }),
+    { expirationTtl: 86400 }
+  );
+
+  return json({ ok: true });
+}
   return new Response("Not found", { status: 404 });
 }
