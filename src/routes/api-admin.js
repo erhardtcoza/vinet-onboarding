@@ -1,5 +1,4 @@
 // src/routes/api-admin.js
-import { getClientMeta, deleteOnboardAll } from "../helpers.js";
 import { splynxPUT, mapEditsToSplynxPayload } from "../splynx.js";
 import { renderAdminReviewHTML } from "../ui/admin.js";
 
@@ -27,7 +26,7 @@ export async function handleAdminApi(request, env) {
       await approveSession(env, id);
       return json({ ok: true, action: "approved", id });
     } catch (err) {
-      return json({ ok: false, error: err.message || String(err) }, 500);
+      return json({ ok: false, error: err?.message || String(err) }, 500);
     }
   }
 
@@ -38,14 +37,18 @@ export async function handleAdminApi(request, env) {
       await rejectSession(env, id);
       return json({ ok: true, action: "rejected", id });
     } catch (err) {
-      return json({ ok: false, error: err.message || String(err) }, 500);
+      return json({ ok: false, error: err?.message || String(err) }, 500);
     }
   }
 
-  // --- Delete all onboarding (reset) ---
+  // --- Delete ALL onboarding sessions across namespaces ---
   if (path === "/delete" && method === "POST") {
-    await deleteOnboardAll(env);
-    return json({ ok: true });
+    try {
+      await deleteAllSessions(env);
+      return json({ ok: true });
+    } catch (err) {
+      return json({ ok: false, error: err?.message || String(err) }, 500);
+    }
   }
 
   return new Response(JSON.stringify({ error: "Unknown admin endpoint" }), {
@@ -54,9 +57,8 @@ export async function handleAdminApi(request, env) {
   });
 }
 
-/**
- * Helpers
- */
+/* ===================== Helpers ===================== */
+
 async function loadSessions(env, section) {
   const kv = env.ONBOARD_KV;
   const keys = await kv.list({ prefix: section + ":" });
@@ -76,21 +78,19 @@ async function loadSessions(env, section) {
 
 async function approveSession(env, id) {
   const kv = env.ONBOARD_KV;
+  // We consider "pending:" as the source of truth to approve
   const raw = await kv.get("pending:" + id, { type: "json" });
   if (!raw) throw new Error(`No pending session found for ${id}`);
 
-  // Use central mapping function
+  // Use central mapping to align with Splynx API shape
   const payload = mapEditsToSplynxPayload(raw);
 
-  if (Object.keys(payload).length > 0) {
-    try {
-      await splynxPUT(env, `/admin/customers/${raw.id}`, payload);
-    } catch (err) {
-      console.error("Approve Splynx update failed", err);
-      throw err;
-    }
+  // Best-effort sync to Splynx (update existing customer by ID)
+  if (Object.keys(payload).length > 0 && raw.id) {
+    await splynxPUT(env, `/admin/customers/${raw.id}`, payload);
   }
 
+  // Move from pending: to approved:
   await kv.put("approved:" + id, JSON.stringify(raw));
   await kv.delete("pending:" + id);
 }
@@ -99,8 +99,24 @@ async function rejectSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
   if (!raw) throw new Error(`No pending session found for ${id}`);
+
   await kv.delete("pending:" + id);
   await kv.put("rejected:" + id, JSON.stringify(raw));
+}
+
+async function deleteAllSessions(env) {
+  const kv = env.ONBOARD_KV;
+  const prefixes = ["inprogress:", "pending:", "approved:", "rejected:"];
+
+  for (const prefix of prefixes) {
+    const list = await kv.list({ prefix });
+    // Bulk delete in small batches
+    const names = list.keys.map(k => k.name);
+    // Cloudflare KV doesn't have a bulk delete API in Workers — delete one-by-one
+    for (const name of names) {
+      await kv.delete(name);
+    }
+  }
 }
 
 function json(obj, status = 200) {
