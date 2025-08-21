@@ -250,36 +250,51 @@ if (path === "/api/admin/approve" && method === "POST") {
 
   // ----- OTP: send -----
   if (path === "/api/otp/send" && method === "POST") {
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
-    if (!env.PHONE_NUMBER_ID || !env.WHATSAPP_TOKEN) {
-      return json({ ok: false, error: "WhatsApp credentials not configured" }, 500);
-    }
-    const splynxId = (linkid || "").split("_")[0];
-    let msisdn = null;
+    const { linkid } = await request.json().catch(()=> ({}));
+    if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
+
+    const splynxId = (linkid||"").split("_")[0];
+
+    // First: try Splynx
+    let msisdn = "";
     try {
       msisdn = await fetchCustomerMsisdn(env, splynxId);
     } catch {
-      return json({ ok: false, error: "Splynx lookup failed" }, 502);
+      // ignore, we’ll try fallback below
     }
-    if (!msisdn) return json({ ok: false, error: "No WhatsApp number on file" }, 404);
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    // Fallback: use the number customer entered during onboarding
+    if (!msisdn) {
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+      const typed = sess?.edits?.phone;
+      // If you exported normalizeMsisdn from splynx.js, you can import & use it here.
+      // For simplicity, inline a tiny normalizer:
+      const norm = (v) => {
+        let s = String(v || "").trim().replace(/\D+/g, "");
+        if (/^0\d{9}$/.test(s)) s = "27" + s.slice(1);
+        return s;
+      };
+      msisdn = norm(typed);
+    }
+
+    if (!msisdn) return json({ ok:false, error:"No WhatsApp number on file" }, 404);
+
+    const code = String(Math.floor(100000 + Math.random()*900000));
     await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
     await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+
     try {
       await sendWhatsAppTemplate(env, msisdn, code, "en");
-      return json({ ok: true });
+      return json({ ok:true });
     } catch {
       try {
         await sendWhatsAppTextIfSessionOpen(env, msisdn, `Your Vinet verification code is: ${code}`);
-        return json({ ok: true, note: "sent-as-text" });
+        return json({ ok:true, note:"sent-as-text" });
       } catch {
-        return json({ ok: false, error: "WhatsApp send failed (template+text)" }, 502);
+        return json({ ok:false, error:"WhatsApp send failed (template+text)" }, 502);
       }
     }
   }
-
   // ----- OTP: verify -----
   if (path === "/api/otp/verify" && method === "POST") {
     const { linkid, otp, kind } = await request.json().catch(() => ({}));
