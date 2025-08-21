@@ -1,9 +1,9 @@
 // src/ui/admin.js
 import { LOGO_URL } from "../constants.js";
 
-// -------------------------------------------------------------
-// Dashboard (Admin) UI
-// -------------------------------------------------------------
+/* ===========================================================
+   DASHBOARD (Admin)
+   =========================================================== */
 export function renderAdminPage() {
   return /*html*/`<!DOCTYPE html>
 <html lang="en">
@@ -13,15 +13,8 @@ export function renderAdminPage() {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   :root{
-    --vinet:#e2001a;
-    --ink:#222;
-    --muted:#666;
-    --card:#fff;
-    --bg:#f7f8fb;
-    --pill:#e2001a;
-    --pillText:#fff;
-    --ring:#f1d4d8;
-    --radius:14px;
+    --vinet:#e2001a; --ink:#222; --muted:#666;
+    --card:#fff; --bg:#f7f8fb; --radius:14px;
   }
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
@@ -42,7 +35,7 @@ export function renderAdminPage() {
   .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
   .pill-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 2px}
   .pill{padding:8px 14px;border-radius:999px;border:2px solid var(--vinet);color:var(--vinet);font-weight:700;background:#fff;cursor:pointer}
-  .pill.active{background:var(--pill);color:var(--pillText)}
+  .pill.active{background:var(--vinet);color:#fff}
   .lists{margin-top:18px}
   .list-col{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
   .group-title{font-weight:800;margin:0 0 8px}
@@ -54,7 +47,6 @@ export function renderAdminPage() {
   .btn-small{padding:7px 12px;border-radius:9px;font-size:14px}
   .muted{color:#6a6a6a}
   .urlchip{display:inline-block;background:#fafafa;border:1px dashed #ddd;border-radius:10px;padding:6px 10px;font-size:12px;color:#333}
-  /* Center generate buttons */
   .center{display:flex;justify-content:center;margin-top:8px}
   /* Modal */
   .modal-back{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:20}
@@ -72,7 +64,7 @@ export function renderAdminPage() {
       <h1>Vinet Onboarding – Admin</h1>
     </div>
 
-    <!-- Top: two generate cards -->
+    <!-- Generate cards -->
     <div class="grid-2">
       <div class="card" id="card-left">
         <p class="h">Generate Onboard link (Splynx ID)</p>
@@ -88,7 +80,7 @@ export function renderAdminPage() {
       </div>
     </div>
 
-    <!-- Status Tabs + Lists (separate block BELOW the generate cards) -->
+    <!-- Lists block (below cards) -->
     <div class="lists">
       <div class="pill-tabs">
         <button data-mode="all" class="pill active">In Progress + Pending</button>
@@ -125,12 +117,11 @@ export function renderAdminPage() {
   const emptyMsg = $('#emptyMsg');
   const groupTitle = $('#groupTitle');
 
-  // ------------ Modal helpers ------------
+  // Modal
   let modalTimer = null;
   function showModalLink(url){
     $('#mBox').textContent = url;
     $('#modalBack').style.display = 'flex';
-    // Auto-close in 5s and reload
     clearTimeout(modalTimer);
     modalTimer = setTimeout(()=>{ closeModal(true); }, 5000);
   }
@@ -140,14 +131,14 @@ export function renderAdminPage() {
   }
   $('#mOk').onclick = ()=> closeModal(true);
   $('#mCopy').onclick = async ()=>{
-    try{ await navigator.clipboard.writeText($('#mBox').textContent); toast('Link copied'); }catch{ /* ignore */ }
+    try{ await navigator.clipboard.writeText($('#mBox').textContent); toast('Link copied'); }catch{}
   };
   function toast(msg){
     const t=$('#toast'); t.textContent=msg; t.style.display='block';
     setTimeout(()=>{ t.style.display='none'; }, 1500);
   }
 
-  // ------------ Generate Onboard Link ------------
+  // Generate actions
   $('#genLink').onclick = async ()=>{
     const id = ($('#splynxId').value||'').trim();
     if (!id) return;
@@ -159,8 +150,6 @@ export function renderAdminPage() {
     }catch{}
     $('#genLink').disabled = false;
   };
-
-  // ------------ Generate Staff Code ------------
   $('#genStaff').onclick = async ()=>{
     const linkid = ($('#linkId').value||'').trim();
     if (!linkid) return;
@@ -168,16 +157,13 @@ export function renderAdminPage() {
     try{
       const r = await fetch('/api/staff/gen', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
       const d = await r.json();
-      if (d && d.ok) {
-        const msg = \`Staff code generated for \${linkid}: \${d.code || '(check logs)'}\`;
-        showModalLink(msg);
-      }
+      if (d && d.ok) showModalLink(\`Staff code for \${linkid}: \${d.code || '(check logs)'}\`);
     }catch{}
     $('#genStaff').disabled = false;
   };
 
-  // ------------ Lists ------------
-  let mode = 'all'; // 'all' = inprog + pending
+  // Lists
+  let mode = 'all';
   const tabs = Array.from(document.querySelectorAll('.pill-tabs .pill'));
   tabs.forEach(btn=>{
     btn.onclick = ()=>{
@@ -203,7 +189,6 @@ export function renderAdminPage() {
   }
 
   async function fetchList(kind){
-    // Map 'all' to 2 calls: inprog + pending
     if (kind==='all'){
       const [a,b] = await Promise.all([
         fetch('/api/admin/list?mode=inprog').then(r=>r.json()).catch(()=>({items:[]})),
@@ -222,10 +207,9 @@ export function renderAdminPage() {
     const updated = it.updated ? new Date(it.updated).toLocaleString() : '—';
     const ago = fmtAgo(it.updated);
 
-    // Pending: show only URL + Delete (per requirement)
     if (mode==='pending'){
       const url = \`\${location.origin}/onboard/\${linkid}\`;
-      return /*html*/\`
+      return \`
         <div class="item">
           <div class="meta"><b>Customer/Lead \${id}</b></div>
           <div class="meta muted">Updated: \${updated} (\${ago})</div>
@@ -235,10 +219,8 @@ export function renderAdminPage() {
           </div>
         </div>\`;
     }
-
-    // Approved (only visible when the tab is selected)
     if (mode==='approved'){
-      return /*html*/\`
+      return \`
         <div class="item">
           <div class="meta"><b>Customer/Lead \${id}</b></div>
           <div class="meta muted">Updated: \${updated} (\${ago})</div>
@@ -252,9 +234,7 @@ export function renderAdminPage() {
           </div>
         </div>\`;
     }
-
-    // In-progress: Review + MSA + Debit + Approve/Reject/Delete
-    return /*html*/\`
+    return \`
       <div class="item">
         <div class="meta"><b>Customer/Lead \${id}</b></div>
         <div class="meta muted">Updated: \${updated} (\${ago})</div>
@@ -280,7 +260,6 @@ export function renderAdminPage() {
       return;
     }
     listBody.innerHTML = items.map(itemHtml).join('');
-    // Wire actions
     listBody.querySelectorAll('[data-act]').forEach(btn=>{
       const act = btn.getAttribute('data-act');
       const linkid = btn.getAttribute('data-linkid');
@@ -304,7 +283,6 @@ export function renderAdminPage() {
     }
   }
 
-  // Initial
   loadList();
 })();
 </script>
@@ -312,16 +290,16 @@ export function renderAdminPage() {
 </html>`;
 }
 
-// -------------------------------------------------------------
-// Review page (kept feature‑complete; links go to R2 public bucket)
-// -------------------------------------------------------------
+/* ===========================================================
+   REVIEW & APPROVE (with side‑by‑side diff)
+   =========================================================== */
 export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
-  const e = (s)=> String(s ?? "").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
-  const edits = sess?.edits || {};
+  const esc = (s)=> String(s ?? "").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
   const uploads = Array.isArray(sess?.uploads) ? sess.uploads : [];
   const msalink = `/pdf/msa/${linkid}`;
   const debitlink = `/pdf/debit/${linkid}`;
   const back = `/`;
+  const splynxId = String(sess?.id ?? "").trim();
 
   return /*html*/`<!DOCTYPE html>
 <html lang="en">
@@ -330,16 +308,24 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
 <title>Review & Approve</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  :root{ --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; }
+  :root{ --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; --changed:#fff1f2; }
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
-  .wrap{max-width:900px;margin:28px auto;padding:0 18px}
+  .wrap{max-width:980px;margin:28px auto;padding:0 18px}
   .card{background:#fff;border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
   h1{color:var(--vinet);margin:0 0 14px;font-size:28px}
   .sec{margin:14px 0}
-  .k{font-weight:700}
+  .chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:6px 9px;margin:3px 0;font-size:13px}
   .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;margin-right:10px}
   .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
-  .chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:6px 9px;margin:3px 0;font-size:13px}
+  .muted{color:#6a6a6a}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .hdr{font-weight:800;margin:4px 0 6px}
+  table{width:100%;border-collapse:separate;border-spacing:0 8px}
+  th,td{text-align:left;vertical-align:top;font-size:14px}
+  th.k{width:42%;color:#333}
+  td.v{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:8px 10px}
+  td.v.changed{background:var(--changed);border-color:#f3b8bf}
+  .changed-badge{display:inline-block;font-size:11px;background:var(--vinet);color:#fff;border-radius:8px;padding:2px 6px;margin-left:6px}
 </style>
 </head>
 <body>
@@ -347,24 +333,30 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
   <a href="${back}" class="chip">&larr; Back</a>
   <div class="card">
     <h1>Review & Approve</h1>
-    <div class="sec"><span class="k">Splynx ID:</span> ${e(sess?.id)} &nbsp; • &nbsp; <span class="k">LinkID:</span> ${e(linkid)} &nbsp; • &nbsp; <span class="k">Status:</span> ${e(sess?.status||'pending')}</div>
+    <div class="sec">
+      <span class="chip"><b>Splynx ID:</b> ${esc(splynxId||'—')}</span>
+      <span class="chip"><b>LinkID:</b> ${esc(linkid)}</span>
+      <span class="chip"><b>Status:</b> ${esc(sess?.status||'pending')}</span>
+    </div>
 
-    <h3>Edits</h3>
-    <pre class="sec" style="white-space:pre-wrap;line-height:1.35">
-full_name: ${e(edits.full_name)}
-email: ${e(edits.email)}
-phone: ${e(edits.phone)}
-passport: ${e(edits.passport)}
-street: ${e(edits.street)}
-city: ${e(edits.city)}
-zip: ${e(edits.zip)}</pre>
+    <!-- Two‑column diff -->
+    <div class="sec grid">
+      <div>
+        <div class="hdr">Splynx (current)</div>
+        <table id="tbl-left"></table>
+      </div>
+      <div>
+        <div class="hdr">Edited by customer</div>
+        <table id="tbl-right"></table>
+      </div>
+    </div>
 
     <h3>Uploads</h3>
     <div class="sec">
       ${uploads.length ? uploads.map(u=>{
         const url = `${r2PublicBase}/${u.key}`;
-        const sizeStr = (Math.round((u.size||0)/102.4)/10).toFixed(1) + ' KB';
-        return `<div><a href="${url}" target="_blank">${e(u.name)}</a> <span class="muted">• ${sizeStr}</span></div>`;
+        const kb = Math.round((u.size||0)/102.4)/10;
+        return `<div><a href="${url}" target="_blank">${esc(u.name)}</a> <span class="muted">• ${kb.toFixed(1)} KB</span></div>`;
       }).join('') : '<div class="muted">No uploads</div>'}
     </div>
 
@@ -386,6 +378,45 @@ zip: ${e(edits.zip)}</pre>
 <script>
 (function(){
   const linkid = ${JSON.stringify(linkid)};
+  const splynxId = ${JSON.stringify(splynxId)};
+  const edits = ${JSON.stringify(sess?.edits || {})};
+
+  const FIELDS = [
+    ['full_name','Full name'],
+    ['passport','ID / Passport'],
+    ['email','Email'],
+    ['phone','Phone'],
+    ['street','Street'],
+    ['city','City'],
+    ['zip','ZIP']
+  ];
+
+  function esc(s){ return String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+
+  async function loadSplynx(){
+    let left = {};
+    try{
+      const r = await fetch('/api/splynx/profile?id='+encodeURIComponent(splynxId));
+      if (r.ok) left = await r.json();
+    }catch{}
+    renderTables(left, edits);
+  }
+
+  function renderTables(left, right){
+    const tl = document.getElementById('tbl-left');
+    const tr = document.getElementById('tbl-right');
+    tl.innerHTML = ''; tr.innerHTML = '';
+    for (const [k,label] of FIELDS){
+      const lv = left[k] ?? '';
+      const rv = right[k] ?? '';
+      const changed = String(lv||'') !== String(rv||'');
+      tl.insertAdjacentHTML('beforeend',
+        '<tr><th class="k">'+esc(label)+'</th><td class="v">'+esc(lv)+'</td></tr>');
+      tr.insertAdjacentHTML('beforeend',
+        '<tr><th class="k">'+esc(label)+'</th><td class="v'+(changed?' changed':'')+'">'+esc(rv)+(changed?' <span class="changed-badge">changed</span>':'')+'</td></tr>');
+    }
+  }
+
   document.getElementById('approve').onclick = async ()=>{
     await fetch('/api/admin/approve', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
     location.href = '/';
@@ -400,6 +431,8 @@ zip: ${e(edits.zip)}</pre>
     await fetch('/api/admin/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
     location.href = '/';
   };
+
+  loadSplynx();
 })();
 </script>
 </body>
