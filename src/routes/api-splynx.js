@@ -1,9 +1,19 @@
 // src/routes/api-splynx.js
 import { fetchProfileForDisplay, splynxGET } from "../splynx.js";
 
-export async function handleSplynxApi(request, env, ctx, url) {
+export function match(path, method) {
+  return (
+    path.startsWith("/api/splynx/profile") ||
+    path.startsWith("/api/splynx/raw")
+  );
+}
+
+export async function handle(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
   // --- Profile fetch ---
-  if (url.pathname === "/api/splynx/profile") {
+  if (path === "/api/splynx/profile") {
     const id = url.searchParams.get("id");
     if (!id) {
       return new Response("Missing id", { status: 400 });
@@ -26,7 +36,7 @@ export async function handleSplynxApi(request, env, ctx, url) {
 
   // --- Raw passthrough for debugging ---
   // Example: /api/splynx/raw?ep=/admin/customers/319
-  if (url.pathname === "/api/splynx/raw") {
+  if (path === "/api/splynx/raw") {
     const ep = url.searchParams.get("ep");
     if (!ep) {
       return new Response("Missing ep", { status: 400 });
@@ -43,6 +53,5 @@ export async function handleSplynxApi(request, env, ctx, url) {
     }
   }
 
-  // No route match
   return new Response("Not found", { status: 404 });
 }
