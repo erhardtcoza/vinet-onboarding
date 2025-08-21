@@ -1,61 +1,30 @@
 // src/routes/api-splynx.js
-export function match(path, method) {
-  return path.startsWith("/api/splynx/");
-}
+import { splynxGET, splynxPUT, splynxPOST } from "../splynx.js";
 
-export async function handle(request, env) {
+/**
+ * Handles all /api/splynx/* requests
+ */
+export async function handleSplynxApi(request, env, ctx) {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const path = url.pathname.replace(/^\/api\/splynx/, "");
 
-  // raw passthrough → /api/splynx/raw?ep=/admin/crm/leads/3733
-  if (path === "/api/splynx/raw") {
-    const ep = url.searchParams.get("ep");
-    if (!ep) {
-      return new Response(JSON.stringify({ error: "Missing ep param" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    const r = await fetch(`${env.SPLYNX_API_URL}${ep}`, {
-      headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
-    });
-    return new Response(r.body, { status: r.status, headers: { "content-type": "application/json" } });
+  // Example: GET /api/splynx/customer/123
+  if (request.method === "GET") {
+    return splynxGET(env, path);
   }
 
-  // profile fetch → /api/splynx/profile?id=319
-  if (path === "/api/splynx/profile") {
-    const id = url.searchParams.get("id");
-    if (!id) {
-      return new Response(JSON.stringify({ error: "Missing id param" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    const endpoints = [
-      `/admin/customers/customer/${id}`,
-      `/admin/customers/${id}`,
-      `/admin/crm/leads/${id}`,
-      `/admin/customers/${id}/contacts`,
-      `/admin/crm/leads/${id}/contacts`,
-    ];
-
-    for (const ep of endpoints) {
-      const r = await fetch(`${env.SPLYNX_API_URL}${ep}`, {
-        headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
-      });
-      if (r.ok) {
-        return new Response(r.body, { status: 200, headers: { "content-type": "application/json" } });
-      }
-    }
-
-    return new Response(JSON.stringify({ error: "Not found in Splynx" }), {
-      status: 404,
-      headers: { "content-type": "application/json" },
-    });
+  if (request.method === "PUT") {
+    const data = await request.json();
+    return splynxPUT(env, path, data);
   }
 
-  // default: not found
-  return new Response("Not found", { status: 404 });
+  if (request.method === "POST") {
+    const data = await request.json();
+    return splynxPOST(env, path, data);
+  }
+
+  return new Response(JSON.stringify({ error: "Unsupported method" }), {
+    status: 405,
+    headers: { "Content-Type": "application/json" },
+  });
 }
