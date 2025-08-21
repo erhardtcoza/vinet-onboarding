@@ -1,7 +1,7 @@
 // src/routes/api-admin.js
 import { getClientMeta, deleteOnboardAll } from "../helpers.js";
 import { fetchProfileForDisplay, splynxPUT } from "../splynx.js";
-import { renderAdminReviewHTML } from "../ui/admin-review.js";
+import { renderAdminReviewHTML } from "../ui/admin.js";
 
 /**
  * Router for /api/admin/*
