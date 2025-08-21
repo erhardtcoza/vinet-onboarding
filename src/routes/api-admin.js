@@ -1,6 +1,6 @@
 // src/routes/api-admin.js
 import { getClientMeta, deleteOnboardAll } from "../helpers.js";
-import { fetchProfileForDisplay, splynxPUT } from "../splynx.js";
+import { splynxPUT, mapEditsToSplynxPayload } from "../splynx.js";
 import { renderAdminReviewHTML } from "../ui/admin.js";
 
 /**
@@ -23,15 +23,23 @@ export async function handleAdminApi(request, env) {
   // --- Approve session ---
   if (path.startsWith("/approve/") && method === "POST") {
     const id = path.split("/")[2];
-    await approveSession(env, id);
-    return json({ ok: true, action: "approved", id });
+    try {
+      await approveSession(env, id);
+      return json({ ok: true, action: "approved", id });
+    } catch (err) {
+      return json({ ok: false, error: err.message || String(err) }, 500);
+    }
   }
 
   // --- Reject session ---
   if (path.startsWith("/reject/") && method === "POST") {
     const id = path.split("/")[2];
-    await rejectSession(env, id);
-    return json({ ok: true, action: "rejected", id });
+    try {
+      await rejectSession(env, id);
+      return json({ ok: true, action: "rejected", id });
+    } catch (err) {
+      return json({ ok: false, error: err.message || String(err) }, 500);
+    }
   }
 
   // --- Delete all onboarding (reset) ---
@@ -55,7 +63,13 @@ async function loadSessions(env, section) {
   const sessions = [];
   for (const k of keys.keys) {
     const data = await kv.get(k.name, { type: "json" });
-    if (data) sessions.push({ id: k.name.split(":")[1], ...data });
+    if (data) {
+      sessions.push({
+        id: k.name.split(":")[1],
+        status: section,
+        ...data,
+      });
+    }
   }
   return sessions;
 }
@@ -63,21 +77,18 @@ async function loadSessions(env, section) {
 async function approveSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
-  if (!raw) return;
+  if (!raw) throw new Error(`No pending session found for ${id}`);
 
-  // Push edits to Splynx (example: update customer info)
-  const payload = {};
-  if (raw.full_name) payload.name = raw.full_name;
-  if (raw.email) payload.email = raw.email;
-  if (raw.passport) payload.passport = raw.passport;
-  if (raw.address) payload.street_1 = raw.address;
-  if (raw.city) payload.city = raw.city;
-  if (raw.zip) payload.zip_code = raw.zip;
+  // Use central mapping function
+  const payload = mapEditsToSplynxPayload(raw);
 
-  try {
-    await splynxPUT(env, `/admin/customers/${raw.id}`, payload);
-  } catch (err) {
-    console.error("Approve Splynx update failed", err);
+  if (Object.keys(payload).length > 0) {
+    try {
+      await splynxPUT(env, `/admin/customers/${raw.id}`, payload);
+    } catch (err) {
+      console.error("Approve Splynx update failed", err);
+      throw err;
+    }
   }
 
   await kv.put("approved:" + id, JSON.stringify(raw));
@@ -87,13 +98,14 @@ async function approveSession(env, id) {
 async function rejectSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
-  if (!raw) return;
+  if (!raw) throw new Error(`No pending session found for ${id}`);
   await kv.delete("pending:" + id);
   await kv.put("rejected:" + id, JSON.stringify(raw));
 }
 
-function json(obj) {
+function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }
