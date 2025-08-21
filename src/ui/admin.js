@@ -1,10 +1,3 @@
-Good catch — that error is from declaring a const and using backticks inside a ${ ... } interpolation of a larger template literal. Some bundlers choke on that pattern. I’ve also noticed I referenced esc() in the client <script> without defining it there. Below is a corrected, drop‑in /src/ui/admin.js that:
-	•	Removes nested template‑literal declarations inside ${ ... }
-	•	Defines a client‑side esc() helper in the dashboard script
-	•	Keeps all the features we added (modal, tabs, delete, review links, diffs, R2 links, etc.)
-
-Replace the file with this:
-
 // /src/ui/admin.js
 import { LOGO_URL } from "../constants.js";
 
