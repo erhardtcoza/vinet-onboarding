@@ -1,4 +1,68 @@
 // src/ui/admin.js
+
+export function renderAdminDashboardHTML() {
+  return /*html*/`
+    <div class="admin-dashboard">
+      <h1>Onboarding Admin Dashboard</h1>
+      <div class="tabs">
+        <button data-tab="inprogress" class="active">In Progress</button>
+        <button data-tab="pending">Pending Review</button>
+        <button data-tab="approved">Approved</button>
+      </div>
+      <div id="tabContent">Loading...</div>
+    </div>
+
+    <script>
+      const tabs = document.querySelectorAll(".tabs button");
+      const tabContent = document.getElementById("tabContent");
+
+      async function loadTab(status) {
+        tabContent.innerHTML = "Loading...";
+        try {
+          const res = await fetch("/api/admin/list?status=" + status);
+          if (!res.ok) throw new Error(await res.text());
+          const data = await res.json();
+          if (!data.length) {
+            tabContent.innerHTML = "<p>No entries found.</p>";
+            return;
+          }
+          tabContent.innerHTML = "<ul>" + data.map(d => 
+            \`<li><a href="#" data-id="\${d.id}">\${d.full_name || d.email || d.id}</a></li>\`
+          ).join("") + "</ul>";
+
+          // attach click handler
+          tabContent.querySelectorAll("a").forEach(a => {
+            a.addEventListener("click", async (e) => {
+              e.preventDefault();
+              const id = a.dataset.id;
+              const res = await fetch("/api/admin/profile?id=" + id);
+              if (!res.ok) {
+                tabContent.innerHTML = "Failed to load profile";
+                return;
+              }
+              const profile = await res.json();
+              tabContent.innerHTML = renderAdminReviewHTML(profile);
+            });
+          });
+        } catch (err) {
+          tabContent.innerHTML = "❌ " + err.message;
+        }
+      }
+
+      tabs.forEach(btn => {
+        btn.addEventListener("click", () => {
+          tabs.forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          loadTab(btn.dataset.tab);
+        });
+      });
+
+      // initial load
+      loadTab("inprogress");
+    </script>
+  `;
+}
+
 export function renderAdminReviewHTML(profile) {
   return /*html*/`
     <div class="admin-review">
