@@ -40,6 +40,32 @@ export async function splynxPUT(env, path, body) {
   if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
   return res.json();
 }
+// src/splynx.js
+
+// ... keep your other exports (splynxGET, splynxPOST, splynxPUT, splynxCreateAndUpload, etc.)
+
+/**
+ * Map frontend edits into Splynx API payload
+ * @param {object} edits - fields edited in onboarding admin
+ * @returns {object} payload for Splynx PUT/POST
+ */
+export function mapEditsToSplynxPayload(edits) {
+  const payload = {};
+
+  if (edits.full_name) payload.name = edits.full_name;
+  if (edits.email) payload.email = edits.email;
+  if (edits.billing_email) payload.billing_email = edits.billing_email;
+  if (edits.phone) payload.phone = edits.phone;
+  if (edits.passport) payload.passport = edits.passport;
+
+  if (edits.address || edits.city || edits.zip) {
+    payload.address = edits.address || "";
+    payload.city = edits.city || "";
+    payload.zip = edits.zip || "";
+  }
+
+  return payload;
+}
 
 /**
  * Upload file to Splynx for customer or lead
