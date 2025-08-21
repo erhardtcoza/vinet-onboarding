@@ -1,124 +1,103 @@
 // src/splynx.js
-/**
- * Splynx API Helpers
- */
 
-function buildHeaders(env) {
-  if (!env.SPLYNX_API_URL || !env.SPLYNX_AUTH) {
-    throw new Error("Missing SPLYNX_API_URL or SPLYNX_AUTH in environment");
-  }
-  return {
-    "Authorization": env.SPLYNX_AUTH,
-    "Content-Type": "application/json"
-  };
+// Generic GET request
+export async function splynxGET(env, path) {
+  const url = `${env.SPLYNX_API_URL}${path}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` }
+  });
+  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+  return await res.json();
 }
 
-export async function splynxGET(env, endpoint) {
-  const headers = buildHeaders(env);
-  const url = `${env.SPLYNX_API_URL}${endpoint}`;
-  const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`GET ${endpoint} failed: ${res.status}`);
-  return res.json();
+// Generic POST request
+export async function splynxPOST(env, path, body) {
+  const url = `${env.SPLYNX_API_URL}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
+  return await res.json();
 }
 
-export async function splynxPUT(env, endpoint, payload) {
-  const headers = buildHeaders(env);
-  const url = `${env.SPLYNX_API_URL}${endpoint}`;
+// Generic PUT request
+export async function splynxPUT(env, path, body) {
+  const url = `${env.SPLYNX_API_URL}${path}`;
   const res = await fetch(url, {
     method: "PUT",
-    headers,
-    body: JSON.stringify(payload),
+    headers: {
+      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
   });
-  if (!res.ok) throw new Error(`PUT ${endpoint} failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+  return await res.json();
 }
 
+// Fetch profile (lead or customer) for review
 export async function fetchProfileForDisplay(env, id) {
-  const endpoints = [
-    `/admin/customers/customer/${id}`,
-    `/admin/customers/${id}`,
-    `/admin/crm/leads/${id}`
-  ];
-  for (const ep of endpoints) {
-    try {
-      return await splynxGET(env, ep);
-    } catch (_) {}
+  try {
+    return await splynxGET(env, `/admin/customers/customer/${id}`);
+  } catch {
+    return await splynxGET(env, `/admin/crm/leads/${id}`);
   }
-  throw new Error(`No profile found for ID ${id}`);
 }
 
+// Fetch msisdn & passport (checks multiple endpoints)
 export async function fetchCustomerMsisdn(env, id) {
-  const endpoints = [
+  const eps = [
     `/admin/customers/customer/${id}`,
     `/admin/customers/${id}`,
     `/admin/crm/leads/${id}`,
     `/admin/customers/${id}/contacts`,
     `/admin/crm/leads/${id}/contacts`
   ];
-
-  let msisdn = null;
-  let passport = null;
-
-  for (const ep of endpoints) {
+  for (const ep of eps) {
     try {
-      const data = await splynxGET(env, ep);
-
-      if (!data) continue;
-
-      if (!msisdn && data.phone) msisdn = data.phone;
-      if (!passport && data.passport) passport = data.passport;
-
-      if (Array.isArray(data)) {
-        for (const c of data) {
-          if (!msisdn && c.phone) msisdn = c.phone;
-          if (!passport && c.passport) passport = c.passport;
-        }
-      }
-    } catch (_) {}
+      const res = await splynxGET(env, ep);
+      if (res) return res;
+    } catch {
+      continue;
+    }
   }
-
-  return { msisdn, passport };
+  throw new Error("Customer/lead not found");
 }
 
-/**
- * Map edits from admin UI into Splynx payload shape
- */
+// Map admin edits into Splynx payload
 export function mapEditsToSplynxPayload(edits) {
   const payload = {};
+  if (edits.name) payload.name = edits.name;
   if (edits.email) payload.email = edits.email;
-  if (edits.billing_email) payload.billing_email = edits.billing_email;
-  if (edits.passport) payload.passport = edits.passport;
   if (edits.phone) payload.phone = edits.phone;
-  if (edits.address) payload.address = edits.address;
+  if (edits.passport) payload.passport = edits.passport;
+  if (edits.billing_email) payload.billing_email = edits.billing_email;
   return payload;
 }
 
-/**
- * Upload a file (ID, POA, MSA, DO) to Splynx
- */
+// Upload a document (lead or customer)
 export async function splynxCreateAndUpload(env, type, id, file) {
-  const headers = {
-    "Authorization": env.SPLYNX_AUTH,
-  };
+  const url =
+    type === "lead"
+      ? `${env.SPLYNX_API_URL}/admin/crm/lead-documents`
+      : `${env.SPLYNX_API_URL}/admin/customers/customer-documents`;
 
   const form = new FormData();
+  if (type === "lead") form.append("lead_id", id);
+  else form.append("customer_id", id);
   form.append("file", file);
-
-  let url;
-  if (type === "lead") {
-    url = `${env.SPLYNX_API_URL}/admin/crm/lead-documents?lead_id=${id}`;
-  } else if (type === "customer") {
-    url = `${env.SPLYNX_API_URL}/admin/customers/customer-documents?customer_id=${id}`;
-  } else {
-    throw new Error("Invalid upload type: must be 'lead' or 'customer'");
-  }
 
   const res = await fetch(url, {
     method: "POST",
-    headers,
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
     body: form
   });
-
   if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-  return res.json();
+  return await res.json();
 }
