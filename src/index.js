@@ -1927,18 +1927,6 @@ ${body}
       }
     }
 
-    // ----- PDF endpoints -----
-    if (path.startsWith("/pdf/msa/") && method === "GET") {
-      const linkid = path.split("/").pop();
-      return await renderMSAPdf(env, linkid);
-    }
-    if (path.startsWith("/pdf/debit/") && method === "GET") {
-      const linkid = path.split("/").pop();
-      return await renderDebitPdf(env, linkid);
-    }
-
-    return new Response("Not found", { status: 404 });
-};
 // ---------- PDF RENDERERS (Times Roman + layout & audit info) ----------
 
 function formatCapeTownDateTime(d = new Date()) {
