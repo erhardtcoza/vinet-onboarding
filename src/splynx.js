@@ -9,7 +9,7 @@ export async function splynxGET(env, endpoint) {
   console.log(`[Splynx] GET ${url}`);
   const res = await fetch(url, {
     headers: {
-      Authorization: `Basic ${env.SPLYNX_AUTH}`,
+    Authorization: `Basic ${env.SPLYNX_AUTH}`,
       "Content-Type": "application/json",
     },
   });
