@@ -30,7 +30,6 @@ export function renderAdminDashboardHTML() {
             \`<li><a href="#" data-id="\${d.id}">\${d.full_name || d.email || d.id}</a></li>\`
           ).join("") + "</ul>";
 
-          // attach click handler
           tabContent.querySelectorAll("a").forEach(a => {
             a.addEventListener("click", async (e) => {
               e.preventDefault();
@@ -57,7 +56,6 @@ export function renderAdminDashboardHTML() {
         });
       });
 
-      // initial load
       loadTab("inprogress");
     </script>
   `;
@@ -117,7 +115,11 @@ export function renderAdminReviewHTML(profile) {
         <label>Signed Date</label>
         <input name="signed_date" value="${profile.signed_date || ""}" />
 
-        <button type="submit">Save Changes</button>
+        <div class="actions">
+          <button type="submit">💾 Save Changes</button>
+          <button type="button" id="approveBtn">✅ Approve</button>
+          <button type="button" id="rejectBtn">❌ Reject</button>
+        </div>
       </form>
       <div id="saveStatus"></div>
     </div>
@@ -139,14 +141,30 @@ export function renderAdminReviewHTML(profile) {
         });
 
         if (res.ok) {
-          const updated = await res.json();
           document.getElementById("saveStatus").innerText = "✅ Saved successfully!";
-          console.log("Updated profile:", updated);
         } else {
           const err = await res.text();
           document.getElementById("saveStatus").innerText = "❌ Save failed: " + err;
         }
       });
+
+      async function changeStatus(status) {
+        document.getElementById("saveStatus").innerText = "Updating status...";
+        const res = await fetch("/api/admin/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: "${profile.id}", status })
+        });
+        if (res.ok) {
+          document.getElementById("saveStatus").innerText = "✅ Status updated to " + status;
+        } else {
+          const err = await res.text();
+          document.getElementById("saveStatus").innerText = "❌ Failed: " + err;
+        }
+      }
+
+      document.getElementById("approveBtn").addEventListener("click", () => changeStatus("approved"));
+      document.getElementById("rejectBtn").addEventListener("click", () => changeStatus("rejected"));
     </script>
   `;
 }
