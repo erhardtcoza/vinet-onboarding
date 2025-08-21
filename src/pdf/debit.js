@@ -2,11 +2,11 @@ import { PDFDocument } from "pdf-lib";
 import { DEFAULT_DEBIT_TERMS_URL, HEADER_PHONE_DEFAULT, HEADER_WEBSITE_DEFAULT, PDF_CACHE_TTL, PDF_FONTS, VINET_BLACK, VINET_RED } from "../constants.js";
 import { drawDashedLine, embedLogo, fetchR2Bytes, fetchTextCached, getWrappedLinesCached, localDateZAISO, localDateTimePrettyZA } from "../helpers.js";
 
-export async function renderDebitPdf(env, linkid) {
+export async function renderDebitPdf(env, linkid, reqMeta = {}) {
   const cacheKey = `pdf:debit:${linkid}`;
   const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
   if (cached) return new Response(cached, { headers: { "content-type":"application/pdf", "cache-control":"public, max-age=86400" } });
-
+}
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
   if (!sess || !sess.debit_sig_key) return new Response("Debit Order not available for this link.", { status: 409 });
 
