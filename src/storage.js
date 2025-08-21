@@ -16,11 +16,10 @@ export async function getOnboardAll(env) {
 
       // Ensure every row has a status
       if (!row.status) {
-        // Fallback logic: assume new sessions are "inprogress"
-        row.status = "inprogress";
+        row.status = "inprogress"; // default fallback
       }
 
-      // Ensure every row has an id (from key if not inside value)
+      // Ensure every row has an id
       if (!row.id) {
         row.id = key.name.replace("onboard:", "");
       }
@@ -39,4 +38,23 @@ export async function getOnboardAll(env) {
  */
 export async function deleteOnboardAll(env, id) {
   await env.SESSION_KV.delete("onboard:" + id);
+}
+
+/**
+ * Update status of a session
+ */
+export async function setOnboardStatus(env, id, status) {
+  const key = "onboard:" + id;
+  const raw = await env.SESSION_KV.get(key);
+  if (!raw) return false;
+
+  try {
+    const row = JSON.parse(raw);
+    row.status = status;
+    await env.SESSION_KV.put(key, JSON.stringify(row));
+    return true;
+  } catch (e) {
+    console.error("Failed to update status", id, e);
+    return false;
+  }
 }
