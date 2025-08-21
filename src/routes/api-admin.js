@@ -1,5 +1,11 @@
 // src/routes/api-admin.js
-import { fetchProfileForDisplay, mapEditsToSplynxPayload, splynxPUT } from "../splynx.js";
+import {
+  fetchProfileForDisplay,
+  mapEditsToSplynxPayload,
+  splynxPUT,
+  splynxPOST,
+  splynxCreateAndUpload,
+} from "../splynx.js";
 import { deleteOnboardAll } from "../storage.js";
 
 /**
@@ -35,7 +41,6 @@ export async function handleApiAdmin(req, env) {
     const id = body.id;
     if (!id) return new Response("Missing id", { status: 400 });
 
-    // Update DB fields
     const editableFields = [
       "full_name",
       "email",
@@ -69,7 +74,6 @@ export async function handleApiAdmin(req, env) {
       ).bind(...values).run();
     }
 
-    // Sync to Splynx (best effort)
     try {
       const payload = mapEditsToSplynxPayload(body);
       if (Object.keys(payload).length > 0) {
@@ -82,13 +86,12 @@ export async function handleApiAdmin(req, env) {
     return new Response("OK");
   }
 
-  // --- Approve / Reject status updates ---
+  // --- Approve / Reject ---
   if (path === "/api/admin/status" && req.method === "POST") {
     const body = await req.json();
     const { id, status } = body;
     if (!id || !status) return new Response("Missing id or status", { status: 400 });
 
-    // Only allow approved/rejected
     if (!["approved", "rejected"].includes(status)) {
       return new Response("Invalid status", { status: 400 });
     }
@@ -97,10 +100,60 @@ export async function handleApiAdmin(req, env) {
       "UPDATE onboard SET status = ? WHERE id = ?"
     ).bind(status, id).run();
 
+    // 🔄 Auto-sync on approve
+    if (status === "approved") {
+      try {
+        const row = await env.DB.prepare("SELECT * FROM onboard WHERE id = ?")
+          .bind(id)
+          .first();
+
+        if (row) {
+          // Map to payload
+          const payload = mapEditsToSplynxPayload(row);
+
+          // Update if existing customer, otherwise create as new lead
+          let splynxResult;
+          try {
+            splynxResult = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
+          } catch (_) {
+            splynxResult = await splynxPOST(env, `/admin/crm/leads`, payload);
+          }
+
+          // Attachments (if stored in R2/KV)
+          if (row.id_doc_key) {
+            const file = await env.R2_BUCKET.get(row.id_doc_key);
+            if (file) {
+              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
+            }
+          }
+          if (row.poa_doc_key) {
+            const file = await env.R2_BUCKET.get(row.poa_doc_key);
+            if (file) {
+              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
+            }
+          }
+          if (row.msa_doc_key) {
+            const file = await env.R2_BUCKET.get(row.msa_doc_key);
+            if (file) {
+              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
+            }
+          }
+          if (row.debit_doc_key) {
+            const file = await env.R2_BUCKET.get(row.debit_doc_key);
+            if (file) {
+              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Auto-sync failed", err);
+      }
+    }
+
     return Response.json({ id, status });
   }
 
-  // --- Delete session completely ---
+  // --- Delete ---
   if (path === "/api/admin/delete" && req.method === "POST") {
     const body = await req.json();
     const id = body.id;
