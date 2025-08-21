@@ -1,31 +1,26 @@
+// src/pdf/msa.js
 import { PDFDocument } from "pdf-lib";
 import {
   DEFAULT_MSA_TERMS_URL,
   HEADER_PHONE_DEFAULT,
   HEADER_WEBSITE_DEFAULT,
   PDF_CACHE_TTL,
-  PDF_FONTS,           // { body: TimesRoman, bold: TimesRomanBold }
+  PDF_FONTS,
   VINET_BLACK,
   VINET_RED,
 } from "../constants.js";
-
 import {
   drawDashedLine,
   embedLogo,
   fetchR2Bytes,
   fetchTextCached,
-  getWrappedLinesCached, // cache key aware wrapper
+  getWrappedLinesCached,
   localDateZAISO,
   localDateTimePrettyZA,
 } from "../helpers.js";
 
-/**
- * Render the Vinet Master Service Agreement (PDF)
- * - Page 1: header + Client Details (L) / Agreement Details (R), then 2‑column terms
- * - Page N: "(continued)" header + 2‑column terms
- * - Final page: Client Details strip + signature block (Full Name / Signature / Date)
- */
 export async function renderMSAPdf(env, linkid, reqMeta = {}) {
+  // Cache
   const cacheKey = `pdf:msa:${linkid}`;
   const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
   if (cached) {
@@ -34,241 +29,200 @@ export async function renderMSAPdf(env, linkid, reqMeta = {}) {
     });
   }
 
-  // Session + prerequisites
+  // Session & guards
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess || !sess.agreement_sig_key || !sess.agreement_signed) {
+  if (!sess || !sess.agreement_sig_key) {
     return new Response("MSA not available for this link.", { status: 409 });
   }
 
-  const idOnly = String(linkid).split("_")[0];
-  const edits = sess.edits || {};
-  const termsSrc = env.TERMS_MSA_URL || env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
-  const terms = (await fetchTextCached(termsSrc, env, "terms:msa")) || "Terms unavailable.";
+  const termsUrl = env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
+  const terms = (await fetchTextCached(termsUrl, env, "terms:msa")) || "Terms unavailable.";
 
-  // PDF setup
+  const edits = sess.edits || {};
+  const idOnly = String(linkid).split("_")[0];
+
+  // PDF
   const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(PDF_FONTS.body);
+  const font = await pdf.embedFont(PDF_FONTS.body); // Times Roman family via constants
   const bold = await pdf.embedFont(PDF_FONTS.bold);
 
-  // Page metrics
-  const W = 595, H = 842, M = 40; // A4 portrait
-  const lineH = 11.8;
-  const paraGap = 3;
+  const W = 595, H = 842, M = 40; // A4, portrait
 
-  // Common header
-  const logoImg = await embedLogo(pdf, env);
-  const header = (page, { continued = false } = {}) => {
+  // Reusable header renderer (matches Debit Order)
+  async function renderHeader(page, { continued = false } = {}) {
+    const logoImg = await embedLogo(pdf, env);
     let y = H - 40;
 
-    // Logo (25% larger than the old 42px target)
     if (logoImg) {
-      const targetH = 52.5; // 42 * 1.25
+      const targetH = 52.5; // 25% bigger than old ~42px
       const sc = logoImg.scale(1);
       const ratio = targetH / sc.height;
       const lw = sc.width * ratio;
-      page.drawImage(logoImg, { x: W - M - lw, y: y - targetH, width: lw, height: targetH });
+      page.drawImage(logoImg, {
+        x: W - M - lw,
+        y: y - targetH,
+        width: lw,
+        height: targetH,
+      });
     }
 
-    page.drawText(
-      continued ? "Master Service Agreement (continued)" : "Master Service Agreement",
-      { x: M, y: y - 8, size: 18, font: bold, color: VINET_RED }
-    );
-    y -= 30;
+    const title = continued ? "Master Service Agreement (continued)" : "Master Service Agreement";
+    page.drawText(title, { x: M, y: y - 8, size: 18, font: bold, color: VINET_RED });
 
+    y -= 30;
     page.drawText(
       `${env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT}  |  ${env.HEADER_PHONE || HEADER_PHONE_DEFAULT}`,
       { x: M, y, size: 10, font, color: VINET_BLACK }
     );
 
-    // Slightly lower dashed line for balance
+    // Lower the dashed line slightly (like DO)
     y -= 18;
     drawDashedLine(page, M, y, W - M);
-    return y - 18; // content start Y
-  };
 
-  // Client + Agreement blocks (top of page 1)
-  const drawClientAgreementTop = (page, yStart) => {
-    const colW = (W - M * 2) / 2;
-    let yL = yStart;
-    let yR = yStart;
+    return y - 24; // return next writable Y
+  }
 
-    // Sub‑headings
-    page.drawText("Client Details", { x: M, y: yL, size: 12, font: bold, color: VINET_RED });
-    page.drawText("Agreement Details", { x: M + colW + 12, y: yR, size: 12, font: bold, color: VINET_RED });
-    yL -= 16;
-    yR -= 16;
-
-    // Left (client)
-    const rowL = (k, v) => {
-      page.drawText(k, { x: M, y: yL, size: 10, font: bold, color: VINET_BLACK });
-      page.drawText(String(v || ""), { x: M + 120, y: yL, size: 10, font, color: VINET_BLACK });
-      yL -= 14;
-    };
-    rowL("Client code:", idOnly);
-    rowL("Full Name:", edits.full_name);
-    rowL("ID / Passport:", edits.passport);
-    rowL("Email:", edits.email);
-    rowL("Phone:", edits.phone);
-    rowL("Street:", edits.street);
-    rowL("City:", edits.city);
-    rowL("ZIP:", edits.zip);
-
-    // Right (agreement info)
-    const xR = M + colW + 12;
-    const rowR = (k, v) => {
-      page.drawText(k, { x: xR, y: yR, size: 10, font: bold, color: VINET_BLACK });
-      page.drawText(String(v || ""), { x: xR + 120, y: yR, size: 10, font, color: VINET_BLACK });
-      yR -= 14;
-    };
-    rowR("Agreement ID:", linkid);
-    rowR("Generated (ZA):", localDateTimePrettyZA());
-    rowR("Website:", env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT);
-    rowR("Telephone:", env.HEADER_PHONE || HEADER_PHONE_DEFAULT);
-
-    const yAfter = Math.min(yL, yR) - 8;
-    drawDashedLine(page, M, yAfter, W - M);
-    return yAfter - 14;
-  };
-
-  // Typeset terms in TWO COLUMNS across pages
-  const drawTermsTwoColumns = async (page, yStart, text) => {
-    const gap = 22;
-    const colW = Math.floor((W - (M * 2) - gap) / 2);
-    const size = 7.5;
-    const wrapKey = "msa:twocol";
-    let y = yStart;
-
-    // Wrap once; then feed lines into columns
-    const lines = await getWrappedLinesCached(env, text, font, size, colW, wrapKey);
-
-    let col = 0; // 0 -> left, 1 -> right
-    let idx = 0;
-
-    const newPage = (continued = true) => {
-      page = pdf.addPage([W, H]);
-      const afterHeaderY = header(page, { continued });
-      y = afterHeaderY;
-      col = 0;
-    };
-
-    const xForCol = (c) => (c === 0 ? M : M + colW + gap);
-
-    while (idx < lines.length) {
-      // bottom margin guard – leave space for footer/signature page later (we will add signature on a dedicated last page)
-      const bottom = 80;
-      if (y < bottom) {
-        // switch column or page
-        if (col === 0) {
-          // move to right column on the same page
-          col = 1;
-          y = yStart; // reset Y to top content start on this page
-        } else {
-          // add new page
-          newPage(true);
-        }
-      }
-
-      const ln = lines[idx++];
-      page.drawText(ln, { x: xForCol(col), y, size, font, color: VINET_BLACK });
-      y -= lineH;
-      if (ln.trim() === "") y -= paraGap; // paragraph gap
-    }
-
-    // Return the last used page so the caller knows where we are
-    return page;
-  };
-
-  // Signature page (mirrors debit layout)
-  const drawSignaturePage = async () => {
-    const page = pdf.addPage([W, H]);
-    const yStart = header(page, { continued: true }); // keep the continued header style here per your preference
-
-    // A small "Client Details" strip above the signature block (like DO has details above Name/Signature/Date)
-    let y = yStart;
-    page.drawText("Client Details", { x: M, y, size: 12, font: bold, color: VINET_RED });
-    y -= 16;
-
-    const row = (k, v) => {
-      page.drawText(k, { x: M, y, size: 10, font: bold, color: VINET_BLACK });
-      page.drawText(String(v || ""), { x: M + 120, y, size: 10, font, color: VINET_BLACK });
-      y -= 14;
-    };
-    row("Client code:", idOnly);
-    row("Full Name:", edits.full_name);
-    row("ID / Passport:", edits.passport);
-    row("Email:", edits.email);
-    row("Phone:", edits.phone);
-    row("Street:", edits.street);
-    row("City:", edits.city);
-    row("ZIP:", edits.zip);
-
-    const sepY = y - 6;
-    drawDashedLine(page, M, sepY, W - M);
-
-    // Footer style like debit: Full Name | Signature | Date
-    const footY = sepY - 28;
-
-    // Full Name
-    page.drawText("Full Name:", { x: M, y: footY, size: 10, font: bold, color: VINET_BLACK });
-    page.drawText(String(edits.full_name || ""), { x: M + 70, y: footY, size: 10, font, color: VINET_BLACK });
-
-    // Signature block to the center/right
-    page.drawText("Signature:", { x: M + (W / 2 - 50), y: footY, size: 10, font: bold, color: VINET_BLACK });
-    const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
-    if (sigBytes) {
-      const sigImg = await pdf.embedPng(sigBytes);
-      const sigW = 160;
-      const sc = sigImg.scale(1);
-      const sigH = (sc.height / sc.width) * sigW;
-      page.drawImage(sigImg, {
-        x: M + (W / 2 - 50) + 70,
-        y: footY - sigH + 8,
-        width: sigW,
-        height: sigH,
-      });
-    }
-
-    // Only the label “Date:” then actual date value (like DO)
-    page.drawText("Date:", { x: W - M - 120, y: footY, size: 10, font: bold, color: VINET_BLACK });
-    page.drawText(localDateZAISO().split("-").reverse().join("/"), {
-      x: W - M - 120 + 36,
-      y: footY,
-      size: 10,
-      font,
-      color: VINET_BLACK,
-    });
-
-    // Security audit summary (bottom area, small)
-    const meta = sess.audit_meta || {};
-    let ay = footY - 46;
-    page.drawText("Security Audit", { x: M, y: ay, size: 11, font: bold, color: VINET_RED });
-    ay -= 12;
-    const auditLines = [
-      `Generated (Africa/Johannesburg): ${localDateTimePrettyZA()}`,
-      `Client IP: ${meta.ip || sess.last_ip || "n/a"}  •  ASN: ${meta.asn || "n/a"}  •  Org: ${meta.asOrganization || "n/a"}`,
-      `Approx Location: ${meta.city || "?"}, ${meta.region || "?"}, ${meta.country || "?"}`,
-      `Device: ${meta.ua || sess.last_ua || "n/a"}`,
-      `© Vinet Internet Solutions (Pty) Ltd`,
-    ];
-    for (const l of auditLines) {
-      page.drawText(l, { x: M, y: ay, size: 9.5, font, color: VINET_BLACK });
-      ay -= 12;
-    }
-  };
-
-  // --- Build pages ---
-  // Page 1: header + top details, then two‑column terms
+  // Page 1 - heading + client/agreement details (mirror DO layout)
   let page = pdf.addPage([W, H]);
-  const yAfterHeader = header(page, { continued: false });
-  const yAfterTop = drawClientAgreementTop(page, yAfterHeader);
-  page = await drawTermsTwoColumns(page, yAfterTop, terms);
+  let y = await renderHeader(page, { continued: false });
 
-  // Final page for signature (separate page like DO uses footer area)
-  await drawSignaturePage();
+  const colW = (W - M * 2) / 2;
 
-  // Save/cache/return
+  // Sub-headings in red
+  page.drawText("Client Details", { x: M, y, size: 12, font: bold, color: VINET_RED });
+  page.drawText("Agreement Details", { x: M + colW + 12, y, size: 12, font: bold, color: VINET_RED });
+  y -= 16;
+
+  // Left column: client
+  let yL = y;
+  const rowL = (k, v) => {
+    page.drawText(k, { x: M, y: yL, size: 10, font: bold, color: VINET_BLACK });
+    page.drawText(String(v || ""), { x: M + 120, y: yL, size: 10, font, color: VINET_BLACK });
+    yL -= 14;
+  };
+  rowL("Client code:", idOnly);
+  rowL("Full Name:", edits.full_name);
+  rowL("ID / Passport:", edits.passport);
+  rowL("Email:", edits.email);
+  rowL("Phone:", edits.phone);
+  rowL("Street:", edits.street);
+  rowL("City:", edits.city);
+  rowL("ZIP:", edits.zip);
+
+  // Right column: agreement meta (we include payment method; if debit chosen, show debit day)
+  let xR = M + colW + 12;
+  let yR = y;
+  const rowR = (k, v) => {
+    page.drawText(k, { x: xR, y: yR, size: 10, font: bold, color: VINET_BLACK });
+    page.drawText(String(v || ""), { x: xR + 140, y: yR, size: 10, font, color: VINET_BLACK });
+    yR -= 14;
+  };
+  rowR("Payment Method:", sess.pay_method || "—");
+  if (sess.pay_method === "debit") {
+    const d = sess.debit || {};
+    rowR("Debit Order Date:", d.debit_day || "—");
+    rowR("Bank Account Type:", d.account_type || "—");
+  }
+  rowR("Agreement Status:", sess.status || "—");
+
+  const infoBottom = Math.min(yL, yR) - 8;
+  drawDashedLine(page, M, infoBottom, W - M);
+
+  // Terms: single column (like DO), auto across pages
+  let yText = infoBottom - 14;
+  const sizeT = 7;                 // slightly larger than DO's 8 to improve legibility here
+  const lineH = 10.6;
+  const colWidth = W - M * 2;
+
+  const lines = await getWrappedLinesCached(env, terms, font, sizeT, colWidth, "msa:wrapped");
+  let i = 0;
+
+  function addContinuationPage() {
+    const p = pdf.addPage([W, H]);
+    const ny = renderHeader(p, { continued: true });
+    return { page: p, y: ny.then ? null : ny }; // handle both sync/async
+  }
+
+  while (i < lines.length) {
+    if (yText < 120) {
+      // new continuation page
+      const cont = pdf.addPage([W, H]);
+      yText = await renderHeader(cont, { continued: true });
+      yText -= 2;
+      page = cont;
+    }
+    page.drawText(lines[i], { x: M, y: yText, size: sizeT, font, color: VINET_BLACK });
+    yText -= lineH;
+    i++;
+  }
+
+  // Final page footer (Name | Signature | Date) matching DO positioning
+  // If the current page is too low for footer, push to a fresh page
+  const needNew = yText < 120;
+  if (needNew) {
+    const last = pdf.addPage([W, H]);
+    yText = await renderHeader(last, { continued: true });
+    page = last;
+  }
+
+  const footY = 90;
+  // “Client Details” above footer, mirroring DO's last section
+  page.drawText("Client Details", { x: M, y: footY + 38, size: 11, font: bold, color: VINET_RED });
+  page.drawText("Agreement Details", { x: M + colW + 12, y: footY + 38, size: 11, font: bold, color: VINET_RED });
+
+  // Light recap lines above the footer fields
+  page.drawText("Name:", { x: M, y: footY, size: 10, font: bold, color: VINET_BLACK });
+  page.drawText(String(edits.full_name || ""), { x: M + 45, y: footY, size: 10, font, color: VINET_BLACK });
+
+  page.drawText("Signature:", { x: M + (W / 2 - 50), y: footY, size: 10, font: bold, color: VINET_BLACK });
+  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
+  if (sigBytes) {
+    const sigImg = await pdf.embedPng(sigBytes);
+    const sigW = 160;
+    const sc = sigImg.scale(1);
+    const sigH = (sc.height / sc.width) * sigW;
+    page.drawImage(sigImg, {
+      x: M + (W / 2 - 50) + 70,
+      y: footY - sigH + 8,
+      width: sigW,
+      height: sigH,
+    });
+  }
+
+  // Date (DD/MM/YYYY) — “Date” label only, like DO
+  page.drawText("Date:", { x: W - M - 120, y: footY, size: 10, font: bold, color: VINET_BLACK });
+  page.drawText(localDateZAISO().split("-").reverse().join("/"), {
+    x: W - M - 120 + 42,
+    y: footY,
+    size: 10,
+    font,
+    color: VINET_BLACK,
+  });
+
+  // Security Audit page (Cape Town time, IP, ASN, UA), like DO
+  const audit = pdf.addPage([W, H]);
+  let ay = await renderHeader(audit, { continued: false });
+  audit.drawText("Security Audit", { x: M, y: ay + 16, size: 16, font: bold, color: VINET_RED });
+  drawDashedLine(audit, M, ay - 8, W - M);
+
+  const meta = sess.audit_meta || {};
+  const linesAudit = [
+    `Generated (Africa/Johannesburg): ${localDateTimePrettyZA()}`,
+    `Client IP: ${meta.ip || sess.last_ip || "n/a"}  •  ASN: ${meta.asn || "n/a"}  •  Org: ${meta.asOrganization || "n/a"}`,
+    `Approx Location: ${meta.city || "?"}, ${meta.region || "?"}, ${meta.country || "?"}`,
+    `Device: ${meta.ua || sess.last_ua || "n/a"}`,
+    `© Vinet Internet Solutions (Pty) Ltd`,
+  ];
+  let ay2 = ay - 26;
+  for (const l of linesAudit) {
+    audit.drawText(l, { x: M, y: ay2, size: 10, font, color: VINET_BLACK });
+    ay2 -= 14;
+  }
+
+  // Save + cache
   const bytes = await pdf.save();
   await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
+
   return new Response(bytes, {
     headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" },
   });
