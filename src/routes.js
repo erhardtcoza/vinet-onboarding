@@ -223,46 +223,30 @@ if (path === "/admin/review" && method === "GET") {
     }
   }
 
-  // ----- Admin: approve (push to Splynx + mark approved) -----
-  if (path === "/api/admin/approve" && method === "POST") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return json({ ok: false, error: "Not found" }, 404);
+// ----- Admin approve (push to Splynx + mark approved) -----
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden",{status:403});
+  const { linkid } = await request.json().catch(()=> ({}));
+  if (!linkid) return json({ ok:false, error:"Missing linkid" }, 400);
 
-    const id = String(sess.id || "").trim();
-    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok:false, error:"Not found" }, 404);
 
-    // Map to Splynx fields (adjust as needed)
-    const body = {
-      full_name: sess.edits?.full_name || undefined,
-      email: sess.edits?.email || undefined,
-      phone_mobile: sess.edits?.phone || undefined,
-      street_1: sess.edits?.street || undefined,
-      city: sess.edits?.city || undefined,
-      zip_code: sess.edits?.zip || undefined,
-      attachments: publicFiles,
-      payment_method: sess.pay_method || undefined,
-      debit: sess.debit || undefined,
-    };
-
-    // Cover all listed endpoints; ignore failures
-    try { await splynxPUT(env, `/admin/customers/customer/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/customers/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/crm/leads/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/customers/${id}/contacts`, body); } catch {}
-    try { await splynxPUT(env, `/admin/crm/leads/${id}/contacts`, body); } catch {}
-
-    await env.ONBOARD_KV.put(
-      `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now() }),
-      { expirationTtl: 86400 }
-    );
-    return json({ ok: true });
+  // Best-effort push of all info + doc links to Splynx (PUT to all endpoints)
+  let pushSummary = null;
+  try {
+    const mod = await import("./splynx.js");
+    pushSummary = await mod.pushOnboardToSplynx(env, sess, linkid);
+  } catch (e) {
+    // We do not fail approval purely on push errors; we return the error detail to UI.
+    pushSummary = { error: String(e && e.message || e) };
   }
+
+  // Mark approved in KV (leave record for 1 day as before)
+  await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, status:"approved", approved_at: Date.now() }), { expirationTtl: 86400 });
+
+  return json({ ok:true, pushSummary });
+}
 
   // ----- OTP: send -----
   if (path === "/api/otp/send" && method === "POST") {
