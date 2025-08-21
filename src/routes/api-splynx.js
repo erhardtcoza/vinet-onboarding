@@ -1,122 +1,108 @@
 // src/routes/api-splynx.js
-import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT, splynxGET } from "../splynx.js";
+import {
+  splynxGET,
+  splynxPUT,
+  splynxPOST,
+  fetchProfileForDisplay,
+  fetchCustomerMsisdn
+} from "../splynx.js";
 
-export function match(path, method) {
-  return (
-    path.startsWith("/api/splynx/profile") ||
-    path.startsWith("/api/splynx/raw") ||
-    path.startsWith("/api/splynx/msisdn") ||
-    path.startsWith("/api/splynx/update")
-  );
-}
-
-export async function handle(request, env) {
+export async function handleSplynxApiRequest(request, env, ctx) {
   const url = new URL(request.url);
   const path = url.pathname;
-  const method = request.method;
 
-  console.log(`[api-splynx] Handling ${method} ${path}`);
-
-  // ---------------------
-  // Profile
-  // ---------------------
-  if (path === "/api/splynx/profile" && method === "GET") {
+  // --- Fetch profile (customer/lead) ---
+  if (path === "/api/splynx/fetch-profile") {
     const id = url.searchParams.get("id");
-    if (!id) {
-      return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
-    }
+    const type = url.searchParams.get("type") || "customer";
+    if (!id) return new Response("Missing id", { status: 400 });
 
     try {
-      const profile = await fetchProfileForDisplay(env, id);
-      if (!profile) {
-        console.log(`[api-splynx] Profile not found for id=${id}`);
-        return new Response(JSON.stringify({ error: "Not found" }), { status: 404 });
-      }
-
-      console.log(`[api-splynx] Profile id=${id} keys=${Object.keys(profile).length}`);
-      if (profile.normalised) {
-        console.log(`[api-splynx] Normalised block present for id=${id}`);
-      }
-
+      const profile = await fetchProfileForDisplay(env, id, type);
       return new Response(JSON.stringify(profile), {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {
-      console.error(`[api-splynx] Error fetching profile for id=${id}: ${err.message}`);
-      return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      return new Response(
+        JSON.stringify({ error: `Fetch profile error: ${err.message}` }),
+        { status: 500 }
+      );
     }
   }
 
-  // ---------------------
-  // Raw passthrough
-  // ---------------------
-  if (path === "/api/splynx/raw" && method === "GET") {
-    const ep = url.searchParams.get("ep");
-    if (!ep) {
-      return new Response(JSON.stringify({ error: "Missing ep" }), { status: 400 });
-    }
+  // --- PUT generic ---
+  if (path === "/api/splynx/put" && request.method === "POST") {
     try {
-      console.log(`[api-splynx] Fetching raw endpoint ${ep}`);
-      const data = await splynxGET(env, ep);
-      return new Response(JSON.stringify(data), {
+      const { endpoint, data } = await request.json();
+      if (!endpoint || !data)
+        return new Response("Missing endpoint/data", { status: 400 });
+
+      const res = await splynxPUT(env, endpoint, data);
+      return new Response(JSON.stringify(res), {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {
-      console.error(`[api-splynx] Raw fetch failed for ep=${ep}: ${err.message}`);
-      return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      return new Response(
+        JSON.stringify({ error: `PUT error: ${err.message}` }),
+        { status: 500 }
+      );
     }
   }
 
-  // ---------------------
-  // MSISDN lookup
-  // ---------------------
-  if (path === "/api/splynx/msisdn" && method === "GET") {
+  // --- GET generic ---
+  if (path === "/api/splynx/get") {
+    const endpoint = url.searchParams.get("endpoint");
+    if (!endpoint) return new Response("Missing endpoint", { status: 400 });
+
+    try {
+      const res = await splynxGET(env, endpoint);
+      return new Response(JSON.stringify(res), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ error: `GET error: ${err.message}` }),
+        { status: 500 }
+      );
+    }
+  }
+
+  // --- POST generic ---
+  if (path === "/api/splynx/post" && request.method === "POST") {
+    try {
+      const { endpoint, data } = await request.json();
+      if (!endpoint || !data)
+        return new Response("Missing endpoint/data", { status: 400 });
+
+      const res = await splynxPOST(env, endpoint, data);
+      return new Response(JSON.stringify(res), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ error: `POST error: ${err.message}` }),
+        { status: 500 }
+      );
+    }
+  }
+
+  // --- Fetch MSISDN ---
+  if (path === "/api/splynx/fetch-msisdn") {
     const id = url.searchParams.get("id");
-    if (!id) {
-      return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
-    }
-    try {
-      const data = await fetchCustomerMsisdn(env, id);
-      if (!data) {
-        console.log(`[api-splynx] MSISDN not found for id=${id}`);
-        return new Response(JSON.stringify({ error: "Not found" }), { status: 404 });
-      }
+    if (!id) return new Response("Missing id", { status: 400 });
 
-      console.log(`[api-splynx] MSISDN success for id=${id}`);
-      return new Response(JSON.stringify(data), {
+    try {
+      const msisdn = await fetchCustomerMsisdn(env, id);
+      return new Response(JSON.stringify(msisdn), {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {
-      console.error(`[api-splynx] MSISDN fetch failed for id=${id}: ${err.message}`);
-      return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      return new Response(
+        JSON.stringify({ error: `MSISDN error: ${err.message}` }),
+        { status: 500 }
+      );
     }
   }
 
-  // ---------------------
-  // Update customer
-  // ---------------------
-  if (path === "/api/splynx/update" && method === "PUT") {
-    const id = url.searchParams.get("id");
-    if (!id) {
-      return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
-    }
-
-    try {
-      const body = await request.json();
-      const result = await splynxPUT(env, `/admin/customers/customer/${id}`, body);
-
-      console.log(`[api-splynx] Updated customer id=${id}`);
-      return new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      console.error(`[api-splynx] Update failed for id=${id}: ${err.message}`);
-      return new Response(JSON.stringify({ error: err.message }), { status: 500 });
-    }
-  }
-
-  // ---------------------
-  // Fallback
-  // ---------------------
   return new Response("Not found", { status: 404 });
 }
