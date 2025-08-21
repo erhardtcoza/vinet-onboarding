@@ -1,178 +1,199 @@
-// src/splynx.js
+// /src/splynx.js
+//
+// Splynx client utilities used by routes.js
+// Exports:
+//   - fetchProfileForDisplay(env, id)
+//   - fetchCustomerMsisdn(env, id)
+//   - splynxPUT(env, path, body)
+//   - pushOnboardToSplynx(env, sess, linkid)
+//
+// ENV expected:
+//   SPLYNX_BASE:   e.g. "https://splynx.example.com"
+//   SPLYNX_TOKEN:  "Bearer ..." (preferred)  OR
+//   SPLYNX_BASIC:  "Basic base64(user:pass)"
+//   R2_PUBLIC_BASE (optional, defaults to onboarding-uploads.vinethosting.org)
+//   PUBLIC_ORIGIN  (optional, defaults to https://onboard.vinet.co.za)
 
-// ---------- Auth helpers ----------
-function buildAuthHeaders(env) {
-  const h = { "Content-Type": "application/json" };
-  if (env.SPLYNX_TOKEN) {
-    // Token / API key auth
-    // Common patterns:
-    //  - Authorization: Bearer <token>
-    //  - X-API-Key: <token>
-    // If you know which your Splynx needs, use that one. We'll send both safely.
-    h["Authorization"] = `Bearer ${env.SPLYNX_TOKEN}`;
-    h["X-API-Key"] = env.SPLYNX_TOKEN;
-  } else if (env.SPLYNX_LOGIN && env.SPLYNX_PASSWORD) {
-    // Basic auth as fallback
-    const b64 = btoa(`${env.SPLYNX_LOGIN}:${env.SPLYNX_PASSWORD}`);
-    h["Authorization"] = `Basic ${b64}`;
-  }
-  return h;
-}
+const pickAuthHeader = (env) => {
+  if (env.SPLYNX_TOKEN) return { Authorization: `Bearer ${env.SPLYNX_TOKEN}` };
+  if (env.SPLYNX_BASIC) return { Authorization: env.SPLYNX_BASIC };
+  return {};
+};
 
-function baseUrl(env) {
-  // e.g. https://splynx.example.com/api
-  // Accept SPLYNX_BASE with or without trailing slash
-  let b = String(env.SPLYNX_BASE || "").trim();
-  if (!b) throw new Error("Missing SPLYNX_BASE");
-  if (b.endsWith("/")) b = b.slice(0, -1);
+const baseUrl = (env) => {
+  const b = (env.SPLYNX_BASE || "").replace(/\/+$/, "");
+  if (!b) throw new Error("SPLYNX_BASE not configured");
   return b;
-}
+};
 
-// ---------- Low-level REST wrappers ----------
-export async function splynxGET(env, path) {
-  const url = `${baseUrl(env)}${path.startsWith("/") ? "" : "/"}${path}`;
-  const r = await fetch(url, {
-    method: "GET",
-    headers: buildAuthHeaders(env),
-    // cache a little to reduce load; disable if you need freshest
-    cf: { cacheTtl: 30, cacheEverything: false },
-  });
-  if (!r.ok) {
-    const txt = await r.text().catch(() => "");
-    throw new Error(`Splynx GET ${path} -> ${r.status} ${txt}`);
+async function splynxGET(env, path) {
+  const url = `${baseUrl(env)}${path}`;
+  const res = await fetch(url, { headers: { ...pickAuthHeader(env) } });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`GET ${path} -> ${res.status} ${t.slice(0, 300)}`);
   }
-  // Some Splynx endpoints wrap payloads; many return plain JSON
-  const data = await r.json().catch(() => null);
-  return data;
+  return res.json().catch(() => ({}));
 }
 
 export async function splynxPUT(env, path, body) {
-  const url = `${baseUrl(env)}${path.startsWith("/") ? "" : "/"}${path}`;
-  const r = await fetch(url, {
+  const url = `${baseUrl(env)}${path}`;
+  const res = await fetch(url, {
     method: "PUT",
-    headers: buildAuthHeaders(env),
+    headers: { "Content-Type": "application/json", ...pickAuthHeader(env) },
     body: JSON.stringify(body || {}),
   });
-  if (!r.ok) {
-    const txt = await r.text().catch(() => "");
-    throw new Error(`Splynx PUT ${path} -> ${r.status} ${txt}`);
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`PUT ${path} -> ${res.status} ${t.slice(0, 300)}`);
   }
-  // Some PUTs return the saved object, some return {}
-  try { return await r.json(); } catch { return {}; }
+  return res.json().catch(() => ({}));
 }
-
-// ---------- Phone normalization ----------
-function normalizeMsisdn(raw, defaultCountry = "27") {
-  let s = String(raw || "").trim();
-  if (!s) return "";
-
-  // remove any non-digits
-  s = s.replace(/\D+/g, "");
-
-  // If ZA local (0XXXXXXXXX), convert to 27XXXXXXXXX
-  if (defaultCountry === "27" && /^0\d{9}$/.test(s)) {
-    s = "27" + s.slice(1);
-  }
-  // Leave other international formats as-is (e.g., 44..., 1..., 353...)
-  return s;
-}
-export { normalizeMsisdn };
-
-// ---------- High-level helpers ----------
 
 /**
- * Try to fetch a friendly profile for display/edit.
- * Looks up Customer first, then Lead.
- * Maps to the fields your UI expects.
+ * Try to fetch a customer, else a lead, then map to the simple shape your UI expects.
+ * Returns:
+ *   { full_name, email, phone, passport, street, city, zip }
  */
 export async function fetchProfileForDisplay(env, id) {
   const cid = String(id).trim();
-  let obj = null;
+  // Try Customer API first
+  let src = null;
   try {
-    obj = await splynxGET(env, `/admin/customers/customer/${cid}`);
+    src = await splynxGET(env, `/admin/customers/customer/${cid}`);
   } catch {
-    try { obj = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch { obj = null; }
+    // Try Lead API
+    try { src = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch { src = null; }
   }
-  if (!obj) return {};
+  if (!src || typeof src !== "object") return {};
 
-  // Splynx installations vary; map common fields into your expected shape.
-  const profile = {
-    full_name:
-      obj.full_name ||
-      [obj.first_name, obj.last_name].filter(Boolean).join(" ") ||
-      obj.name ||
-      "",
-    email: obj.email || obj.email_address || "",
-    phone:
-      normalizeMsisdn(obj.whatsapp || obj.phone_mobile || obj.mobile || obj.phone || ""),
-    passport: obj.passport || obj.id_number || obj.identity || "",
-    street: obj.street_1 || obj.street || obj.address || "",
-    city: obj.city || "",
-    zip: obj.zip_code || obj.post_code || obj.zip || "",
-  };
+  // Splynx field names can vary a bit by version. Try common ones.
+  const fullName =
+    src.full_name ||
+    [src.first_name, src.last_name].filter(Boolean).join(" ") ||
+    src.name ||
+    "";
 
-  // If object contains nested contact-like entries, prefer a mobile/whatsapp from there
-  if (Array.isArray(obj.contacts)) {
-    for (const c of obj.contacts) {
-      const cand =
-        c?.whatsapp || c?.phone_mobile || c?.mobile || c?.phone || c?.contact_phone;
-      const n = normalizeMsisdn(cand);
-      if (n) { profile.phone = n; break; }
-    }
-  }
+  const email = src.email || src.email_1 || src.email_primary || "";
+  const phone =
+    src.phone_mobile || src.phone || src.mobile || src.whatsapp || "";
+  const passport =
+    src.passport || src.id_number || src.national_id || src.identity_no || "";
 
-  return profile;
+  const street =
+    src.street_1 || src.address_1 || src.street || src.address || "";
+  const city = src.city || src.town || "";
+  const zip = src.zip_code || src.postal_code || src.zip || "";
+
+  return { full_name: fullName, email, phone, passport, street, city, zip };
 }
 
 /**
- * Aggressive MSISDN fetch: customer -> lead -> contacts endpoints.
- * Returns E.164-like digits string (no +), e.g. 27731234567, or "".
+ * Get the MSISDN (WhatsApp) for OTP delivery.
+ * Returns an E.164-like string if possible, else raw value.
  */
 export async function fetchCustomerMsisdn(env, id) {
   const cid = String(id).trim();
-  let primary = null;
+  let src = null;
+  try {
+    src = await splynxGET(env, `/admin/customers/customer/${cid}`);
+  } catch {
+    try { src = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch { src = null; }
+  }
+  if (!src) return "";
 
-  // Try Customer then Lead
-  try { primary = await splynxGET(env, `/admin/customers/customer/${cid}`); } catch {}
-  if (!primary) { try { primary = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch {} }
-  const candidates = [];
-  if (primary) {
-    candidates.push(
-      primary.whatsapp,
-      primary.phone_mobile,
-      primary.mobile,
-      primary.phone,
-      primary.contact_phone,
-      primary.msisdn
-    );
-    if (Array.isArray(primary.contacts)) {
-      for (const c of primary.contacts) {
-        candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
-      }
-    }
+  // Candidate fields by common naming
+  let msisdn =
+    src.whatsapp ||
+    src.phone_mobile ||
+    src.mobile ||
+    src.phone ||
+    src.contact_phone ||
+    "";
+
+  msisdn = String(msisdn || "").trim();
+
+  // Simple normalization: keep digits + leading +
+  if (msisdn) {
+    const cleaned = msisdn.replace(/[^\d+]/g, "");
+    // If it starts with 0 and you want to force ZA "27", uncomment below:
+    // if (/^0\d{9}$/.test(cleaned)) msisdn = "27" + cleaned.slice(1);
+    msisdn = cleaned;
   }
 
-  // Hit contacts endpoints explicitly
-  try {
-    const custContacts = await splynxGET(env, `/admin/customers/${cid}/contacts`);
-    if (Array.isArray(custContacts)) {
-      for (const c of custContacts) {
-        candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
-      }
-    }
-  } catch {}
-  try {
-    const leadContacts = await splynxGET(env, `/admin/crm/leads/${cid}/contacts`);
-    if (Array.isArray(leadContacts)) {
-      for (const c of leadContacts) {
-        candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
-      }
-    }
-  } catch {}
+  return msisdn;
+}
 
-  for (const raw of candidates) {
-    const n = normalizeMsisdn(raw, "27");
-    if (n) return n;
-  }
-  return "";
+/**
+ * Best-effort push of onboarding session to Splynx.
+ * - Writes obvious fields to customer and lead resources via PUT.
+ * - Adds doc links (uploads + MSA/DO PDFs) into a "comments" / note field.
+ * - Tries contact endpoints too; errors are swallowed but included in summary.
+ */
+export async function pushOnboardToSplynx(env, sess, linkid) {
+  if (!sess) throw new Error("Missing session");
+  const id = String(sess.id || String(linkid || "").split("_")[0] || "").trim();
+  if (!id) throw new Error("Cannot infer Splynx ID");
+
+  const r2Base = (env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org").replace(/\/+$/,"");
+  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+  const uploadUrls = uploads.map(u => `${r2Base}/${u.key}`);
+
+  const origin = env.PUBLIC_ORIGIN || "https://onboard.vinet.co.za";
+  const msaPdf = `${origin}/pdf/msa/${linkid}`;
+  const debitPdf = sess.pay_method === "debit" ? `${origin}/pdf/debit/${linkid}` : null;
+
+  const stamp = new Date().toISOString().replace("T"," ").replace("Z","");
+  const lines = [
+    `Vinet Onboarding pushed: ${stamp}`,
+    `Link: ${origin}/onboard/${linkid}`,
+    `MSA PDF: ${msaPdf}`,
+    debitPdf ? `Debit Order PDF: ${debitPdf}` : null,
+    uploadUrls.length ? "Uploads:" : null,
+    ...uploadUrls.map(u => ` - ${u}`),
+  ].filter(Boolean);
+  const commentsBlob = lines.join("\n");
+
+  const e = sess.edits || {};
+  const common = {
+    full_name: e.full_name || undefined,
+    email: e.email || undefined,
+    phone_mobile: e.phone || undefined,
+    street_1: e.street || undefined,
+    city: e.city || undefined,
+    zip_code: e.zip || undefined,
+    payment_method: sess.pay_method || undefined,
+    debit: sess.debit || undefined, // harmless if ignored
+    comments: commentsBlob,
+    comment: commentsBlob,
+    additional_information: commentsBlob,
+  };
+
+  const contactBasic = {
+    first_name: (e.full_name || "").split(" ").slice(0, -1).join(" ") || e.full_name || undefined,
+    last_name: (e.full_name || "").split(" ").slice(-1).join(" ") || undefined,
+    email: e.email || undefined,
+    phone: e.phone || undefined,
+  };
+
+  const attempts = [
+    splynxPUT(env, `/admin/customers/customer/${id}`, common).catch(err => ({ __err: err.message })),
+    splynxPUT(env, `/admin/customers/${id}`, common).catch(err => ({ __err: err.message })),
+    splynxPUT(env, `/admin/crm/leads/${id}`, common).catch(err => ({ __err: err.message })),
+    splynxPUT(env, `/admin/customers/${id}/contacts`, contactBasic).catch(err => ({ __err: err.message })),
+    splynxPUT(env, `/admin/crm/leads/${id}/contacts`, contactBasic).catch(err => ({ __err: err.message })),
+  ];
+
+  const results = await Promise.all(attempts);
+
+  return {
+    id,
+    results,
+    posted: {
+      uploads: uploadUrls,
+      msaPdf,
+      debitPdf: debitPdf || undefined,
+      fields: common,
+    },
+  };
 }
