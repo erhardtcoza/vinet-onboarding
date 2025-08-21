@@ -137,58 +137,62 @@ export async function fetchProfileForDisplay(env, id) {
     payment_method: src.payment_method || "",
   };
 }
+// --- Document helpers (Customer & Lead) ---
 
-// ----------- Documents (create + upload) -----------
-/**
- * Create a document placeholder in Splynx.
- * kind: "customer" | "lead"
- * Returns { id: <docId> } or throws.
- */
-export async function splynxCreateDocument(env, kind, entityId, title, description="") {
-  const base = kind === "lead"
-    ? `/admin/crm/leads/${entityId}/documents`
-    : `/admin/customers/${entityId}/documents`;
-  const payload = { title: title || "Onboarding Document", description };
-  return await splynxPOST(env, base, payload);
+export async function splynxCreateCustomerDoc(env, { customer_id, title, description, type }) {
+  const r = await fetch(`${env.SPLYNX_API}/admin/customers/customer-documents`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ customer_id, title, description, type })
+  });
+  if (!r.ok) throw new Error(`Create customer doc ${r.status} ${await r.text().catch(()=> "")}`);
+  return r.json();
 }
 
-/**
- * Upload a file for a document in Splynx (multipart).
- * bytes: ArrayBuffer|Uint8Array
- */
-export async function splynxUploadDocumentFile(env, kind, entityId, docId, bytes, filename, contentType="application/octet-stream") {
-  const base = kind === "lead"
-    ? `/admin/crm/leads/${entityId}/documents/${docId}/file`
-    : `/admin/customers/${entityId}/documents/${docId}/file`;
+export async function splynxUploadCustomerDocFile(env, { customer_id, document_id, filename, bytes }) {
   const form = new FormData();
-  const blob = bytes instanceof ArrayBuffer ? new Blob([bytes], { type: contentType }) :
-               bytes instanceof Uint8Array ? new Blob([bytes.buffer], { type: contentType }) :
-               bytes; // last resort if already Blob
-  form.append("file", blob, filename || "file.bin");
-  return await splynxPOSTMultipart(env, base, form);
+  form.append("customer_id", String(customer_id));
+  form.append("document_id", String(document_id));
+  form.append("file", new Blob([bytes]), filename);
+  const r = await fetch(`${env.SPLYNX_API}/admin/customers/customer-documents-upload-file`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+    body: form
+  });
+  if (!r.ok) throw new Error(`Upload customer doc file ${r.status} ${await r.text().catch(()=> "")}`);
+  return r.json().catch(()=> ({}));
 }
 
-/**
- * Try upload to Customer; on failure, try Lead. Returns { kind, docId } or null on total failure.
- */
-export async function splynxCreateAndUploadDocFallback(env, entityId, title, bytes, filename, contentType) {
-  // 1) Customer
-  try {
-    const doc = await splynxCreateDocument(env, "customer", entityId, title);
-    const docId = doc?.id ?? doc?.data?.id ?? doc?.result?.id;
-    if (!docId) throw new Error("No doc id");
-    await splynxUploadDocumentFile(env, "customer", entityId, docId, bytes, filename, contentType);
-    return { kind: "customer", docId };
-  } catch (e1) {
-    // 2) Lead
-    try {
-      const doc = await splynxCreateDocument(env, "lead", entityId, title);
-      const docId = doc?.id ?? doc?.data?.id ?? doc?.result?.id;
-      if (!docId) throw new Error("No doc id");
-      await splynxUploadDocumentFile(env, "lead", entityId, docId, bytes, filename, contentType);
-      return { kind: "lead", docId };
-    } catch (e2) {
-      return null;
-    }
-  }
+export async function splynxCreateLeadDoc(env, { lead_id, title, description, type }) {
+  const r = await fetch(`${env.SPLYNX_API}/admin/crm/lead-documents`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ lead_id, title, description, type })
+  });
+  if (!r.ok) throw new Error(`Create lead doc ${r.status} ${await r.text().catch(()=> "")}`);
+  return r.json();
+}
+
+export async function splynxUploadLeadDocFile(env, { lead_id, document_id, filename, bytes }) {
+  const form = new FormData();
+  form.append("lead_id", String(lead_id));
+  form.append("document_id", String(document_id));
+  form.append("file", new Blob([bytes]), filename);
+  const r = await fetch(`${env.SPLYNX_API}/admin/crm/lead-documents-upload-file`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${env.SPLYNX_AUTH}` },
+    body: form
+  });
+  if (!r.ok) throw new Error(`Upload lead doc file ${r.status} ${await r.text().catch(()=> "")}`);
+  return r.json().catch(()=> ({}));
+}
+
+// Map our UI labels -> Splynx "type"
+export function mapUploadLabelToType(label) {
+  const L = String(label || "").toLowerCase();
+  if (L.includes("proof of address") || L === "poa") return "poa";
+  if (L.includes("id")) return "identity";
+  if (L.includes("msa") || L.includes("service agreement")) return "msa";
+  if (L.includes("debit")) return "debit_order";
+  return "other";
 }
