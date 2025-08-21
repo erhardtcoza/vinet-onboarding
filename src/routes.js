@@ -1,6 +1,6 @@
 import { ipAllowed } from "./branding.js";
-import renderMSAPdf from "./pdf/msa.js";       // default import
-import renderDebitPdf from "./pdf/debit.js";   // if debit is default too
+import { renderMSAPdf } from "./pdf/msa.js";
+import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
 import { fetchTextCached, getClientMeta } from "./helpers.js";
 import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT } from "./splynx.js";
