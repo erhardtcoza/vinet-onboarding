@@ -1,3 +1,10 @@
+Good catch — that error is from declaring a const and using backticks inside a ${ ... } interpolation of a larger template literal. Some bundlers choke on that pattern. I’ve also noticed I referenced esc() in the client <script> without defining it there. Below is a corrected, drop‑in /src/ui/admin.js that:
+	•	Removes nested template‑literal declarations inside ${ ... }
+	•	Defines a client‑side esc() helper in the dashboard script
+	•	Keeps all the features we added (modal, tabs, delete, review links, diffs, R2 links, etc.)
+
+Replace the file with this:
+
 // /src/ui/admin.js
 import { LOGO_URL } from "../constants.js";
 
@@ -27,14 +34,14 @@ export function renderAdminPage() {
   .col{flex:1 1 360px}
   .btn{background:var(--red);color:#fff;border:0;border-radius:999px;padding:.65em 1.4em;font-weight:700;cursor:pointer}
   .btn.small{padding:.45em .95em;font-weight:600}
-  .btn-outline{background:#fff;color:var(--red);border:2px solid var(--red);border-radius:999px;padding:.5em 1.1em;font-weight:700;cursor:pointer}
+  .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:999px;padding:.5em 1.1em;font-weight:700;cursor:pointer}
   .btn-ghost{background:#fff;color:#222;border:2px solid #ddd;border-radius:999px;padding:.45em .9em;cursor:pointer}
   .btn-danger{color:#b00020;border-color:#b00020}
   .note{color:var(--muted);font-size:.9em}
   .section{margin:20px 0 14px}
   .tabs{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
-  .tab{border:2px solid var(--red);color:var(--red);background:#fff;border-radius:999px;padding:.5em 1.1em;cursor:pointer}
-  .tab.active{background:var(--red);color:#fff}
+  .tab{border:2px solid var(--red);color:#e2001a;background:#fff;border-radius:999px;padding:.5em 1.1em;cursor:pointer}
+  .tab.active{background:#e2001a;color:#fff}
   table{width:100%;border-collapse:collapse;margin-top:10px}
   th,td{padding:10px 8px;border-bottom:1px solid #eee;text-align:left}
   td.actions{white-space:nowrap}
@@ -105,6 +112,10 @@ export function renderAdminPage() {
   const $ = (sel) => document.querySelector(sel);
   const listBox = $("#listBox");
 
+  // client-side esc helper for UI strings
+  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[m])); }
+  function fmtDT(t){ if(!t) return ""; const d=new Date(t); const p=n=>String(n).padStart(2,"0"); return \`\${p(d.getDate())}/\${p(d.getMonth()+1)}/\${d.getFullYear()}, \${p(d.getHours())}:\${p(d.getMinutes())}:\${p(d.getSeconds())}\`; }
+
   // Tabs
   let mode = "inprog";
   document.querySelectorAll(".tab").forEach(btn=>{
@@ -117,42 +128,42 @@ export function renderAdminPage() {
   });
 
   function row(linkid, id, updated, kind){
-    const dt = ${fmtDT.toString()}(updated);
+    const dt = fmtDT(updated);
     const safeLink = "/onboard/" + encodeURIComponent(linkid);
     const review = "/admin/review?linkid=" + encodeURIComponent(linkid);
 
     if (kind === "inprog") {
-      return \`<tr>
-        <td>\${esc(id)}</td>
-        <td class="copy">\${esc(linkid)}</td>
-        <td>\${esc(dt)}</td>
-        <td class="actions">
-          <a class="btn-outline small" href="\${safeLink}" target="_blank">Open</a>
-          <button class="btn-ghost small btn-danger" data-del="\${esc(linkid)}">Delete</button>
-        </td>
-      </tr>\`;
+      return '<tr>'
+        + '<td>' + esc(id) + '</td>'
+        + '<td class="copy">' + esc(linkid) + '</td>'
+        + '<td>' + esc(dt) + '</td>'
+        + '<td class="actions">'
+          + '<a class="btn-outline small" href="' + safeLink + '" target="_blank">Open</a> '
+          + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
+        + '</td>'
+      + '</tr>';
     }
     if (kind === "pending") {
-      return \`<tr>
-        <td>\${esc(id)}</td>
-        <td class="copy">\${esc(linkid)}</td>
-        <td>\${esc(dt)}</td>
-        <td class="actions">
-          <a class="btn-outline small" href="\${review}">Review</a>
-          <button class="btn-ghost small btn-danger" data-del="\${esc(linkid)}">Delete</button>
-        </td>
-      </tr>\`;
+      return '<tr>'
+        + '<td>' + esc(id) + '</td>'
+        + '<td class="copy">' + esc(linkid) + '</td>'
+        + '<td>' + esc(dt) + '</td>'
+        + '<td class="actions">'
+          + '<a class="btn-outline small" href="' + review + '">Review</a> '
+          + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
+        + '</td>'
+      + '</tr>';
     }
     // approved
-    return \`<tr>
-      <td>\${esc(id)}</td>
-      <td class="copy">\${esc(linkid)}</td>
-      <td>\${esc(dt)}</td>
-      <td class="actions">
-        <a class="btn-outline small" href="\${review}">Review</a>
-        <button class="btn-ghost small btn-danger" data-del="\${esc(linkid)}">Delete</button>
-      </td>
-    </tr>\`;
+    return '<tr>'
+      + '<td>' + esc(id) + '</td>'
+      + '<td class="copy">' + esc(linkid) + '</td>'
+      + '<td>' + esc(dt) + '</td>'
+      + '<td class="actions">'
+        + '<a class="btn-outline small" href="' + review + '">Review</a> '
+        + '<button class="btn-ghost small btn-danger" data-del="' + esc(linkid) + '">Delete</button>'
+      + '</td>'
+    + '</tr>';
   }
 
   async function loadList(){
@@ -174,14 +185,12 @@ export function renderAdminPage() {
         : mode === "pending" ? "pending"
         : "inprog";
 
-      listBox.innerHTML = \`
-        <h3>\${title}</h3>
-        <table>
-          <thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th></th></tr></thead>
-          <tbody>
-            \${ items.map(x => row(x.linkid, x.id, x.updated, kind)).join("") }
-          </tbody>
-        </table>\`;
+      listBox.innerHTML =
+        '<h3>' + title + '</h3>'
+        + '<table>'
+          + '<thead><tr><th>Splynx ID</th><th>Link ID</th><th>Updated</th><th></th></tr></thead>'
+          + '<tbody>' + items.map(x => row(x.linkid, x.id, x.updated, kind)).join('') + '</tbody>'
+        + '</table>';
 
       // wire delete buttons
       listBox.querySelectorAll("[data-del]").forEach(btn=>{
@@ -227,7 +236,7 @@ export function renderAdminPage() {
       headers:{ "content-type":"application/json" },
       body: JSON.stringify({ linkid })
     }).then(r=>r.json()).catch(()=>({ ok:false }));
-    if (!res.ok) $("#staff_msg").textContent = res.error || "Failed to generate staff code.";
+    if (!res.ok) $("#staff_msg").textContent = (res && res.error) ? res.error : "Failed to generate staff code.";
     else $("#staff_msg").textContent = "Staff code: " + res.code + " (valid ~15 min)";
   });
 
@@ -292,8 +301,8 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   .logo{height:54px;display:block;margin:0 auto 8px}
   h1,h2,h3{color:var(--red);margin:.25em 0 .6em}
   .note{color:#666}
-  .btn{background:var(--red);color:#fff;border:0;border-radius:999px;padding:.6em 1.2em;cursor:pointer}
-  .btn-outline{background:#fff;color:var(--red);border:2px solid var(--red);border-radius:999px;padding:.5em 1.1em;cursor:pointer}
+  .btn{background:#e2001a;color:#fff;border:0;border-radius:999px;padding:.6em 1.2em;cursor:pointer}
+  .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:999px;padding:.5em 1.1em;cursor:pointer}
   .btn-danger{border-color:#b00020;color:#b00020}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   table{width:100%;border-collapse:collapse;margin-top:8px}
@@ -301,7 +310,7 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   .diff-old{color:#b00020}
   .diff-new{color:#0b6}
   .chips{display:flex;gap:.5em;flex-wrap:wrap}
-  .pill{display:inline-block;border:2px solid var(--red);color:var(--red);border-radius:999px;padding:.35em .9em}
+  .pill{display:inline-block;border:2px solid #e2001a;color:#e2001a;border-radius:999px;padding:.35em .9em}
 </style></head><body>
 <div class="card">
   <a class="btn-outline" href="/">← Back</a>
@@ -343,12 +352,14 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
            <thead><tr><th>Label</th><th>File</th><th>Size</th></tr></thead>
            <tbody>
              ${uploads.map(u => {
-               const url = \`\${r2PublicBase}/\${u.key}\`;
-               return \`<tr>
-                 <td>\${esc(u.label||"")}</td>
-                 <td><a href="\${esc(url)}" target="_blank">\${esc(u.name||u.key)}</a></td>
-                 <td>${'${fmtKB(u.size)}'}</td>
-               </tr>\`;
+               const url = String(r2PublicBase || "") + "/" + String(u.key || "");
+               const name = esc(u.name || u.key || "");
+               const sizeStr = ${fmtKB.toString()}(u.size);
+               return '<tr>'
+                 + '<td>' + esc(u.label||"") + '</td>'
+                 + '<td><a href="' + esc(url) + '" target="_blank">' + name + '</a></td>'
+                 + '<td>' + sizeStr + '</td>'
+                 + '</tr>';
              }).join("")}
            </tbody>
          </table>`
