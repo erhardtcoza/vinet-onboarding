@@ -101,6 +101,7 @@ export async function handleApiAdmin(req, env) {
     ).bind(status, id).run();
 
     // 🔄 Auto-sync on approve
+    let splynxId = null;
     if (status === "approved") {
       try {
         const row = await env.DB.prepare("SELECT * FROM onboard WHERE id = ?")
@@ -119,29 +120,33 @@ export async function handleApiAdmin(req, env) {
             splynxResult = await splynxPOST(env, `/admin/crm/leads`, payload);
           }
 
+          if (splynxResult && splynxResult.id) {
+            splynxId = splynxResult.id;
+
+            // ⬇️ Save mapping in onboard table
+            await env.DB.prepare(
+              "UPDATE onboard SET splynx_id = ? WHERE id = ?"
+            ).bind(splynxId, id).run();
+          }
+
           // Attachments (if stored in R2/KV)
-          if (row.id_doc_key) {
-            const file = await env.R2_BUCKET.get(row.id_doc_key);
-            if (file) {
-              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
-            }
-          }
-          if (row.poa_doc_key) {
-            const file = await env.R2_BUCKET.get(row.poa_doc_key);
-            if (file) {
-              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
-            }
-          }
-          if (row.msa_doc_key) {
-            const file = await env.R2_BUCKET.get(row.msa_doc_key);
-            if (file) {
-              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
-            }
-          }
-          if (row.debit_doc_key) {
-            const file = await env.R2_BUCKET.get(row.debit_doc_key);
-            if (file) {
-              await splynxCreateAndUpload(env, "lead", splynxResult.id || id, file);
+          const docs = [
+            ["id_doc_key", "id"],
+            ["poa_doc_key", "poa"],
+            ["msa_doc_key", "msa"],
+            ["debit_doc_key", "debit"],
+          ];
+          for (const [field] of docs) {
+            if (row[field]) {
+              const file = await env.R2_BUCKET.get(row[field]);
+              if (file) {
+                await splynxCreateAndUpload(
+                  env,
+                  "lead",
+                  splynxId || id,
+                  file
+                );
+              }
             }
           }
         }
@@ -150,7 +155,7 @@ export async function handleApiAdmin(req, env) {
       }
     }
 
-    return Response.json({ id, status });
+    return Response.json({ id, status, splynx_id: splynxId });
   }
 
   // --- Delete ---
