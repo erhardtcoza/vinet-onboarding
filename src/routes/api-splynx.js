@@ -2,107 +2,70 @@
 import {
   splynxGET,
   splynxPUT,
-  splynxPOST,
   fetchProfileForDisplay,
-  fetchCustomerMsisdn
+  fetchCustomerMsisdn,
+  mapEditsToSplynxPayload,
+  splynxCreateAndUpload
 } from "../splynx.js";
 
-export async function handleSplynxApiRequest(request, env, ctx) {
+export default async function handleApiSplynx(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const { pathname, searchParams } = url;
 
-  // --- Fetch profile (customer/lead) ---
-  if (path === "/api/splynx/fetch-profile") {
-    const id = url.searchParams.get("id");
-    const type = url.searchParams.get("type") || "customer";
-    if (!id) return new Response("Missing id", { status: 400 });
-
-    try {
-      const profile = await fetchProfileForDisplay(env, id, type);
-      return new Response(JSON.stringify(profile), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: `Fetch profile error: ${err.message}` }),
-        { status: 500 }
-      );
+  try {
+    // GET profile (lead or customer)
+    if (pathname === "/api/splynx/profile" && request.method === "GET") {
+      const id = searchParams.get("id");
+      if (!id) return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
+      const profile = await fetchProfileForDisplay(env, id);
+      return new Response(JSON.stringify(profile), { status: 200 });
     }
-  }
 
-  // --- PUT generic ---
-  if (path === "/api/splynx/put" && request.method === "POST") {
-    try {
-      const { endpoint, data } = await request.json();
-      if (!endpoint || !data)
-        return new Response("Missing endpoint/data", { status: 400 });
-
-      const res = await splynxPUT(env, endpoint, data);
-      return new Response(JSON.stringify(res), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: `PUT error: ${err.message}` }),
-        { status: 500 }
-      );
+    // GET msisdn + passport
+    if (pathname === "/api/splynx/msisdn" && request.method === "GET") {
+      const id = searchParams.get("id");
+      if (!id) return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
+      const result = await fetchCustomerMsisdn(env, id);
+      return new Response(JSON.stringify(result), { status: 200 });
     }
-  }
 
-  // --- GET generic ---
-  if (path === "/api/splynx/get") {
-    const endpoint = url.searchParams.get("endpoint");
-    if (!endpoint) return new Response("Missing endpoint", { status: 400 });
+    // PUT update profile (admin edits)
+    if (pathname === "/api/splynx/update" && request.method === "PUT") {
+      const id = searchParams.get("id");
+      if (!id) return new Response(JSON.stringify({ error: "Missing id" }), { status: 400 });
 
-    try {
-      const res = await splynxGET(env, endpoint);
-      return new Response(JSON.stringify(res), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: `GET error: ${err.message}` }),
-        { status: 500 }
-      );
+      const edits = await request.json();
+      const payload = mapEditsToSplynxPayload(edits);
+
+      // Try both customer and lead
+      let result;
+      try {
+        result = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
+      } catch {
+        result = await splynxPUT(env, `/admin/crm/leads/${id}`, payload);
+      }
+
+      return new Response(JSON.stringify(result), { status: 200 });
     }
-  }
 
-  // --- POST generic ---
-  if (path === "/api/splynx/post" && request.method === "POST") {
-    try {
-      const { endpoint, data } = await request.json();
-      if (!endpoint || !data)
-        return new Response("Missing endpoint/data", { status: 400 });
+    // POST upload file (ID, POA, MSA, DO)
+    if (pathname === "/api/splynx/upload" && request.method === "POST") {
+      const id = searchParams.get("id");
+      const type = searchParams.get("type"); // "lead" or "customer"
+      if (!id || !type) {
+        return new Response(JSON.stringify({ error: "Missing id or type" }), { status: 400 });
+      }
 
-      const res = await splynxPOST(env, endpoint, data);
-      return new Response(JSON.stringify(res), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: `POST error: ${err.message}` }),
-        { status: 500 }
-      );
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!file) return new Response(JSON.stringify({ error: "Missing file" }), { status: 400 });
+
+      const result = await splynxCreateAndUpload(env, type, id, file);
+      return new Response(JSON.stringify(result), { status: 200 });
     }
+
+    return new Response(JSON.stringify({ error: "Not found" }), { status: 404 });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
-
-  // --- Fetch MSISDN ---
-  if (path === "/api/splynx/fetch-msisdn") {
-    const id = url.searchParams.get("id");
-    if (!id) return new Response("Missing id", { status: 400 });
-
-    try {
-      const msisdn = await fetchCustomerMsisdn(env, id);
-      return new Response(JSON.stringify(msisdn), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: `MSISDN error: ${err.message}` }),
-        { status: 500 }
-      );
-    }
-  }
-
-  return new Response("Not found", { status: 404 });
 }
