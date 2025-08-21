@@ -1,105 +1,124 @@
 // src/routes/admin.js
-import { ipAllowed } from "../branding.js";
-import { renderAdminReviewHTML } from "../ui/admin.js";
-import { getClientMeta } from "../helpers.js";
-import { deleteOnboardAll } from "../storage.js";
 import {
   splynxGET,
-  splynxPOST,
   splynxPUT,
-  fetchProfileForDisplay,
-  fetchCustomerMsisdn,
+  splynxCreateAndUpload,
   mapEditsToSplynxPayload,
-  splynxCreateAndUpload
+  fetchProfileForDisplay
 } from "../splynx.js";
+import { getClientMeta } from "../helpers.js";
+import { deleteOnboardAll } from "../storage.js";
+import { renderAdminReviewHTML } from "../ui/admin.js";
 
-// ---------------- Routes ----------------
-export async function onAdminRequest(request, env, ctx) {
-  const url = new URL(request.url);
+export default async function handleAdminRoutes(req, env, ctx) {
+  const url = new URL(req.url);
   const path = url.pathname;
+  const method = req.method;
 
-  // Access control
-  if (!(await ipAllowed(request, env))) {
-    return new Response("Forbidden", { status: 403 });
+  // ----- Admin Review Dashboard -----
+  if (path === "/admin/review" && method === "GET") {
+    const html = await renderAdminReviewHTML(env);
+    return new Response(html, { headers: { "Content-Type": "text/html" } });
   }
 
-  // Admin dashboard main page
-  if (path === "/admin") {
-    return renderAdminReviewHTML(env);
-  }
-
-  // Fetch customer/lead profile for review
-  if (path.startsWith("/admin/api/profile/")) {
-    const id = path.split("/").pop();
-    try {
-      const data = await fetchProfileForDisplay(env, id);
-      return new Response(JSON.stringify(data), {
-        headers: { "Content-Type": "application/json" }
+  // ----- Fetch Splynx Profile -----
+  if (path === "/api/splynx/profile" && method === "GET") {
+    const id = url.searchParams.get("id");
+    if (!id) {
+      return new Response(JSON.stringify({ error: "Missing id" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
       });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: e.message }), {
+    }
+    try {
+      const profile = await fetchProfileForDisplay(env, id);
+      return new Response(JSON.stringify(profile), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
         status: 500,
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
     }
   }
 
-  // Apply edits to a customer/lead profile
-  if (path.startsWith("/admin/api/edit/") && request.method === "POST") {
-    const id = path.split("/").pop();
-    const edits = await request.json();
-    const payload = mapEditsToSplynxPayload(edits);
+  // ----- Apply Admin Edits -----
+  if (path === "/api/splynx/edit" && method === "POST") {
+    const body = await req.json();
+    const { id, edits } = body;
+    if (!id || !edits) {
+      return new Response(JSON.stringify({ error: "Missing id or edits" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     try {
-      // Decide whether to push to customer or lead
-      let result;
-      if (edits.type === "customer") {
-        result = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
-      } else {
-        result = await splynxPUT(env, `/admin/crm/leads/${id}`, payload);
-      }
+      const payload = mapEditsToSplynxPayload(edits);
+      const result = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
       return new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: e.message }), {
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
         status: 500,
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
     }
   }
 
-  // Upload document (ID, POA, etc.)
-  if (path.startsWith("/admin/api/upload/") && request.method === "POST") {
-    const parts = path.split("/");
-    const type = parts[parts.length - 2]; // "customer" or "lead"
-    const id = parts[parts.length - 1];
+  // ----- Upload Document -----
+  if (path === "/api/splynx/upload" && method === "POST") {
+    const form = await req.formData();
+    const id = form.get("id");
+    const type = form.get("type"); // "lead" or "customer"
+    const file = form.get("file");
 
-    const formData = await request.formData();
-    const file = formData.get("file");
+    if (!id || !type || !file) {
+      return new Response(JSON.stringify({ error: "Missing id, type, or file" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     try {
       const result = await splynxCreateAndUpload(env, type, id, file);
       return new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: e.message }), {
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
         status: 500,
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
       });
     }
   }
 
-  // Delete onboarding session
-  if (path.startsWith("/admin/api/delete/")) {
-    const id = path.split("/").pop();
-    await deleteOnboardAll(env, id);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { "Content-Type": "application/json" }
-    });
+  // ----- Delete Onboarding Session -----
+  if (path === "/api/admin/delete" && method === "POST") {
+    const body = await req.json();
+    const { key } = body;
+    if (!key) {
+      return new Response(JSON.stringify({ error: "Missing key" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    try {
+      await deleteOnboardAll(env, key);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
 
-  // Fallback
+  // ----- Fallback -----
   return new Response("Not found", { status: 404 });
 }
