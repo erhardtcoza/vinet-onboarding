@@ -7,8 +7,6 @@ import {
   PDF_FONTS,
   VINET_BLACK,
   VINET_RED,
-  // If you have this constant defined; otherwise the string fallback below is used.
-  DEFAULT_SERVICE_TERMS_URL,
 } from "../constants.js";
 import {
   drawDashedLine,
