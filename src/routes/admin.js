@@ -24,6 +24,7 @@ export default async function handleAdminRoutes(req, env, ctx) {
   // ----- Fetch Splynx Profile -----
   if (path === "/api/splynx/profile" && method === "GET") {
     const id = url.searchParams.get("id");
+    const type = url.searchParams.get("type") || "customer"; // default
     if (!id) {
       return new Response(JSON.stringify({ error: "Missing id" }), {
         status: 400,
@@ -43,10 +44,11 @@ export default async function handleAdminRoutes(req, env, ctx) {
     }
   }
 
-  // ----- Apply Admin Edits -----
+  // ----- Apply Admin Edits (Customers + Leads) -----
   if (path === "/api/splynx/edit" && method === "POST") {
     const body = await req.json();
-    const { id, edits } = body;
+    const { id, type = "customer", edits } = body;
+
     if (!id || !edits) {
       return new Response(JSON.stringify({ error: "Missing id or edits" }), {
         status: 400,
@@ -56,7 +58,20 @@ export default async function handleAdminRoutes(req, env, ctx) {
 
     try {
       const payload = mapEditsToSplynxPayload(edits);
-      const result = await splynxPUT(env, `/admin/customers/customer/${id}`, payload);
+
+      let endpoint;
+      if (type === "customer") {
+        endpoint = `/admin/customers/customer/${id}`;
+      } else if (type === "lead") {
+        endpoint = `/admin/crm/leads/${id}`;
+      } else {
+        return new Response(JSON.stringify({ error: "Invalid type" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const result = await splynxPUT(env, endpoint, payload);
       return new Response(JSON.stringify(result), {
         headers: { "Content-Type": "application/json" },
       });
