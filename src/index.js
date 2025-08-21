@@ -1402,26 +1402,7 @@ async function deleteOnboardEverywhere(env, linkid, splynxId) {
   await tryD1Cleanup(env, linkid, splynxId);
 }
 
-// ---------- Worker entry ----------
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    const method = request.method;
 
-    const json = (o, s = 200) => new Response(JSON.stringify(o), {
-      status: s, headers: { "content-type": "application/json" },
-    });
-    const getIP = () =>
-      request.headers.get("CF-Connecting-IP") ||
-      request.headers.get("x-forwarded-for") ||
-      request.headers.get("x-real-ip") || "";
-    const getUA = () => request.headers.get("user-agent") || "";
-    const cf = request.cf || {};
-    const cfASN = cf.asn || "";
-    const cfOrg = cf.asOrganization || "";
-    const cfCity = cf.city || "";
-    const cfCountry = cf.country || "";
 
     // ----- Admin UI -----
     if (path === "/" && method === "GET") {
@@ -2578,6 +2559,20 @@ export default {
       const method = request.method;
       const json = (o, s = 200) =>
         new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
+
+    const json = (o, s = 200) => new Response(JSON.stringify(o), {
+      status: s, headers: { "content-type": "application/json" },
+    });
+    const getIP = () =>
+      request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("x-forwarded-for") ||
+      request.headers.get("x-real-ip") || "";
+    const getUA = () => request.headers.get("user-agent") || "";
+    const cf = request.cf || {};
+    const cfASN = cf.asn || "";
+    const cfOrg = cf.asOrganization || "";
+    const cfCity = cf.city || "";
+    const cfCountry = cf.country || "";
 
       // ----- Admin UI root (served earlier in Part 4) -----
       if (path === "/" && method === "GET") {
