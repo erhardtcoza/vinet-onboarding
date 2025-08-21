@@ -88,41 +88,85 @@ export async function fetchProfileForDisplay(env, id) {
   return { full_name: fullName, email, phone, passport, street, city, zip };
 }
 
+// Helper: normalize to international digits (ZA default)
+function normalizeMsisdn(raw, defaultCountry = "27") {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+
+  // Keep only digits
+  s = s.replace(/\D+/g, "");
+
+  // If local ZA starting with 0 and 10 digits, promote to 27xxxxxxxxx
+  if (/^0\d{9}$/.test(s) && defaultCountry === "27") {
+    s = "27" + s.slice(1);
+  }
+
+  // If already has a country code (e.g. 27..., 44..., 1...), leave as-is
+  return s;
+}
+
 /**
  * Get the MSISDN (WhatsApp) for OTP delivery.
- * Returns an E.164-like string if possible, else raw value.
+ * Looks in customer, lead, and their contacts.
+ * Returns a digits-only international number (e.g. "27731234567") or "".
  */
 export async function fetchCustomerMsisdn(env, id) {
   const cid = String(id).trim();
-  let src = null;
+
+  // Prefer Customer; fall back to Lead
+  let entity = null;
   try {
-    src = await splynxGET(env, `/admin/customers/customer/${cid}`);
+    entity = await splynxGET(env, `/admin/customers/customer/${cid}`);
   } catch {
-    try { src = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch { src = null; }
+    try { entity = await splynxGET(env, `/admin/crm/leads/${cid}`); } catch { entity = null; }
   }
-  if (!src) return "";
+  if (!entity) entity = {};
 
-  // Candidate fields by common naming
-  let msisdn =
-    src.whatsapp ||
-    src.phone_mobile ||
-    src.mobile ||
-    src.phone ||
-    src.contact_phone ||
-    "";
+  // 1) Try common fields on main entity
+  const candidates = [
+    entity.whatsapp,
+    entity.phone_mobile,
+    entity.mobile,
+    entity.phone,
+    entity.contact_phone,
+    entity.msisdn,
+  ];
 
-  msisdn = String(msisdn || "").trim();
-
-  // Simple normalization: keep digits + leading +
-  if (msisdn) {
-    const cleaned = msisdn.replace(/[^\d+]/g, "");
-    // If it starts with 0 and you want to force ZA "27", uncomment below:
-    // if (/^0\d{9}$/.test(cleaned)) msisdn = "27" + cleaned.slice(1);
-    msisdn = cleaned;
+  // 2) Try nested contact arrays if present on the object
+  if (Array.isArray(entity.contacts)) {
+    for (const c of entity.contacts) {
+      candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
+    }
   }
 
-  return msisdn;
+  // 3) If still nothing, try contacts endpoints explicitly
+  try {
+    const custContacts = await splynxGET(env, `/admin/customers/${cid}/contacts`);
+    if (Array.isArray(custContacts)) {
+      for (const c of custContacts) {
+        candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
+      }
+    }
+  } catch {}
+  try {
+    const leadContacts = await splynxGET(env, `/admin/crm/leads/${cid}/contacts`);
+    if (Array.isArray(leadContacts)) {
+      for (const c of leadContacts) {
+        candidates.push(c?.whatsapp, c?.phone, c?.mobile, c?.contact_phone);
+      }
+    }
+  } catch {}
+
+  // Pick the first that normalizes to something usable
+  for (const raw of candidates) {
+    const msisdn = normalizeMsisdn(raw, "27");
+    if (msisdn) return msisdn;
+  }
+  return "";
 }
+
+// (optionally) export normalize if you want to reuse it elsewhere
+export { normalizeMsisdn };
 
 /**
  * Best-effort push of onboarding session to Splynx.
