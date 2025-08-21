@@ -170,31 +170,32 @@ export async function route(request, env) {
     return json({ items });
   }
 
-// ----- Admin review -----
-if (path === "/admin/review" && method === "GET") {
-  if (!ipAllowed(request)) return new Response("Forbidden",{status:403});
-  const linkid = url.searchParams.get("linkid") || "";
-  if (!linkid) return new Response("Missing linkid",{status:400});
+  // ----- Admin review (now passes original Splynx profile for side-by-side) -----
+  if (path === "/admin/review" && method === "GET") {
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+    const linkid = url.searchParams.get("linkid") || "";
+    if (!linkid) return new Response("Missing linkid", { status: 400 });
 
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Not found",{status:404});
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    if (!sess) return new Response("Not found", { status: 404 });
 
-  const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
+    const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
 
-  // NEW: fetch original Splynx profile to compute diffs
-  let original = null;
-  try {
-    const id = String(sess.id || "").trim();
-    if (id) original = await fetchProfileForDisplay(env, id);
-  } catch {
-    original = null; // non-fatal
+    // Fetch original Splynx profile to compute diffs (non-fatal if fails)
+    let original = null;
+    try {
+      const id = String(sess.id || "").trim();
+      if (id) original = await fetchProfileForDisplay(env, id);
+    } catch {
+      original = null;
+    }
+
+    return new Response(
+      renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }),
+      { headers: { "content-type": "text/html; charset=utf-8" } }
+    );
   }
 
-  return new Response(
-    renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }),
-    { headers:{ "content-type":"text/html; charset=utf-8" } }
-  );
-}
   // ----- Admin: reject -----
   if (path === "/api/admin/reject" && method === "POST") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
@@ -236,20 +237,22 @@ if (path === "/admin/review" && method === "GET") {
     const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
     const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
 
-    // Map to Splynx fields (adjust as needed)
+    // Map to Splynx fields — IMPORTANT: Splynx uses `name` for the customer name
     const body = {
-      full_name: sess.edits?.full_name || undefined,
+      name: sess.edits?.full_name || undefined,        // <— use `name` (not full_name)
       email: sess.edits?.email || undefined,
       phone_mobile: sess.edits?.phone || undefined,
       street_1: sess.edits?.street || undefined,
       city: sess.edits?.city || undefined,
       zip_code: sess.edits?.zip || undefined,
+      // optional: attach uploaded files (public URLs) — actual document creation/upload
+      // is handled in a later iteration via the document APIs if required
       attachments: publicFiles,
       payment_method: sess.pay_method || undefined,
       debit: sess.debit || undefined,
     };
 
-    // Cover all listed endpoints; ignore failures
+    // Push to all relevant endpoints; ignore failures per endpoint so the action is resilient
     try { await splynxPUT(env, `/admin/customers/customer/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/customers/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/crm/leads/${id}`, body); } catch {}
@@ -441,7 +444,7 @@ if (path === "/admin/review" && method === "GET") {
     return new Response(obj.body, { headers: { "content-type": "image/png" } });
   }
 
-  // ----- Agreement HTML (simple, uses terms text) -----
+  // ----- Agreement HTML (simple; terms-only view) -----
   if (path.startsWith("/agreements/") && method === "GET") {
     const [, , type, linkid] = path.split("/");
     if (!type || !linkid) return new Response("Bad request", { status: 400 });
