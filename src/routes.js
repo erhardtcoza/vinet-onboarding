@@ -4,7 +4,7 @@ import { renderMSAPdf } from "./pdf/msa.js";
 import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
 import { fetchTextCached, getClientMeta } from "./helpers.js";
-import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT } from "./splynx.js";
+import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT, splynxCreateAndUploadDocFallback } from "./splynx.js";
 import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
@@ -170,18 +170,18 @@ export async function route(request, env) {
     return json({ items });
   }
 
-  // ----- Admin review (now passes original Splynx profile for side-by-side) -----
+  // ----- Admin review -----
   if (path === "/admin/review" && method === "GET") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden",{status:403});
     const linkid = url.searchParams.get("linkid") || "";
-    if (!linkid) return new Response("Missing linkid", { status: 400 });
+    if (!linkid) return new Response("Missing linkid",{status:400});
 
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return new Response("Not found", { status: 404 });
+    if (!sess) return new Response("Not found",{status:404});
 
     const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
 
-    // Fetch original Splynx profile to compute diffs (non-fatal if fails)
+    // Fetch original Splynx profile for side-by-side diffs
     let original = null;
     try {
       const id = String(sess.id || "").trim();
@@ -192,7 +192,7 @@ export async function route(request, env) {
 
     return new Response(
       renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }),
-      { headers: { "content-type": "text/html; charset=utf-8" } }
+      { headers:{ "content-type":"text/html; charset=utf-8" } }
     );
   }
 
@@ -224,7 +224,7 @@ export async function route(request, env) {
     }
   }
 
-  // ----- Admin: approve (push to Splynx + mark approved) -----
+  // ----- Admin: approve (push to Splynx + upload docs + mark approved) -----
   if (path === "/api/admin/approve" && method === "POST") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid } = await request.json().catch(() => ({}));
@@ -233,38 +233,77 @@ export async function route(request, env) {
     if (!sess) return json({ ok: false, error: "Not found" }, 404);
 
     const id = String(sess.id || "").trim();
-    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
 
-    // Map to Splynx fields — IMPORTANT: Splynx uses `name` for the customer name
+    // ---- 1) Push profile fields ----
+    // IMPORTANT: Splynx expects `name` for the display name.
     const body = {
-      name: sess.edits?.full_name || undefined,        // <— use `name` (not full_name)
+      name: sess.edits?.full_name || undefined,            // <— use name
       email: sess.edits?.email || undefined,
       phone_mobile: sess.edits?.phone || undefined,
       street_1: sess.edits?.street || undefined,
       city: sess.edits?.city || undefined,
       zip_code: sess.edits?.zip || undefined,
-      // optional: attach uploaded files (public URLs) — actual document creation/upload
-      // is handled in a later iteration via the document APIs if required
-      attachments: publicFiles,
       payment_method: sess.pay_method || undefined,
-      debit: sess.debit || undefined,
+      // keep debit record in KV; Splynx might not accept a raw nested object here
     };
 
-    // Push to all relevant endpoints; ignore failures per endpoint so the action is resilient
+    // Try all endpoints; ignore failures
     try { await splynxPUT(env, `/admin/customers/customer/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/customers/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/crm/leads/${id}`, body); } catch {}
     try { await splynxPUT(env, `/admin/customers/${id}/contacts`, body); } catch {}
     try { await splynxPUT(env, `/admin/crm/leads/${id}/contacts`, body); } catch {}
 
+    // ---- 2) Upload documents (Customer→fallback Lead) ----
+    const uploaded = [];
+
+    // a) User-uploaded attachments from R2
+    if (Array.isArray(sess.uploads)) {
+      for (const u of sess.uploads) {
+        try {
+          const obj = await env.R2_UPLOADS.get(u.key);
+          if (!obj) continue;
+          const bytes = await obj.arrayBuffer();
+          const label = u.label || u.name || "Attachment";
+          const filename = (u.name || "file.bin").replace(/[^a-z0-9_.-]/gi, "_");
+          const ct = obj.httpMetadata?.contentType || "application/octet-stream";
+          const res = await splynxCreateAndUploadDocFallback(env, id, label, bytes, filename, ct);
+          if (res) uploaded.push({ kind: res.kind, title: label });
+        } catch {}
+      }
+    }
+
+    // b) MSA PDF (if signed)
+    if (sess.agreement_signed) {
+      try {
+        const msaResp = await renderMSAPdf(env, linkid);
+        if (msaResp && msaResp.status === 200) {
+          const bytes = await msaResp.arrayBuffer();
+          const res = await splynxCreateAndUploadDocFallback(env, id, "Master Service Agreement", bytes, `MSA_${id}.pdf`, "application/pdf");
+          if (res) uploaded.push({ kind: res.kind, title: "Master Service Agreement" });
+        }
+      } catch {}
+    }
+
+    // c) Debit Order PDF (if signed)
+    if (sess.debit_sig_key) {
+      try {
+        const doResp = await renderDebitPdf(env, linkid);
+        if (doResp && doResp.status === 200) {
+          const bytes = await doResp.arrayBuffer();
+          const res = await splynxCreateAndUploadDocFallback(env, id, "Debit Order Instruction", bytes, `Debit_${id}.pdf`, "application/pdf");
+          if (res) uploaded.push({ kind: res.kind, title: "Debit Order Instruction" });
+        }
+      } catch {}
+    }
+
+    // ---- 3) Mark approved ----
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now() }),
+      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), splynx_docs: uploaded }),
       { expirationTtl: 86400 }
     );
-    return json({ ok: true });
+    return json({ ok: true, uploaded });
   }
 
   // ----- OTP: send -----
@@ -444,14 +483,14 @@ export async function route(request, env) {
     return new Response(obj.body, { headers: { "content-type": "image/png" } });
   }
 
-  // ----- Agreement HTML (simple; terms-only view) -----
+  // ----- Agreement HTML (simple, uses terms text) -----
   if (path.startsWith("/agreements/") && method === "GET") {
     const [, , type, linkid] = path.split("/");
     if (!type || !linkid) return new Response("Bad request", { status: 400 });
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
     if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
 
-    const esc = (s) => String(s || "").replace(/[&<>]/g, (t) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[t]));
+    const esc = (s) => String(s || "").replace(/[&<>"]/g, (t) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[t]));
     if (type === "msa") {
       const src = env.TERMS_MSA_URL || env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
       const text = (await fetchTextCached(src, env, "terms:msa:html")) || "Terms unavailable.";
