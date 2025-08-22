@@ -23,46 +23,57 @@ export async function handleAdminApi(request, env) {
       const ttlDays = 14;
       const ttlSeconds = ttlDays * 24 * 60 * 60;
 
-      // expiry in BOTH units (seconds + ms), plus a boolean "valid"
+      // expiry in multiple formats (to satisfy strict validators)
       const expires_ms = now + ttlSeconds * 1000;
       const expires = Math.floor(expires_ms / 1000);
+      const expiresAt = new Date(expires_ms).toISOString();
 
+      // super‑compatible session shape
       const session = {
-        id: linkid,            // linkid is our session id
-        splynx_id: splynxId,   // explicit reference to Splynx record
+        id: linkid,
+        splynx_id: splynxId,
+
+        // multiple status/state flags
         status: "inprogress",
         status_alt: "in-progress",
+        state: "open",
+        active: true,
+        enabled: true,
+        valid: true,
+
         created: now,
         updated: now,
         expires_ms,
-        expires,               // unix seconds
-        valid: true,
+        expires,      // unix seconds
+        expiresAt,    // ISO datetime
+
         edits: {},
       };
 
       const kv = env.ONBOARD_KV;
 
-      // Write to ALL common prefixes; also set TTL on primary 'onboard:' key
+      // Write under several common prefixes + a bare key; give TTL to primary keys
       await Promise.all([
         kv.put(`inprogress:${linkid}`, JSON.stringify(session)),
         kv.put(`sess:${linkid}`, JSON.stringify(session)),
         kv.put(`session:${linkid}`, JSON.stringify(session)),
         kv.put(`onboard:${linkid}`, JSON.stringify(session), { expirationTtl: ttlSeconds }),
-        kv.put(`link:${linkid}`, "1", { expirationTtl: ttlSeconds }), // boolean flag sometimes used
+        kv.put(`link:${linkid}`, "1", { expirationTtl: ttlSeconds }),
+        kv.put(linkid, JSON.stringify(session), { expirationTtl: ttlSeconds }), // bare key (no prefix)
       ]);
 
       const base = env.API_URL || `${url.protocol}//${url.host}`;
       const onboardUrl = `${base}/onboard/${encodeURIComponent(linkid)}`;
 
       console.log(`[admin] genlink OK linkid=${linkid}`);
-      return json({ ok: true, url: onboardUrl, linkid, expires, expires_ms });
+      return json({ ok: true, url: onboardUrl, linkid, expires, expires_ms, expiresAt });
     } catch (err) {
       console.error("[admin] genlink error", err);
       return json({ ok: false, error: err?.message || String(err) }, 500);
     }
   }
 
-  // ---------- Staff Code (kept under admin) ----------
+  // ---------- Staff Code (under admin) ----------
   // POST /api/admin/staff/gen   { linkid }
   if (path === "/staff/gen" && method === "POST") {
     const body = await safeJson(request);
@@ -128,7 +139,7 @@ export async function handleAdminApi(request, env) {
     }
   }
 
-  // ---------- DEBUG: dump what we have for linkid ----------
+  // ---------- DEBUG: inspect KV for a linkid ----------
   // GET /api/admin/session/get?linkid=...
   if (path.startsWith("/session/get")) {
     const linkid = url.searchParams.get("linkid") || "";
@@ -149,6 +160,10 @@ export async function handleAdminApi(request, env) {
         keys.push({ key: name, bytes: val.length });
       }
     }
+    // bare key too
+    const bareVal = await kv.get(linkid);
+    if (bareVal !== null) keys.push({ key: linkid, bytes: bareVal.length });
+
     return json({ ok: true, linkid, keys });
   }
 
@@ -186,6 +201,9 @@ async function loadAnySessionByLinkid(env, linkid) {
     const raw = await kv.get(p + linkid, { type: "json" });
     if (raw) return raw;
   }
+  // bare key as last attempt
+  const bare = await kv.get(linkid, { type: "json" });
+  if (bare) return bare;
   return null;
 }
 
@@ -208,6 +226,7 @@ async function approveSession(env, id) {
     kv.put("sess:" + id, JSON.stringify(approved)),
     kv.put("session:" + id, JSON.stringify(approved)),
     kv.put("onboard:" + id, JSON.stringify(approved)),
+    kv.put(id, JSON.stringify(approved)), // bare key mirror
   ]);
 }
 
@@ -222,6 +241,7 @@ async function rejectSession(env, id) {
     kv.put("sess:" + id, JSON.stringify(rejected)),
     kv.put("session:" + id, JSON.stringify(rejected)),
     kv.put("onboard:" + id, JSON.stringify(rejected)),
+    kv.put(id, JSON.stringify(rejected)), // bare key mirror
   ]);
 }
 
