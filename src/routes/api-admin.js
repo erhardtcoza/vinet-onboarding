@@ -20,44 +20,49 @@ export async function handleAdminApi(request, env) {
 
       const linkid = `${splynxId}_${rand8()}`;
       const now = Date.now();
-      // give the session a default lifetime; many UIs treat absence of "expires" as invalid
       const ttlDays = 14;
-      const expires = now + ttlDays * 24 * 60 * 60 * 1000;
+      const ttlSeconds = ttlDays * 24 * 60 * 60;
 
-      // canonical session object
+      // expiry in BOTH units (seconds + ms), plus a boolean "valid"
+      const expires_ms = now + ttlSeconds * 1000;
+      const expires = Math.floor(expires_ms / 1000);
+
       const session = {
         id: linkid,            // linkid is our session id
         splynx_id: splynxId,   // explicit reference to Splynx record
         status: "inprogress",
+        status_alt: "in-progress",
         created: now,
         updated: now,
-        expires,               // <-- important for validators
+        expires_ms,
+        expires,               // unix seconds
+        valid: true,
         edits: {},
       };
 
-      // Write to ALL likely prefixes, so whatever your onboard route checks will find it
       const kv = env.ONBOARD_KV;
+
+      // Write to ALL common prefixes; also set TTL on primary 'onboard:' key
       await Promise.all([
         kv.put(`inprogress:${linkid}`, JSON.stringify(session)),
         kv.put(`sess:${linkid}`, JSON.stringify(session)),
         kv.put(`session:${linkid}`, JSON.stringify(session)),
-        kv.put(`onboard:${linkid}`, JSON.stringify(session)),
-        // sometimes a boolean/flag key is used to validate existence
-        kv.put(`link:${linkid}`, "1", { expirationTtl: ttlDays * 24 * 60 * 60 }),
+        kv.put(`onboard:${linkid}`, JSON.stringify(session), { expirationTtl: ttlSeconds }),
+        kv.put(`link:${linkid}`, "1", { expirationTtl: ttlSeconds }), // boolean flag sometimes used
       ]);
 
       const base = env.API_URL || `${url.protocol}//${url.host}`;
       const onboardUrl = `${base}/onboard/${encodeURIComponent(linkid)}`;
 
       console.log(`[admin] genlink OK linkid=${linkid}`);
-      return json({ ok: true, url: onboardUrl, linkid, expires });
+      return json({ ok: true, url: onboardUrl, linkid, expires, expires_ms });
     } catch (err) {
       console.error("[admin] genlink error", err);
       return json({ ok: false, error: err?.message || String(err) }, 500);
     }
   }
 
-  // ---------- Staff Code (merged here) ----------
+  // ---------- Staff Code (kept under admin) ----------
   // POST /api/admin/staff/gen   { linkid }
   if (path === "/staff/gen" && method === "POST") {
     const body = await safeJson(request);
@@ -123,6 +128,30 @@ export async function handleAdminApi(request, env) {
     }
   }
 
+  // ---------- DEBUG: dump what we have for linkid ----------
+  // GET /api/admin/session/get?linkid=...
+  if (path.startsWith("/session/get")) {
+    const linkid = url.searchParams.get("linkid") || "";
+    const merged = await loadAnySessionByLinkid(env, linkid);
+    return json({ ok: true, linkid, found: !!merged, session: merged });
+  }
+
+  // GET /api/admin/session/keys?linkid=...
+  if (path.startsWith("/session/keys")) {
+    const linkid = url.searchParams.get("linkid") || "";
+    const kv = env.ONBOARD_KV;
+    const prefixes = ["inprogress:", "pending:", "approved:", "rejected:", "sess:", "session:", "onboard:", "link:"];
+    const keys = [];
+    for (const p of prefixes) {
+      const name = p + linkid;
+      const val = await kv.get(name);
+      if (val !== null) {
+        keys.push({ key: name, bytes: val.length });
+      }
+    }
+    return json({ ok: true, linkid, keys });
+  }
+
   return new Response(JSON.stringify({ error: "Unknown admin endpoint" }), {
     status: 404,
     headers: { "Content-Type": "application/json" },
@@ -149,6 +178,17 @@ async function loadSessions(env, section) {
   return sessions;
 }
 
+async function loadAnySessionByLinkid(env, linkid) {
+  if (!linkid) return null;
+  const kv = env.ONBOARD_KV;
+  const prefixes = ["inprogress:", "pending:", "approved:", "rejected:", "sess:", "session:", "onboard:"];
+  for (const p of prefixes) {
+    const raw = await kv.get(p + linkid, { type: "json" });
+    if (raw) return raw;
+  }
+  return null;
+}
+
 async function approveSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
@@ -161,11 +201,10 @@ async function approveSession(env, id) {
     await splynxPUT(env, `/admin/customers/${splynxId}`, payload);
   }
 
-  const approved = { ...raw, status: "approved", updated: Date.now() };
+  const approved = { ...raw, status: "approved", status_alt: "approved", updated: Date.now(), valid: true };
   await Promise.all([
     kv.put("approved:" + id, JSON.stringify(approved)),
     kv.delete("pending:" + id),
-    // mirror under other prefixes in case UI looks there later
     kv.put("sess:" + id, JSON.stringify(approved)),
     kv.put("session:" + id, JSON.stringify(approved)),
     kv.put("onboard:" + id, JSON.stringify(approved)),
@@ -176,7 +215,7 @@ async function rejectSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
   if (!raw) throw new Error(`No pending session found for ${id}`);
-  const rejected = { ...raw, status: "rejected", updated: Date.now() };
+  const rejected = { ...raw, status: "rejected", status_alt: "rejected", updated: Date.now(), valid: false };
   await Promise.all([
     kv.put("rejected:" + id, JSON.stringify(rejected)),
     kv.delete("pending:" + id),
