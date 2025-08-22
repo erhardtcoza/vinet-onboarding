@@ -75,6 +75,20 @@ export function pickPhone(obj) {
   }
   return null;
 }
+
+export async function fetchCustomerMsisdn(env, id) {
+  const eps=[
+    `/admin/customers/customer/${id}`,
+    `/admin/customers/${id}`,
+    `/admin/crm/leads/${id}`,
+    `/admin/customers/${id}/contacts`,
+    `/admin/crm/leads/${id}/contacts`,
+  ];
+  for (const ep of eps) {
+    try { const data=await splynxGET(env, ep); const m=pickPhone(data); if(m) return m; } catch {}
+  }
+  return null;
+}
 export function pickFrom(obj, keys) {
   if (!obj) return null;
   const wanted = keys.map(k => String(k).toLowerCase());
