@@ -285,3 +285,4 @@ export async function buildMsaPdf(env, ctx) {
 
   return await pdf.save();
 }
+export { buildMsaPdf as renderMSAPdf };
