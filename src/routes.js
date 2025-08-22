@@ -17,10 +17,7 @@ import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
 
 const json = (o, s = 200) =>
-  new Response(JSON.stringify(o), {
-    status: s,
-    headers: { "content-type": "application/json" },
-  });
+  new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
 
 // --- WhatsApp helpers ---
 async function sendWhatsAppTemplate(env, toMsisdn, code, lang = "en") {
@@ -186,7 +183,7 @@ export async function route(request, env) {
     return json({ ok: true, items });
   }
 
-  // ----- Admin review (passes original Splynx profile) -----
+  // ----- Admin review -----
   if (path === "/admin/review" && method === "GET") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
@@ -267,9 +264,11 @@ export async function route(request, env) {
         await splynxPUT(env, `/admin/crm/leads/${splynxId}`, payload);
       }
     } catch (e) {
-      // Non-fatal
       console.error("approve: splynx update error", e);
     }
+
+    // SAFETY: ensure API_URL for splynx PDF fetchers
+    env.API_URL = env.API_URL || url.origin;
 
     // 2) upload all docs (RICA uploads + generated PDFs)
     let uploadResult = null;
@@ -288,7 +287,7 @@ export async function route(request, env) {
     return json({ ok: true, linkid, entityKind, uploadResult });
   }
 
-  // ----- Diagnostics (optional helpers you used) -----
+  // ----- Diagnostics -----
   if (path === "/api/admin/session/keys" && method === "GET") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
@@ -388,7 +387,7 @@ export async function route(request, env) {
     return json({ ok: true, key });
   }
 
-  // ----- Save progress (capture audit meta) -----
+  // ----- Save progress -----
   if (path.startsWith("/api/progress/") && method === "POST") {
     const linkid = path.split("/")[3];
     const body = await request.json().catch(() => ({}));
