@@ -1,9 +1,9 @@
 // src/splynx.js
 import { fetchR2Bytes } from "./helpers.js";
 
-/** ───────────────────────────────────────────────────────────
- * Low-level HTTP helpers
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Low-level HTTP helpers
+   ─────────────────────────────────────────────────────────── */
 async function splynxFetch(env, endpoint, init = {}) {
   const url = `${env.SPLYNX_API}${endpoint}`;
   const headers = new Headers(init.headers || {});
@@ -44,7 +44,7 @@ export async function splynxPOST(env, endpoint, body) {
 }
 
 export async function splynxPOSTMultipart(env, endpoint, formData) {
-  // IMPORTANT: do not set Content-Type; runtime sets multipart boundary
+  // Do NOT set Content-Type; runtime sets the multipart boundary
   const r = await splynxFetch(env, endpoint, { method: "POST", body: formData });
   if (!r.ok) {
     const t = await r.text().catch(() => "");
@@ -53,14 +53,18 @@ export async function splynxPOSTMultipart(env, endpoint, formData) {
   return r.json().catch(() => ({}));
 }
 
-/** ───────────────────────────────────────────────────────────
- * Phone helpers
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Phone helpers
+   ─────────────────────────────────────────────────────────── */
 function ok27(s) { return /^27\d{8,13}$/.test(String(s || "").trim()); }
+
 export function pickPhone(obj) {
   if (!obj) return null;
   if (typeof obj === "string") return ok27(obj) ? String(obj).trim() : null;
-  if (Array.isArray(obj)) { for (const it of obj) { const m = pickPhone(it); if (m) return m; } return null; }
+  if (Array.isArray(obj)) {
+    for (const it of obj) { const m = pickPhone(it); if (m) return m; }
+    return null;
+  }
   if (typeof obj === "object") {
     const direct = [
       obj.phone_mobile, obj.mobile, obj.phone, obj.whatsapp, obj.msisdn,
@@ -76,19 +80,6 @@ export function pickPhone(obj) {
   return null;
 }
 
-export async function fetchCustomerMsisdn(env, id) {
-  const eps=[
-    `/admin/customers/customer/${id}`,
-    `/admin/customers/${id}`,
-    `/admin/crm/leads/${id}`,
-    `/admin/customers/${id}/contacts`,
-    `/admin/crm/leads/${id}/contacts`,
-  ];
-  for (const ep of eps) {
-    try { const data=await splynxGET(env, ep); const m=pickPhone(data); if(m) return m; } catch {}
-  }
-  return null;
-}
 export function pickFrom(obj, keys) {
   if (!obj) return null;
   const wanted = keys.map(k => String(k).toLowerCase());
@@ -99,7 +90,8 @@ export function pickFrom(obj, keys) {
     if (cur && typeof cur === "object") {
       for (const [k, v] of Object.entries(cur)) {
         if (wanted.includes(String(k).toLowerCase())) {
-          const s = String(v ?? "").trim(); if (s) return s;
+          const s = String(v ?? "").trim();
+          if (s) return s;
         }
         if (v && typeof v === "object") stack.push(v);
       }
@@ -108,9 +100,9 @@ export function pickFrom(obj, keys) {
   return null;
 }
 
-/** ───────────────────────────────────────────────────────────
- * Entity kind detector (customer vs lead)
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Entity detector (customer vs lead)
+   ─────────────────────────────────────────────────────────── */
 export async function detectEntityKind(env, id) {
   const num = Number(id);
   try { await splynxGET(env, `/admin/customers/customer/${num}`); return "customer"; } catch {}
@@ -118,9 +110,9 @@ export async function detectEntityKind(env, id) {
   return "unknown";
 }
 
-/** ───────────────────────────────────────────────────────────
- * Profile for onboarding (customer first, then lead)
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Profile for onboarding (customer first, then lead)
+   ─────────────────────────────────────────────────────────── */
 export async function fetchProfileForDisplay(env, id) {
   const num = Number(id);
   let cust = null, custInfo = null, contacts = null;
@@ -180,9 +172,10 @@ export async function fetchProfileForDisplay(env, id) {
   };
 }
 
-/** ───────────────────────────────────────────────────────────
- * Map edits to Splynx payload (keeps billing_email in sync)
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Map edits to Splynx payload
+   (keeps billing_email in sync with email)
+   ─────────────────────────────────────────────────────────── */
 export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachments = []) {
   const body = {};
   if (edits.full_name) body.name = edits.full_name;
@@ -197,9 +190,9 @@ export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachment
   return body;
 }
 
-/** ───────────────────────────────────────────────────────────
- * Document create + upload helpers (nested first, legacy fallback)
- * ─────────────────────────────────────────────────────────── */
+/* ───────────────────────────────────────────────────────────
+   Document create + upload (tries nested first, then legacy)
+   ─────────────────────────────────────────────────────────── */
 function guessContentType(filename = "") {
   const f = filename.toLowerCase();
   if (f.endsWith(".pdf")) return "application/pdf";
@@ -208,6 +201,7 @@ function guessContentType(filename = "") {
   return "application/octet-stream";
 }
 
+// Nested API style
 async function createDoc_nested(env, kind, id, title, description = "", visible = "0") {
   const base = kind === "lead"
     ? `/admin/crm/leads/${id}/documents`
@@ -220,13 +214,15 @@ async function uploadDocFile_nested(env, kind, id, docId, bytes, filename, conte
     ? `/admin/crm/leads/${id}/documents/${docId}/file`
     : `/admin/customers/${id}/documents/${docId}/file`;
   const fd = new FormData();
-  const blob = bytes instanceof ArrayBuffer ? new Blob([bytes], { type: contentType }) :
-              bytes instanceof Uint8Array ? new Blob([bytes.buffer], { type: contentType }) :
-              bytes;
+  const blob =
+    bytes instanceof ArrayBuffer ? new Blob([bytes], { type: contentType }) :
+    bytes instanceof Uint8Array ? new Blob([bytes.buffer], { type: contentType }) :
+    bytes; // already a Blob
   fd.append("file", blob, filename || "upload.bin");
   return splynxPOSTMultipart(env, base, fd);
 }
 
+// Legacy API style
 async function createDoc_legacy(env, kind, id, title, description = "", visible = "0") {
   const base = kind === "lead"
     ? `/admin/crm/leads-documents`
@@ -246,22 +242,23 @@ async function uploadDocFile_legacy(env, kind, _id, docId, bytes, filename, cont
     ? `/admin/crm/leads-documents/${docId}--upload`
     : `/admin/customers/customer-documents/${docId}--upload`;
   const fd = new FormData();
-  const blob = bytes instanceof ArrayBuffer ? new Blob([bytes], { type: contentType }) :
-              bytes instanceof Uint8Array ? new Blob([bytes.buffer], { type: contentType }) :
-              bytes;
+  const blob =
+    bytes instanceof ArrayBuffer ? new Blob([bytes], { type: contentType }) :
+    bytes instanceof Uint8Array ? new Blob([bytes.buffer], { type: contentType }) :
+    bytes;
   fd.append("file", blob, filename || "upload.bin");
   return splynxPOSTMultipart(env, base, fd);
 }
 
 /**
  * Public: Create + upload one file (tries nested first, then legacy).
- * Returns { ok, kind, docId, strategy }.
+ * Returns { ok, kind, docId, strategy } or { ok:false, error }.
  */
 export async function splynxCreateAndUploadOne(env, kind, id, opts) {
   const title = opts.title || opts.label || opts.filename || "Onboarding Document";
   const filename = opts.filename || "upload.bin";
   const mime = opts.mime || guessContentType(filename);
-  const bytes = opts.bytes; // ArrayBuffer | Uint8Array
+  const bytes = opts.bytes; // ArrayBuffer | Uint8Array | Blob
   const description = opts.description || "";
   const visible = opts.visible_by_customer ?? "0";
 
@@ -272,7 +269,7 @@ export async function splynxCreateAndUploadOne(env, kind, id, opts) {
     if (!docId) throw new Error("nested: missing id");
     await uploadDocFile_nested(env, kind, id, docId, bytes, filename, mime);
     return { ok: true, kind, docId, strategy: "nested" };
-  } catch (eA) {
+  } catch (_eA) {
     // Strategy B: legacy
     try {
       const created = await createDoc_legacy(env, kind, id, title, description, visible);
@@ -286,20 +283,32 @@ export async function splynxCreateAndUploadOne(env, kind, id, opts) {
   }
 }
 
-/** ───────────────────────────────────────────────────────────
- * Helpers to fetch our own generated PDFs over HTTP
- * ─────────────────────────────────────────────────────────── */
-async function fetchUrlBytes(url) {
-  const r = await fetch(url, { cf: { cacheTtl: 0, cacheEverything: false } });
-  if (!r.ok) return null;
-  const buf = await r.arrayBuffer();
-  return { bytes: buf, contentType: r.headers.get("content-type") || "application/octet-stream" };
+/* ───────────────────────────────────────────────────────────
+   Helpers to fetch our own generated PDFs over HTTP (robust)
+   ─────────────────────────────────────────────────────────── */
+function getPublicOrigin(env) {
+  if (env.API_URL && /^https?:\/\//i.test(env.API_URL)) return env.API_URL.replace(/\/+$/, "");
+  if (env.FALLBACK_ORIGIN && /^https?:\/\//i.test(env.FALLBACK_ORIGIN)) return env.FALLBACK_ORIGIN.replace(/\/+$/, "");
+  return "https://onboard.vinet.co.za";
 }
 
-/** ───────────────────────────────────────────────────────────
- * Push ALL files from an onboarding session (R2 → Splynx),
- * and also attach generated PDFs (MSA and, if chosen, Debit).
- * ─────────────────────────────────────────────────────────── */
+async function fetchUrlBytes(url) {
+  async function once() {
+    const r = await fetch(url, { cf: { cacheTtl: 0, cacheEverything: false } });
+    if (!r.ok) return { ok: false };
+    const bytes = await r.arrayBuffer();
+    const ct = r.headers.get("content-type") || "application/pdf";
+    return { ok: true, bytes, ct };
+  }
+  let res = await once();
+  if (!res.ok) res = await once(); // simple retry
+  return res.ok ? { bytes: res.bytes, contentType: res.ct } : null;
+}
+
+/* ───────────────────────────────────────────────────────────
+   Push ALL files from an onboarding session (R2 → Splynx),
+   and also attach generated PDFs (MSA and, if chosen, Debit).
+   ─────────────────────────────────────────────────────────── */
 export async function uploadAllSessionFilesToSplynx(env, linkid) {
   const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
   if (!sess) return { ok: false, error: "unknown-session" };
@@ -332,9 +341,10 @@ export async function uploadAllSessionFilesToSplynx(env, linkid) {
     }
   }
 
-  // 2) Generated PDFs (always try MSA)
+  // 2) Generated MSA PDF
   try {
-    const msaUrl = `${env.API_URL}/pdf/msa/${encodeURIComponent(linkid)}`;
+    const publicOrigin = getPublicOrigin(env);
+    const msaUrl = `${publicOrigin}/pdf/msa/${encodeURIComponent(linkid)}`;
     const msa = await fetchUrlBytes(msaUrl);
     if (msa?.bytes) {
       const res = await splynxCreateAndUploadOne(env, kind, id, {
@@ -357,7 +367,8 @@ export async function uploadAllSessionFilesToSplynx(env, linkid) {
   const wantsDebit = (sess.pay_method === "debit") || !!sess.debit_signed;
   if (wantsDebit) {
     try {
-      const doUrl = `${env.API_URL}/pdf/debit/${encodeURIComponent(linkid)}`;
+      const publicOrigin = getPublicOrigin(env);
+      const doUrl = `${publicOrigin}/pdf/debit/${encodeURIComponent(linkid)}`;
       const dopdf = await fetchUrlBytes(doUrl);
       if (dopdf?.bytes) {
         const res = await splynxCreateAndUploadOne(env, kind, id, {
