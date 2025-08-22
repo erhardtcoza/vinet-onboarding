@@ -10,7 +10,7 @@ export async function handleAdminApi(request, env) {
   const path = url.pathname.replace(/^\/api\/admin/, "");
   const method = request.method;
 
-  // ---------- Create Onboarding Link (used by the top card) ----------
+  // ---------- Create Onboarding Link ----------
   // POST /api/admin/genlink  { id: <splynxId> }
   if (path === "/genlink" && method === "POST") {
     try {
@@ -18,22 +18,18 @@ export async function handleAdminApi(request, env) {
       const splynxId = String(body?.id ?? "").trim();
       if (!splynxId) return json({ ok: false, error: "Missing id" }, 400);
 
-      // linkid format: <splynxId>_<8char>
       const linkid = `${splynxId}_${rand8()}`;
-
-      // seed a fresh "in progress" session in KV
       const now = Date.now();
       const session = {
-        id: linkid,              // linkid as the primary session id
-        splynx_id: splynxId,     // keep explicit reference
+        id: linkid,            // linkid is our primary session id
+        splynx_id: splynxId,   // explicit reference to Splynx record
         status: "inprogress",
         created: now,
         updated: now,
-        edits: {},               // customer edits will live here later
+        edits: {},
       };
       await env.ONBOARD_KV.put(`inprogress:${linkid}`, JSON.stringify(session));
 
-      // base URL from ENV or request origin
       const base = env.API_URL || `${url.protocol}//${url.host}`;
       const onboardUrl = `${base}/onboard/${encodeURIComponent(linkid)}`;
 
@@ -41,6 +37,27 @@ export async function handleAdminApi(request, env) {
     } catch (err) {
       return json({ ok: false, error: err?.message || String(err) }, 500);
     }
+  }
+
+  // ---------- Staff Code (merged here) ----------
+  // POST /api/admin/staff/gen   { linkid }
+  if (path === "/staff/gen" && method === "POST") {
+    const body = await safeJson(request);
+    const linkid = String(body?.linkid ?? "").trim();
+    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+
+    const code = genCode6();
+    const created = Date.now();
+    const ttlMinutes = 15;
+
+    await env.ONBOARD_KV.put(
+      `staffcode:${linkid}`,
+      JSON.stringify({ code, linkid, created, expires: created + ttlMinutes * 60 * 1000 }),
+      { expirationTtl: ttlMinutes * 60 }
+    );
+
+    console.log(`[staff] Issued code for ${linkid}: ${code}`);
+    return json({ ok: true, code, linkid, expires_in: ttlMinutes * 60 });
   }
 
   // ---------- Lists ----------
@@ -54,7 +71,7 @@ export async function handleAdminApi(request, env) {
   }
 
   // ---------- Approve ----------
-  // POST /api/admin/approve/:id   (id === linkid, we expect the KV source under pending:<id>)
+  // POST /api/admin/approve/:id  (id is the linkid; source KV is pending:<id>)
   if (path.startsWith("/approve/") && method === "POST") {
     const id = path.split("/")[2];
     try {
@@ -104,35 +121,28 @@ async function loadSessions(env, section) {
     const data = await kv.get(k.name, { type: "json" });
     if (data) {
       sessions.push({
-        id: k.name.split(":")[1], // this is the linkid (e.g. 319_abcd1234)
+        id: k.name.split(":")[1], // linkid (e.g., 319_abcd1234)
         status: section,
         ...data,
       });
     }
   }
-  // optional: newest first
   sessions.sort((a, b) => (b.updated || 0) - (a.updated || 0));
   return sessions;
 }
 
 async function approveSession(env, id) {
   const kv = env.ONBOARD_KV;
-
-  // When customers finish, your app should move their session into pending:<linkid>.
-  // We approve from 'pending' and archive into 'approved'.
   const raw = await kv.get("pending:" + id, { type: "json" });
   if (!raw) throw new Error(`No pending session found for ${id}`);
 
-  // Push edits to Splynx (update existing customer if we have one)
   const payload = mapEditsToSplynxPayload(raw?.edits || raw || {});
   const splynxId = raw.splynx_id || raw.id || "";
 
   if (splynxId && Object.keys(payload).length > 0) {
-    // Update main customer record
     await splynxPUT(env, `/admin/customers/${splynxId}`, payload);
   }
 
-  // Move KV: pending -> approved
   await kv.put("approved:" + id, JSON.stringify({ ...raw, status: "approved", updated: Date.now() }));
   await kv.delete("pending:" + id);
 }
@@ -148,7 +158,6 @@ async function rejectSession(env, id) {
 async function deleteAllSessions(env) {
   const kv = env.ONBOARD_KV;
   const prefixes = ["inprogress:", "pending:", "approved:", "rejected:"];
-
   for (const prefix of prefixes) {
     const list = await kv.list({ prefix });
     for (const { name } of list.keys) {
@@ -163,15 +172,15 @@ function json(obj, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
-
 async function safeJson(request) {
-  try { return await request.json(); }
-  catch { return {}; }
+  try { return await request.json(); } catch { return {}; }
 }
-
 function rand8() {
   const a = "abcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
   for (let i = 0; i < 8; i++) s += a[Math.floor(Math.random() * a.length)];
   return s;
+}
+function genCode6() {
+  return String(Math.floor(100000 + Math.random() * 900000));
 }
