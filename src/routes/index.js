@@ -7,28 +7,24 @@ import * as pdfRoutes from "./pdf.js";
 import * as agreements from "./agreements.js";
 import * as admin from "./admin.js";
 import * as onboard from "./onboard.js";
-import { handleAdminApi } from "./api-admin.js";      // ✅ Admin API routes
-import { handleSplynxApi } from "./api-splynx.js";    // ✅ Splynx API routes
+import { handleAdminApi } from "./api-admin.js";
+import { handleSplynxApi } from "./api-splynx.js";
 
 export async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
 
-  // --- Debug log every request ---
   console.log(`[router] ${method} ${path}`);
 
-  // --- API: Splynx ---
   if (path.startsWith("/api/splynx")) {
     return handleSplynxApi(request, env);
   }
 
-  // --- API: Admin ---
   if (path.startsWith("/api/admin")) {
     return handleAdminApi(request, env);
   }
 
-  // --- Other modules ---
   const modules = [
     publicRoutes,
     apiTerms,
