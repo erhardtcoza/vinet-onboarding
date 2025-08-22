@@ -7,13 +7,20 @@ import * as pdfRoutes from "./pdf.js";
 import * as agreements from "./agreements.js";
 import * as admin from "./admin.js";
 import * as onboard from "./onboard.js";
+import { handleSplynxApi } from "./api-splynx.js"; // <-- new
 
 export async function route(request, env) {
   const url = new URL(request.url);
-  const { pathname } = url;
+  const path = url.pathname;
   const method = request.method;
 
-  // The order matters; earlier modules get first dibs.
+  // 1) Dedicated Splynx profile API (used by onboarding step 2)
+  {
+    const res = await handleSplynxApi(request, env, url, path, method);
+    if (res) return res;
+  }
+
+  // 2) Everything else goes through the module list (your existing pattern)
   const modules = [
     publicRoutes,
     apiTerms,
@@ -26,7 +33,7 @@ export async function route(request, env) {
   ];
 
   for (const m of modules) {
-    if (m.match && m.handle && m.match(pathname, method)) {
+    if (m.match && m.handle && m.match(path, method)) {
       return m.handle(request, env);
     }
   }
