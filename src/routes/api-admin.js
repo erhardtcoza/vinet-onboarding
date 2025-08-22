@@ -1,253 +1,132 @@
-// src/routes/api-admin.js
+// src/routes/api-otp.js
+import { fetchCustomerMsisdn } from "../splynx.js";
 
-const json = (o, s = 200) =>
-  new Response(JSON.stringify(o), {
-    status: s,
-    headers: { "content-type": "application/json" },
+const j = (o, s = 200) =>
+  new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
+
+export function match(path, method) {
+  return method === "POST" && (path === "/api/otp/send" || path === "/api/otp/verify");
+}
+
+function formatMsisdn(raw) {
+  if (!raw) return "";
+  let s = String(raw).replace(/\D+/g, "");
+  // SA: if it starts with 0, convert to 27…
+  if (s.startsWith("0")) s = "27" + s.slice(1);
+  if (s.startsWith("27") && s.length === 11) return s;
+  // already intl like 2771...
+  if (/^27\d{9}$/.test(s)) return s;
+  return "";
+}
+
+async function sendWhatsAppTemplate(env, msisdn, code) {
+  // Meta WA template send
+  const id = env.PHONE_NUMBER_ID;
+  const token = env.WHATSAPP_TOKEN;
+  const name = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
+  const lang = (env.WHATSAPP_TEMPLATE_LANG || "en_US");
+
+  const url = `https://graph.facebook.com/v20.0/${id}/messages`;
+  const payload = {
+    messaging_product: "whatsapp",
+    to: msisdn,
+    type: "template",
+    template: {
+      name,
+      language: { code: lang },
+      components: [
+        { type: "body", parameters: [{ type: "text", text: code }] },
+        ...(env.WHATSAPP_BUTTON_URL ? [{
+          type: "button",
+          sub_type: "url",
+          index: "0",
+          parameters: [{ type: "text", text: code }]
+        }] : [])
+      ]
+    }
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(payload)
   });
 
-const now = () => Date.now();
-
-/** create a short random id */
-function rand(n = 8) {
-  const a = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let s = "";
-  for (let i = 0; i < n; i++) s += a[Math.floor(Math.random() * a.length)];
-  return s;
-}
-
-/** write the same session under all legacy/modern keys */
-async function writeSessionAll(env, linkid, obj, opts = {}) {
-  const kv = env.ONBOARD_KV;
-  const payload = JSON.stringify(obj);
-
-  // Primary (modern)
-  await kv.put(`onboard/${linkid}`, payload, opts);
-
-  // Legacy mirrors (for any older code paths)
-  await Promise.allSettled([
-    kv.put(`onboard:${linkid}`, payload, opts),
-    kv.put(`sess:${linkid}`, payload, opts),
-    kv.put(`session:${linkid}`, payload, opts),
-    kv.put(`inprogress:${linkid}`, payload, opts),
-    kv.put(`link:${linkid}`, "1", opts),
-  ]);
-}
-
-/** read session, trying all known key shapes */
-async function readSessionAny(env, linkid) {
-  const kv = env.ONBOARD_KV;
-  const tries = [
-    `onboard/${linkid}`,
-    `onboard:${linkid}`,
-    `sess:${linkid}`,
-    `session:${linkid}`,
-    `inprogress:${linkid}`,
-    linkid, // in case something wrote bare id
-  ];
-  for (const k of tries) {
-    const val = await kv.get(k, "json");
-    if (val) return val;
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`WA send failed ${res.status}: ${txt}`);
   }
-  return null;
 }
 
-/** list sessions by bucket prefix */
-async function listByPrefix(env, prefix) {
-  const kv = env.ONBOARD_KV;
-  const out = [];
-  const l = await kv.list({ prefix });
-  for (const { name } of l.keys) {
-    const sess = await kv.get(name, "json");
-    if (!sess) continue;
-    out.push({
-      id: String(sess.splynx_id || "").trim(),
-      linkid: String(sess.id || "").trim(),
-      updated: Number(sess.updated || 0),
-      status: sess.status || "inprogress",
-    });
-  }
-  // newest first
-  out.sort((a, b) => (b.updated || 0) - (a.updated || 0));
-  return out;
+async function getSessionPhone(env, linkid) {
+  // Try the KV session first (if UI captured/edited)
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  const raw = sess?.edits?.phone || sess?.phone || "";
+  const msisdn1 = formatMsisdn(raw);
+  if (msisdn1) return msisdn1;
+
+  // Fallback: read Splynx customer/lead
+  const id = (linkid || "").split("_")[0];
+  try {
+    const data = await fetchCustomerMsisdn(env, id);
+    const num =
+      data?.phone ||
+      data?.msisdn ||
+      (Array.isArray(data?.phones) ? data.phones.find(p => p?.phone)?.phone : "") ||
+      (Array.isArray(data) ? (data.find(x => x?.phone)?.phone || "") : "");
+    const msisdn2 = formatMsisdn(num);
+    if (msisdn2) return msisdn2;
+  } catch (_) {}
+  return "";
 }
 
-export function match(pathname, method) {
-  return pathname.startsWith("/api/admin/") || pathname.startsWith("/api/staff/");
-}
-
-export async function handleAdminApi(request, env) {
+export async function handle(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
-  const method = request.method;
 
-  // -----------------------------
-  // Create onboarding link
-  // -----------------------------
-  if (path === "/api/admin/genlink" && method === "POST") {
-    const { id } = (await request.json().catch(() => ({}))) || {};
-    const splynxId = String(id || "").trim();
-    if (!splynxId) return json({ ok: false, error: "Missing id" }, 400);
+  if (path === "/api/otp/send" && request.method === "POST") {
+    const { linkid } = await request.json().catch(() => ({}));
+    if (!linkid) return j({ ok: false, error: "Missing linkid" }, 400);
 
-    const linkid = `${splynxId}_${rand(8)}`;
+    const to = await getSessionPhone(env, linkid);
+    if (!to) return j({ ok: false, error: "No valid phone number on file" }, 400);
 
-    // 14 days validity window
-    const created = now();
-    const ttlDays = 14;
-    const expiresMs = created + ttlDays * 24 * 60 * 60 * 1000;
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    const session = {
-      id: linkid,
-      splynx_id: splynxId,
-      status: "inprogress",
-      status_alt: "in-progress",
-      state: "open",
-      active: true,
-      enabled: true,
-      valid: true,
-      created,
-      updated: created,
-      expires_ms: expiresMs,
-      expires: Math.floor(expiresMs / 1000),
-      expiresAt: new Date(expiresMs).toISOString(),
-      edits: {},
-    };
+    // Save OTP (5 minutes)
+    await env.ONBOARD_KV.put(`otp:${linkid}`, JSON.stringify({ code, ts: Date.now() }), { expirationTtl: 300 });
 
-    // keep the record for 14 days (matches expiresAt)
-    await writeSessionAll(env, linkid, session, { expirationTtl: 14 * 24 * 60 * 60 });
-
-    const base = env.API_URL || url.origin;
-    const onboardUrl = `${base}/onboard/${linkid}`;
-    return json({ ok: true, url: onboardUrl, linkid });
-  }
-
-  // -----------------------------
-  // Generate staff code (either route)
-  // -----------------------------
-  if (
-    (path === "/api/admin/staff/gen" || path === "/api/staff/gen") &&
-    method === "POST"
-  ) {
-    const { linkid } = (await request.json().catch(() => ({}))) || {};
-    const lid = String(linkid || "").trim();
-    if (!lid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const code = String(Math.floor(100000 + Math.random() * 900000)); // 6 digits
-    // 15 minutes
-    await env.ONBOARD_KV.put(
-      `staff_otp:${lid}`,
-      JSON.stringify({ code, created: now(), ttlSec: 900 }),
-      { expirationTtl: 900 }
-    );
-    return json({ ok: true, code });
-  }
-
-  // -----------------------------
-  // Lists for dashboard
-  // -----------------------------
-  if (path === "/api/admin/list" && method === "GET") {
-    const mode = url.searchParams.get("mode") || "inprog";
-    let prefix = "inprogress:";
-    if (mode === "pending") prefix = "pending:";
-    else if (mode === "approved") prefix = "approved:";
-    const items = await listByPrefix(env, prefix);
-    return json({ ok: true, items });
-  }
-
-  // -----------------------------
-  // Approve / Reject / Delete
-  // -----------------------------
-  if (path === "/api/admin/approve" && method === "POST") {
-    const { linkid } = (await request.json().catch(() => ({}))) || {};
-    const lid = String(linkid || "").trim();
-    if (!lid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const sess = (await readSessionAny(env, lid)) || { id: lid };
-    const updated = { ...sess, status: "approved", updated: now() };
-
-    await writeSessionAll(env, lid, updated);
-    // also mirror in approved: bucket
-    await env.ONBOARD_KV.put(`approved:${lid}`, JSON.stringify(updated));
-
-    return json({ ok: true });
-  }
-
-  if (path === "/api/admin/reject" && method === "POST") {
-    const { linkid, reason = "" } = (await request.json().catch(() => ({}))) || {};
-    const lid = String(linkid || "").trim();
-    if (!lid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const sess = (await readSessionAny(env, lid)) || { id: lid };
-    const updated = {
-      ...sess,
-      status: "rejected",
-      reject_reason: String(reason || ""),
-      updated: now(),
-    };
-
-    await writeSessionAll(env, lid, updated);
-    await env.ONBOARD_KV.put(`pending:${lid}`, JSON.stringify(updated)); // keep visible in pending bucket
-
-    return json({ ok: true });
-  }
-
-  if (path === "/api/admin/delete" && method === "POST") {
-    const { linkid } = (await request.json().catch(() => ({}))) || {};
-    const lid = String(linkid || "").trim();
-    if (!lid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const kv = env.ONBOARD_KV;
-    // delete every possible key shape
-    const keys = [
-      `onboard/${lid}`,
-      `onboard:${lid}`,
-      `sess:${lid}`,
-      `session:${lid}`,
-      `inprogress:${lid}`,
-      `pending:${lid}`,
-      `approved:${lid}`,
-      `link:${lid}`,
-      lid,
-    ];
-    await Promise.allSettled(keys.map((k) => kv.delete(k)));
-    return json({ ok: true, deleted: true });
-  }
-
-  // -----------------------------
-  // Debug helpers you used
-  // -----------------------------
-  if (path === "/api/admin/session/keys" && method === "GET") {
-    const linkid = String(url.searchParams.get("linkid") || "").trim();
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const kv = env.ONBOARD_KV;
-    const prefixes = [
-      `onboard/${linkid}`,
-      `onboard:${linkid}`,
-      `sess:${linkid}`,
-      `session:${linkid}`,
-      `inprogress:${linkid}`,
-      `pending:${linkid}`,
-      `approved:${linkid}`,
-      `link:${linkid}`,
-      linkid,
-    ];
-
-    const keys = [];
-    for (const name of prefixes) {
-      const v = await kv.get(name, "arrayBuffer").catch(() => null);
-      if (v) keys.push({ key: name, bytes: v.byteLength });
+    try {
+      await sendWhatsAppTemplate(env, to, code);
+      console.log(`[otp] sent to ${to} for ${linkid}`);
+      return j({ ok: true });
+    } catch (err) {
+      console.log(`[otp] whatsapp send failed: ${err?.message || err}`);
+      return j({ ok: false, error: "Failed to send via WhatsApp" }, 500);
     }
-    return json({ ok: true, linkid, keys });
   }
 
-  if (path === "/api/admin/session/get" && method === "GET") {
-    const linkid = String(url.searchParams.get("linkid") || "").trim();
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+  if (path === "/api/otp/verify" && request.method === "POST") {
+    const { linkid, otp, kind } = await request.json().catch(() => ({}));
+    if (!linkid || !otp) return j({ ok: false, error: "Missing linkid/otp" }, 400);
 
-    const sess = await readSessionAny(env, linkid);
-    return json({ ok: true, linkid, found: !!sess, session: sess || null });
+    const val = await env.ONBOARD_KV.get(`otp:${linkid}`, "json");
+    if (!val || String(val.code) !== String(otp)) return j({ ok: false, error: "Invalid code" }, 400);
+
+    // Mark verified in session
+    const sess = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+    const now = Date.now();
+    const verified = {
+      ...(sess.verified || {}),
+      [kind || "wa"]: { ts: now }
+    };
+    await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, verified, updated: now }), { expirationTtl: 86400 });
+
+    return j({ ok: true });
   }
 
-  return json({ error: "Unknown admin endpoint" }, 404);
+  return new Response("Not found", { status: 404 });
 }
