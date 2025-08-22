@@ -1,274 +1,309 @@
 // src/pdf/msa.js
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument } from "pdf-lib";
 import {
-  fetchTextCached,
-  getLogoBytes,
+  DEFAULT_MSA_TERMS_URL,
+  HEADER_PHONE_DEFAULT,
+  HEADER_WEBSITE_DEFAULT,
+  PDF_CACHE_TTL,
+  PDF_FONTS,
+  VINET_BLACK,
+  VINET_RED,
+} from "../constants.js";
+import {
+  drawDashedLine,
+  embedLogo,
   fetchR2Bytes,
+  fetchTextCached,
+  getWrappedLinesCached,
   localDateZAISO,
   localDateTimePrettyZA,
 } from "../helpers.js";
-import { VINET_BLACK, LOGO_URL } from "../constants.js";
 
-// Utilities --------------------------------------------------------------
+export async function renderMSAPdf(env, linkid, reqMeta = {}) {
+  // Cache
+  const cacheKey = `pdf:msa:${linkid}`;
+  const cached = await env.ONBOARD_KV.get(cacheKey, "arrayBuffer");
+  if (cached) {
+    return new Response(cached, {
+      headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" },
+    });
+  }
 
-async function loadLogo(pdf, env) {
-  const bytes = await getLogoBytes(env); // cached by helpers
-  if (!bytes) return null;
-  try { return await pdf.embedPng(bytes); } catch { return await pdf.embedJpg(bytes); }
-}
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess || !sess.agreement_sig_key) {
+    return new Response("MSA not available for this link.", { status: 409 });
+  }
 
-function drawParagraphs({ page, text, font, size, x, y, width, lineGap = 3, paraGap = 8, color = VINET_BLACK }) {
-  const maxWidth = width;
-  const wordsWidth = (s) => font.widthOfTextAtSize(s, size);
-  const drawLine = (s, yy) => page.drawText(s, { x, y: yy, size, font, color });
+  const termsUrl = env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
+  const terms = (await fetchTextCached(termsUrl, env, "terms:msa")) || "Terms unavailable.";
 
-  const paras = String(text || "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split(/\n{2,}/);
+  const edits = sess.edits || {};
+  const idOnly = String(linkid).split("_")[0];
 
-  let cursor = y;
-  for (const p of paras) {
-    const words = p.replace(/\s+/g, " ").trim().split(" ");
-    let line = "";
-    for (const w of words) {
-      const next = line ? line + " " + w : w;
-      if (wordsWidth(next) > maxWidth) {
-        drawLine(line, cursor);
-        cursor -= size + lineGap;
-        line = w;
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(PDF_FONTS.body); // Times
+  const bold = await pdf.embedFont(PDF_FONTS.bold);
+
+  const W = 595, H = 842, M = 40; // A4
+  const GUTTER = 18;
+  const MIN_FOOTER_Y = 110;
+
+  // Header like DO, with dashed rule *below* logo so it doesn't overlap
+  async function renderHeader(page, { continued = false } = {}) {
+    let yTop = H - 40;
+    const logoImg = await embedLogo(pdf, env);
+    let logoBottom = yTop;
+
+    if (logoImg) {
+      const targetH = 52.5; // ~25% larger than the older ~42px
+      const sc = logoImg.scale(1);
+      const ratio = targetH / sc.height;
+      const lw = sc.width * ratio;
+      const ly = yTop - targetH; // top of page minus logo height
+      page.drawImage(logoImg, { x: W - M - lw, y: ly, width: lw, height: targetH });
+      logoBottom = ly; // y of bottom of title area
+    }
+
+    // Title (only on MSA pages, omitted on security audit; caller decides)
+    if (continued) {
+      page.drawText("Master Service Agreement (continued)", {
+        x: M,
+        y: yTop - 8,
+        size: 18,
+        font: bold,
+        color: VINET_RED,
+      });
+    } else {
+      page.drawText("Master Service Agreement", {
+        x: M,
+        y: yTop - 8,
+        size: 18,
+        font: bold,
+        color: VINET_RED,
+      });
+    }
+
+    // Contact line
+    const contactY = yTop - 30;
+    page.drawText(
+      `${env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT}  |  ${env.HEADER_PHONE || HEADER_PHONE_DEFAULT}`,
+      { x: M, y: contactY, size: 10, font, color: VINET_BLACK }
+    );
+
+    // Dashed rule placed safely below the logo/contact area
+    const ruleY = Math.min(logoBottom - 6, contactY - 12);
+    drawDashedLine(page, M, ruleY, W - M);
+
+    return ruleY - 24; // next content Y
+  }
+
+  // Page 1
+  let page = pdf.addPage([W, H]);
+  let y = await renderHeader(page, { continued: false });
+
+  // Top block layout
+  const colW = (W - 2 * M - GUTTER) / 2;
+
+  // Left column — Client details
+  page.drawText("Client Details", { x: M, y, size: 11, font: bold, color: VINET_RED });
+  y -= 16;
+
+  let yL = y;
+  const leftRow = (k, v) => {
+    page.drawText(k, { x: M, y: yL, size: 10, font: bold, color: VINET_BLACK });
+    page.drawText(String(v || ""), { x: M + 120, y: yL, size: 10, font, color: VINET_BLACK });
+    yL -= 14;
+  };
+  leftRow("Client code:", idOnly);
+  leftRow("Full Name:", edits.full_name);
+  leftRow("ID number:", edits.passport);
+  leftRow("Email address:", edits.email);
+  leftRow("Phone:", edits.phone);
+
+  // Right column — Address, Payment method, IDs, Dates
+  let xR = M + colW + GUTTER;
+  let yR = y;
+  page.drawText("Details", { x: xR, y: yR, size: 11, font: bold, color: VINET_RED });
+  yR -= 16;
+
+  const rightRow = (k, v) => {
+    page.drawText(k, { x: xR, y: yR, size: 10, font: bold, color: VINET_BLACK });
+    page.drawText(String(v || ""), { x: xR + 120, y: yR, size: 10, font, color: VINET_BLACK });
+    yR -= 14;
+  };
+  rightRow("Street:", edits.street);
+  rightRow("City:", edits.city);
+  rightRow("Postal code:", edits.zip);
+  rightRow("Payment method:", sess.pay_method || "—");         // label only, no banking info
+  rightRow("Agreement ID:", linkid);
+  rightRow("Generated (date):", localDateZAISO().split("-").reverse().join("/"));
+
+  const infoBottom = Math.min(yL, yR) - 8;
+  drawDashedLine(page, M, infoBottom, W - M);
+
+  // Terms — **two columns**, size 6
+  let yText = infoBottom - 12;
+  const sizeT = 6.5;
+  const lineH = 9; // comfortable for 7pt
+  const col1X = M;
+  const col2X = M + colW + GUTTER;
+
+  const wrapped = await getWrappedLinesCached(env, terms, font, sizeT, colW, "msa:cols7");
+  let i = 0;
+  let col = 1;
+
+  function moveToNextColumnOrPage() {
+    if (col === 1) {
+      col = 2;
+      yText = infoBottom - 14; // reset y for second column on first page
+      return;
+    }
+    // New page (continued header)
+    const np = pdf.addPage([W, H]);
+    page = np;
+    // For continuation pages, show "(continued)"
+    // Returns the first content y for the page
+    return renderHeader(page, { continued: true }).then((ny) => {
+      // space down a bit before terms
+      yText = ny - 2;
+      col = 1;
+    });
+  }
+
+  while (i < wrapped.length) {
+    // If we’re too low for more text + footer, advance
+    if (yText < MIN_FOOTER_Y) {
+      // switch column or page
+      if (col === 1) {
+        col = 2;
+        yText = infoBottom - 14;
       } else {
-        line = next;
+        const ny = await renderHeader(pdf.addPage([W, H]), { continued: true });
+        page = pdf.getPages()[pdf.getPages().length - 1];
+        yText = ny - 2;
+        col = 1;
       }
     }
-    if (line) { drawLine(line, cursor); cursor -= size + paraGap; }
+
+    const xDraw = (col === 1) ? col1X : col2X;
+    page.drawText(wrapped[i], { x: xDraw, y: yText, size: sizeT, font, color: VINET_BLACK });
+    yText -= lineH;
+    i++;
   }
-  return cursor; // final y
-}
 
-function threeColFooter({ page, font, bold, size = 10, y = 60, fullName, dateStr, sigImg, pageWidth }) {
-  // Skip footer if y is too low
-  const colW = pageWidth / 3;
-  const centers = [colW / 2, colW + colW / 2, 2 * colW + colW / 2];
-  const labels = ["Full name", "Signature", "Date"];
-  const values = [fullName || "", sigImg ? "(signed)" : "", dateStr || ""];
+  // Footer with just: Full Name (left) | Signature (center) | Date (right)
+  // If not enough space left on the current page for footer, push to new page
+  if (yText < MIN_FOOTER_Y) {
+    const last = pdf.addPage([W, H]);
+    page = last;
+    // Continuation header again
+    const ny = await renderHeader(page, { continued: true });
+    yText = ny - 2;
+  }
 
-  // Baselines
-  const labelY = y;
-  const valueY = y + 16;
+  // Draw footer fields
+  const footY = 90;
 
-  for (let i = 0; i < 3; i++) {
-    const label = labels[i];
-    const value = values[i];
+  // Full name (left)
+  page.drawText("Full name:", { x: M, y: footY, size: 10, font: bold, color: VINET_BLACK });
+  page.drawText(String(edits.full_name || ""), {
+    x: M + 70,
+    y: footY,
+    size: 10,
+    font,
+    color: VINET_BLACK,
+  });
 
-    // Centered label
-    const lw = bold.widthOfTextAtSize(label, size);
-    page.drawText(label, {
-      x: centers[i] - lw / 2,
-      y: labelY,
-      size,
+  // Signature (center)
+  const sigBytes = await fetchR2Bytes(env, sess.agreement_sig_key);
+  const centerX = W / 2;
+  if (sigBytes) {
+    const sigImg = await pdf.embedPng(sigBytes);
+    const sigW = 160;
+    const sc = sigImg.scale(1);
+    const sigH = (sc.height / sc.width) * sigW;
+    page.drawText("Signature:", {
+      x: centerX - 40,
+      y: footY,
+      size: 10,
       font: bold,
       color: VINET_BLACK,
     });
-
-    // Centered value (name/date)
-    if (i !== 1) {
-      const vw = font.widthOfTextAtSize(value, size + 1);
-      page.drawText(value, {
-        x: centers[i] - vw / 2,
-        y: valueY,
-        size: size + 1,
-        font,
-        color: VINET_BLACK,
-      });
-    }
-  }
-
-  // Signature image centered in col 2, above the word "(signed)"
-  if (sigImg) {
-    const sigWidth = 140;
-    const sigHeight = 45;
     page.drawImage(sigImg, {
-      x: centers[1] - sigWidth / 2,
-      y: valueY + 6,
-      width: sigWidth,
-      height: sigHeight,
+      x: centerX + 28,
+      y: footY - sigH + 8,
+      width: sigW,
+      height: sigH,
     });
-  }
-}
-
-// Security audit page test
-const isSecurityAuditPage = (i) => i === 1; // second page (index 1) in these docs
-
-// Main -------------------------------------------------------------------
-
-export async function renderMSAPdf(env, linkid) {
-  // Pull session (to get names, pay method, signature key, auth method, etc.)
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json").catch(() => null);
-  if (!sess) return new Response("Unknown session", { status: 404 });
-
-  const id = String(linkid || "").split("_")[0];
-  const fullName = (sess?.edits?.full_name || sess?.full_name || sess?.customer?.full_name || "").trim();
-  const email = (sess?.edits?.email || sess?.email || sess?.customer?.email || "").trim();
-  const phone = (sess?.edits?.phone || sess?.phone || sess?.customer?.phone || "").trim();
-  const address = [
-    (sess?.edits?.street || sess?.street || sess?.customer?.street || "").trim(),
-    (sess?.edits?.city || sess?.city || sess?.customer?.city || "").trim(),
-    (sess?.edits?.zip || sess?.zip || sess?.customer?.zip || "").trim(),
-  ].filter(Boolean).join(", ");
-  const passport = (sess?.edits?.passport || sess?.passport || sess?.customer?.passport || "").trim();
-
-  const payMethod = (sess?.pay_method || sess?.payment_method || "").toLowerCase() === "debit"
-    ? "Debit Order"
-    : "Cash/EFT";
-
-  const generatedPretty = localDateTimePrettyZA(Date.now());
-
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const logo = await loadLogo(pdf, env);
-
-  // Signature (from KV -> R2)
-  let sigImage = null;
-  const sigKey = sess?.agreement_sig_key || `agreements/${linkid}/signature.png`;
-  const sigBytes = await fetchR2Bytes(env, sigKey);
-  if (sigBytes) {
-    try { sigImage = await pdf.embedPng(sigBytes); } catch { /* ignore */ }
+  } else {
+    page.drawText("Signature:", { x: centerX - 40, y: footY, size: 10, font: bold, color: VINET_BLACK });
   }
 
-  // TERMS (cached text source you already had)
-  const termsUrl = env.MSA_TERMS_URL || LOGO_URL; // fallback to something if not set
-  const termsText = await fetchTextCached(termsUrl, env, "msa_terms");
-
-  // Page 1 ---------------------------------------------------------------
-  let page = pdf.addPage([595.28, 841.89]); // A4 Portrait (pt)
-  const { width: pw, height: ph } = page.getSize();
-
-  // Logo (same size as before)
-  if (logo) {
-    const targetW = 160; // match previous feel
-    const scale = targetW / logo.width;
-    page.drawImage(logo, { x: 40, y: ph - 80, width: targetW, height: logo.height * scale });
-  }
-
-  // Title
-  page.drawText("Master Service Agreement", {
-    x: 40,
-    y: ph - 110,
-    size: 18,
-    font: bold,
+  // Date (right)
+  const dateLabelX = W - M - 120;
+  page.drawText("Date:", { x: dateLabelX, y: footY, size: 10, font: bold, color: VINET_BLACK });
+  page.drawText(localDateZAISO().split("-").reverse().join("/"), {
+    x: dateLabelX + 36,
+    y: footY,
+    size: 10,
+    font,
     color: VINET_BLACK,
   });
 
-  // Right-hand table (customer details)
-  const rx = 320;
-  let ry = ph - 110;
+  // Security Audit page (NO MSA header text here)
+  const audit = pdf.addPage([W, H]);
+  // Render header without the title line: we’ll call a lightweight variant
+  {
+    let yTop = H - 40;
+    const logoImg = await embedLogo(pdf, env);
+    let logoBottom = yTop;
 
-  const row = (label, value) => {
-    ry -= 18;
-    page.drawText(`${label}:`, { x: rx, y: ry, size: 10, font: bold, color: VINET_BLACK });
-    const tw = font.widthOfTextAtSize(String(value || ""), 10);
-    page.drawText(String(value || ""), { x: rx + 110, y: ry, size: 10, font, color: VINET_BLACK });
-  };
-  row("Customer", fullName);
-  row("Splynx ID", id);
-  row("Passport / ID", passport || "—");
-  row("Email", email || "—");
-  row("Phone", phone || "—");
-  row("Address", address || "—");
-  row("Payment method", payMethod);
-  row("Generated (date)", generatedPretty);
+    if (logoImg) {
+      const targetH = 52.5;
+      const sc = logoImg.scale(1);
+      const ratio = targetH / sc.height;
+      const lw = sc.width * ratio;
+      const ly = yTop - targetH;
+      audit.drawImage(logoImg, { x: W - M - lw, y: ly, width: lw, height: targetH });
+      logoBottom = ly;
+    }
 
-  // Intro (kept like your original – shorter lead-in above terms)
-  const intro =
-    "Master Service agreement Between VINET Internet Solutions Pty Ltd (VINET) and the subscriber I hereby authorise VINET Internet Solutions Pty Ltd (ISP), hereafter known as VINET, to create and set up my account with the services as I agreed upon with quote received and accepted. I confirm the accuracy of the information contained in this Agreement and warrant that I am duly authorised to enter into an agreement with VINET on behalf of the customer/myself.";
-  drawParagraphs({
-    page,
-    text: intro,
-    font,
-    size: 10.5,
-    x: 40,
-    y: ry - 30,
-    width: pw - 80,
-    lineGap: 2.5,
-    paraGap: 9,
-  });
+    const contactY = yTop - 30;
+    audit.drawText(
+      `${env.HEADER_WEBSITE || HEADER_WEBSITE_DEFAULT}  |  ${env.HEADER_PHONE || HEADER_PHONE_DEFAULT}`,
+      { x: M, y: contactY, size: 10, font, color: VINET_BLACK }
+    );
 
-  // Terms block (paragraph aware)
-  const termsStartY = ry - 70;
-  drawParagraphs({
-    page,
-    text: termsText,
-    font,
-    size: 10,
-    x: 40,
-    y: termsStartY,
-    width: pw - 80,
-    lineGap: 2.5,
-    paraGap: 8,
-  });
+    const ruleY = Math.min(logoBottom - 6, contactY - 12);
+    drawDashedLine(audit, M, ruleY, W - M);
 
-  // Footer on page 1
-  threeColFooter({
-    page,
-    font,
-    bold,
-    size: 10,
-    y: 70,
-    fullName,
-    dateStr: localDateZAISO(Date.now()),
-    sigImg: sigImage,
-    pageWidth: pw,
-  });
+    // Now audit content
+    let ay2 = ruleY - 20;
+    audit.drawText("Security Audit", { x: M, y: ay2 + 14, size: 16, font: bold, color: VINET_RED });
 
-  // Page 2 – Security Audit page ----------------------------------------
-  const p2 = pdf.addPage([595.28, 841.89]);
-  const { width: pw2, height: ph2 } = p2.getSize();
+    const meta = sess.audit_meta || {};
+    const linesAudit = [
+      `Generated (Africa/Johannesburg): ${localDateTimePrettyZA()}`,
+      `Client IP: ${meta.ip || sess.last_ip || "n/a"}  •  ASN: ${meta.asn || "n/a"}  •  Org: ${meta.asOrganization || "n/a"}`,
+      `Approx Location: ${meta.city || "?"}, ${meta.region || "?"}, ${meta.country || "?"}`,
+      `Device: ${meta.ua || sess.last_ua || "n/a"}`,
+    ];
+    let yAudit = ay2 - 10;
+    for (const l of linesAudit) {
+      audit.drawText(l, { x: M, y: yAudit, size: 10, font, color: VINET_BLACK });
+      yAudit -= 14;
+    }
 
-  // Logo again (consistent)
-  if (logo) {
-    const targetW = 160;
-    const scale = targetW / logo.width;
-    p2.drawImage(logo, { x: 40, y: ph2 - 80, width: targetW, height: logo.height * scale });
+    // Centered copyright at bottom
+    const copyright = "© Vinet Internet Solutions (Pty) Ltd";
+    const w = font.widthOfTextAtSize(copyright, 10);
+    audit.drawText(copyright, { x: (W - w) / 2, y: 40, size: 10, font, color: VINET_BLACK });
   }
 
-  // Move “Security Audit” ~5 lines lower (about 70px)
-  p2.drawText("Security Audit", {
-    x: 40,
-    y: ph2 - 150, // lower than before
-    size: 16,
-    font: bold,
-    color: VINET_BLACK,
-  });
-
-  // Extra rows above Client IP
-  let ay = ph2 - 180;
-  const auditRow = (label, value) => {
-    ay -= 18;
-    p2.drawText(`${label}:`, { x: 40, y: ay, size: 10, font: bold, color: VINET_BLACK });
-    p2.drawText(String(value || "—"), { x: 180, y: ay, size: 10, font, color: VINET_BLACK });
-  };
-
-  const authMethod = (sess?.otp_kind === "staff")
-    ? "Vinet Staff Verification"
-    : "OTP to mobile";
-
-  auditRow("Agreement code", linkid);
-  auditRow("Authentication / Verification method", authMethod);
-
-  // Continue with your existing audit info
-  const clientIp = (sess?.last_ip || sess?.audit_meta?.ip || "—");
-  const clientUa = (sess?.last_ua || sess?.audit_meta?.ua || "—");
-  auditRow("Client IP", clientIp);
-  auditRow("Client agent", clientUa);
-
-  // NOTE: No footer on security page
-  // (as requested – footer appears on all other pages only)
-
-  // Finish
   const bytes = await pdf.save();
+  await env.ONBOARD_KV.put(cacheKey, bytes, { expirationTtl: PDF_CACHE_TTL });
+
   return new Response(bytes, {
-    headers: { "content-type": "application/pdf" },
+    headers: { "content-type": "application/pdf", "cache-control": "public, max-age=86400" },
   });
 }
