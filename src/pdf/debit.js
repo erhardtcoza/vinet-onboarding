@@ -252,3 +252,4 @@ export async function buildDebitPdf(env, ctx) {
 
   return await pdf.save();
 }
+export { buildDebitPdf as renderDebitPdf };
