@@ -1,6 +1,6 @@
 // src/splynx.js
 
-// ---------- Utilities ----------
+// ---------- Small util ----------
 const pick = (...vals) => {
   for (const v of vals) {
     if (v === null || v === undefined) continue;
@@ -10,8 +10,9 @@ const pick = (...vals) => {
   return "";
 };
 
-// ---------- Low-level HTTP helpers ----------
+// ---------- Base URL + low-level HTTP helpers ----------
 function baseUrl(env) {
+  // Support either SPLYNX_API or SPLYNX_API_URL; default to your domain if unset
   return env.SPLYNX_API || env.SPLYNX_API_URL || "https://splynx.vinet.co.za/api/2.0";
 }
 
@@ -28,6 +29,19 @@ export async function splynxGET(env, endpoint) {
   return r.json();
 }
 
+export async function splynxPOST(env, endpoint, body) {
+  const r = await splynxFetch(env, endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Splynx POST ${endpoint} ${r.status} ${t}`);
+  }
+  return r.json().catch(() => ({}));
+}
+
 export async function splynxPUT(env, endpoint, body) {
   const r = await splynxFetch(env, endpoint, {
     method: "PUT",
@@ -41,42 +55,29 @@ export async function splynxPUT(env, endpoint, body) {
   return r.json().catch(() => ({}));
 }
 
-// ---------- Helpers to robustly fetch customer-info ----------
-async function getCustomerInfo(env, id) {
-  // Try exact by id
+// ---------- Exact customer-info fetch (passport lives here in your setup) ----------
+async function getCustomerInfoExact(env, id) {
   try {
-    const a = await splynxGET(env, `/admin/customers/customer-info/${id}`);
-    if (a && typeof a === "object") return a;
-  } catch {}
-
-  // Try query variant
-  try {
-    const b = await splynxGET(env, `/admin/customers/customer-info?customer_id=${encodeURIComponent(id)}`);
-    if (b && typeof b === "object") return b;
-  } catch {}
-
-  // Try list + filter
-  try {
-    const c = await splynxGET(env, `/admin/customers/customer-info`);
-    if (Array.isArray(c)) {
-      const hit = c.find((row) => String(row?.customer_id) === String(id));
-      if (hit) return hit;
+    const info = await splynxGET(env, `/admin/customers/customer-info/${id}`);
+    // Expect { customer_id, passport, ... }
+    if (info && typeof info === "object" && String(info.customer_id) === String(id)) {
+      return info;
     }
   } catch {}
-
+  // If your instance ever changes shape, add fallbacks here (query/list).
   return null;
 }
 
 // ---------- Phone (for OTP) ----------
 export async function fetchCustomerMsisdn(env, id) {
-  // Lead first
+  // Try lead first
   try {
     const lead = await splynxGET(env, `/admin/crm/leads/${id}`);
     const phone = pick(lead?.phone, lead?.phone_mobile, lead?.mobile);
     if (phone) return phone;
   } catch {}
 
-  // Customer
+  // Then customer
   try {
     const cust = await splynxGET(env, `/admin/customers/customer/${id}`);
     const phone = pick(cust?.phone, cust?.phone_mobile);
@@ -92,9 +93,9 @@ export async function fetchProfileForDisplay(env, id) {
   try {
     const lead = await splynxGET(env, `/admin/crm/leads/${id}`);
     const street = pick(lead.street, lead.address, lead.address_1, lead.street_1);
-    const city = pick(lead.city);
-    const zip = pick(lead.zip_code, lead.zip);
-    // (you said passport is NOT on leads in your setup — leave empty)
+    const city   = pick(lead.city);
+    const zip    = pick(lead.zip_code, lead.zip);
+    // In your setup passport is not on leads → keep empty
     return {
       kind: "lead",
       id,
@@ -102,7 +103,7 @@ export async function fetchProfileForDisplay(env, id) {
       email: pick(lead.email, lead.billing_email),
       phone: pick(lead.phone, lead.phone_mobile, lead.mobile),
       street, city, zip,
-      passport: "", // per your note
+      passport: "",
       payment_method: pick(lead.payment_method),
     };
   } catch {}
@@ -113,20 +114,20 @@ export async function fetchProfileForDisplay(env, id) {
   if (!cust) {
     return {
       kind: "unknown",
-      id, full_name: "", email: "", phone: "",
-      street: "", city: "", zip: "", passport: "", payment_method: "",
+      id,
+      full_name: "", email: "", phone: "",
+      street: "", city: "", zip: "",
+      passport: "", payment_method: "",
     };
   }
 
-  // Robust customer-info fetch (passport only lives here in your instance)
-  const info = await getCustomerInfo(env, id);
+  // Pull passport ONLY from customer-info (per your instance)
+  const info = await getCustomerInfoExact(env, id);
 
   const street = pick(cust.street, cust.address, cust.address_1, cust.street_1);
   const city   = pick(cust.city);
   const zip    = pick(cust.zip_code, cust.zip);
-
-  // Pull passport ONLY from customer-info (as you specified)
-  const passport = pick(info?.passport);
+  const passport = pick(info?.passport); // <- key piece
 
   return {
     kind: "customer",
@@ -146,25 +147,41 @@ export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachment
 
   if (edits.email) {
     body.email = edits.email;
-    body.billing_email = edits.email; // keep billing in sync
+    body.billing_email = edits.email; // keep billing email in sync
   }
   if (edits.phone) body.phone = edits.phone;
 
+  // Address
   if (edits.street) body.street_1 = edits.street;
   if (edits.city) body.city = edits.city;
   if (edits.zip) body.zip_code = edits.zip;
 
-  // Optional: if you decide to write back ID later, uncomment next line
-  // if (edits.passport) body.passport = edits.passport;
-
+  // Payment
   if (payMethod) body.payment_method = payMethod;
   if (debit) body.debit = debit;
-  if (attachments?.length) body.attachments = attachments;
+
+  // Optional attachments array of public URLs (if you use it)
+  if (attachments && attachments.length) body.attachments = attachments;
+
+  // Note: We are NOT setting passport here because your instance stores it in customer-info.
+  // If later you add a dedicated write-path for customer-info, handle that separately.
 
   return body;
 }
 
 // ---------- Create + upload a document (lead or customer) ----------
+/**
+ * entity: "lead" | "customer"
+ * id:     number | string
+ * opts: {
+ *   title: string,
+ *   description?: string,
+ *   visible_by_customer?: "0" | "1",
+ *   filename: string,
+ *   mime: string,
+ *   bytes: ArrayBuffer
+ * }
+ */
 export async function splynxCreateAndUpload(env, entity, id, opts) {
   const isLead = String(entity).toLowerCase() === "lead";
   const baseCreate = isLead ? `/admin/crm/leads-documents` : `/admin/customers/customer-documents`;
@@ -192,9 +209,9 @@ export async function splynxCreateAndUpload(env, entity, id, opts) {
   const document_id = created?.id;
   if (!document_id) throw new Error("Create doc: missing id in response");
 
-  // 2) Upload bytes to …/{id}--upload
+  // 2) Upload the file bytes to …/{id}--upload
   const uploadEndpoint = `${baseUpload}/${document_id}--upload`;
-  const fd = new FormData();
+  const fd = new FormData(); // do NOT set Content-Type; runtime adds boundary
   const fileName = opts.filename || "document.bin";
   const blob = new Blob([opts.bytes], { type: opts.mime || "application/octet-stream" });
   fd.append("file", blob, fileName);
