@@ -20,21 +20,39 @@ export async function handleAdminApi(request, env) {
 
       const linkid = `${splynxId}_${rand8()}`;
       const now = Date.now();
+      // give the session a default lifetime; many UIs treat absence of "expires" as invalid
+      const ttlDays = 14;
+      const expires = now + ttlDays * 24 * 60 * 60 * 1000;
+
+      // canonical session object
       const session = {
-        id: linkid,            // linkid is our primary session id
+        id: linkid,            // linkid is our session id
         splynx_id: splynxId,   // explicit reference to Splynx record
         status: "inprogress",
         created: now,
         updated: now,
+        expires,               // <-- important for validators
         edits: {},
       };
-      await env.ONBOARD_KV.put(`inprogress:${linkid}`, JSON.stringify(session));
+
+      // Write to ALL likely prefixes, so whatever your onboard route checks will find it
+      const kv = env.ONBOARD_KV;
+      await Promise.all([
+        kv.put(`inprogress:${linkid}`, JSON.stringify(session)),
+        kv.put(`sess:${linkid}`, JSON.stringify(session)),
+        kv.put(`session:${linkid}`, JSON.stringify(session)),
+        kv.put(`onboard:${linkid}`, JSON.stringify(session)),
+        // sometimes a boolean/flag key is used to validate existence
+        kv.put(`link:${linkid}`, "1", { expirationTtl: ttlDays * 24 * 60 * 60 }),
+      ]);
 
       const base = env.API_URL || `${url.protocol}//${url.host}`;
       const onboardUrl = `${base}/onboard/${encodeURIComponent(linkid)}`;
 
-      return json({ ok: true, url: onboardUrl, linkid });
+      console.log(`[admin] genlink OK linkid=${linkid}`);
+      return json({ ok: true, url: onboardUrl, linkid, expires });
     } catch (err) {
+      console.error("[admin] genlink error", err);
       return json({ ok: false, error: err?.message || String(err) }, 500);
     }
   }
@@ -143,21 +161,34 @@ async function approveSession(env, id) {
     await splynxPUT(env, `/admin/customers/${splynxId}`, payload);
   }
 
-  await kv.put("approved:" + id, JSON.stringify({ ...raw, status: "approved", updated: Date.now() }));
-  await kv.delete("pending:" + id);
+  const approved = { ...raw, status: "approved", updated: Date.now() };
+  await Promise.all([
+    kv.put("approved:" + id, JSON.stringify(approved)),
+    kv.delete("pending:" + id),
+    // mirror under other prefixes in case UI looks there later
+    kv.put("sess:" + id, JSON.stringify(approved)),
+    kv.put("session:" + id, JSON.stringify(approved)),
+    kv.put("onboard:" + id, JSON.stringify(approved)),
+  ]);
 }
 
 async function rejectSession(env, id) {
   const kv = env.ONBOARD_KV;
   const raw = await kv.get("pending:" + id, { type: "json" });
   if (!raw) throw new Error(`No pending session found for ${id}`);
-  await kv.put("rejected:" + id, JSON.stringify({ ...raw, status: "rejected", updated: Date.now() }));
-  await kv.delete("pending:" + id);
+  const rejected = { ...raw, status: "rejected", updated: Date.now() };
+  await Promise.all([
+    kv.put("rejected:" + id, JSON.stringify(rejected)),
+    kv.delete("pending:" + id),
+    kv.put("sess:" + id, JSON.stringify(rejected)),
+    kv.put("session:" + id, JSON.stringify(rejected)),
+    kv.put("onboard:" + id, JSON.stringify(rejected)),
+  ]);
 }
 
 async function deleteAllSessions(env) {
   const kv = env.ONBOARD_KV;
-  const prefixes = ["inprogress:", "pending:", "approved:", "rejected:"];
+  const prefixes = ["inprogress:", "pending:", "approved:", "rejected:", "sess:", "session:", "onboard:", "link:"];
   for (const prefix of prefixes) {
     const list = await kv.list({ prefix });
     for (const { name } of list.keys) {
