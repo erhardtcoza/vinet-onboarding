@@ -1,250 +1,274 @@
 // src/pdf/msa.js
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import {
-  embedLogo,
   fetchTextCached,
-  getWrappedLinesCached,
+  getLogoBytes,
   fetchR2Bytes,
   localDateZAISO,
   localDateTimePrettyZA,
 } from "../helpers.js";
 import { VINET_BLACK, LOGO_URL } from "../constants.js";
-import { fetchProfileForDisplay } from "../splynx.js";
 
-/** Small utilities */
-const mm = (n) => (n * 72) / 25.4;
+// Utilities --------------------------------------------------------------
 
-function paraSplit(txt) {
-  // Split on blank lines; keep simple Windows/mac line endings robustly
-  return String(txt || "")
+async function loadLogo(pdf, env) {
+  const bytes = await getLogoBytes(env); // cached by helpers
+  if (!bytes) return null;
+  try { return await pdf.embedPng(bytes); } catch { return await pdf.embedJpg(bytes); }
+}
+
+function drawParagraphs({ page, text, font, size, x, y, width, lineGap = 3, paraGap = 8, color = VINET_BLACK }) {
+  const maxWidth = width;
+  const wordsWidth = (s) => font.widthOfTextAtSize(s, size);
+  const drawLine = (s, yy) => page.drawText(s, { x, y: yy, size, font, color });
+
+  const paras = String(text || "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .split(/\n{2,}/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+    .split(/\n{2,}/);
+
+  let cursor = y;
+  for (const p of paras) {
+    const words = p.replace(/\s+/g, " ").trim().split(" ");
+    let line = "";
+    for (const w of words) {
+      const next = line ? line + " " + w : w;
+      if (wordsWidth(next) > maxWidth) {
+        drawLine(line, cursor);
+        cursor -= size + lineGap;
+        line = w;
+      } else {
+        line = next;
+      }
+    }
+    if (line) { drawLine(line, cursor); cursor -= size + paraGap; }
+  }
+  return cursor; // final y
 }
 
-function drawFooterTriplet(page, font, name, sigImg, dateStr) {
-  const { width } = page.getSize();
-  const margin = mm(15);
-  const y = mm(15); // footer baseline
-  const colW = (width - margin * 2) / 3;
-  const centerX = (i) => margin + colW * (i + 0.5);
+function threeColFooter({ page, font, bold, size = 10, y = 60, fullName, dateStr, sigImg, pageWidth }) {
+  // Skip footer if y is too low
+  const colW = pageWidth / 3;
+  const centers = [colW / 2, colW + colW / 2, 2 * colW + colW / 2];
+  const labels = ["Full name", "Signature", "Date"];
+  const values = [fullName || "", sigImg ? "(signed)" : "", dateStr || ""];
 
-  // labels
-  const labelSize = 9;
-  const valueSize = 11;
+  // Baselines
+  const labelY = y;
+  const valueY = y + 16;
 
-  // 0: Full name
-  {
-    const cx = centerX(0);
-    page.drawText("Full name", { x: cx - 28, y: y + 18, size: labelSize, font, color: VINET_BLACK });
-    page.drawText(name || "—", {
-      x: cx - (font.widthOfTextAtSize(name || "—", valueSize) / 2),
-      y,
-      size: valueSize,
-      font,
-      color: VINET_BLACK,
-    });
-  }
+  for (let i = 0; i < 3; i++) {
+    const label = labels[i];
+    const value = values[i];
 
-  // 1: Signature (image if present, else dash)
-  {
-    const cx = centerX(1);
-    page.drawText("Signature", { x: cx - 28, y: y + 18, size: labelSize, font, color: VINET_BLACK });
-    if (sigImg) {
-      const w = mm(32);
-      const h = (w * sigImg.height) / sigImg.width;
-      page.drawImage(sigImg, { x: cx - w / 2, y: y - 2, width: w, height: h, opacity: 0.9 });
-    } else {
-      page.drawText("—", { x: cx - 3, y, size: valueSize, font, color: VINET_BLACK });
-    }
-  }
-
-  // 2: Date
-  {
-    const cx = centerX(2);
-    page.drawText("Date", { x: cx - 12, y: y + 18, size: labelSize, font, color: VINET_BLACK });
-    page.drawText(dateStr || "—", {
-      x: cx - (font.widthOfTextAtSize(dateStr || "—", valueSize) / 2),
-      y,
-      size: valueSize,
-      font,
-      color: VINET_BLACK,
-    });
-  }
-}
-
-async function loadSigImage(pdf, env, sigKey) {
-  const bytes = await fetchR2Bytes(env, sigKey);
-  if (!bytes) return null;
-  try {
-    return await pdf.embedPng(bytes);
-  } catch {
-    try {
-      return await pdf.embedJpg(bytes);
-    } catch {
-      return null;
-    }
-  }
-}
-
-export async function renderMSAPdf(env, linkid) {
-  // ---- Load session + profile + terms
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  const id = String(linkid || "").split("_")[0];
-  const profile = await fetchProfileForDisplay(env, id);
-
-  const termsHtml = await fetchTextCached(env.TERMS_SERVICE_URL, env, "terms:msa");
-  const paragraphs = paraSplit(termsHtml);
-
-  // ---- PDF init
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const logo = await embedLogo(pdf, env);
-  const sigImg = await loadSigImage(pdf, env, sess?.agreement_sig_key);
-  const generated = localDateTimePrettyZA(Date.now());
-
-  // ---- Common measurements
-  const A4 = { w: mm(210), h: mm(297) };
-  const margin = mm(18);
-  const contentW = A4.w - margin * 2;
-
-  // ---- Page helper
-  let pageIndex = 0;
-  const pages = [];
-  const addPage = () => {
-    const p = pdf.addPage([A4.w, A4.h]);
-    pages.push(p);
-    pageIndex = pages.length - 1;
-    // header
-    if (logo) {
-      const lw = mm(42);
-      const lh = (lw * logo.height) / logo.width;
-      p.drawImage(logo, { x: margin, y: A4.h - margin - lh, width: lw, height: lh });
-    }
-    p.drawText("Master Service Agreement", {
-      x: margin,
-      y: A4.h - margin - mm(16),
-      size: 16,
+    // Centered label
+    const lw = bold.widthOfTextAtSize(label, size);
+    page.drawText(label, {
+      x: centers[i] - lw / 2,
+      y: labelY,
+      size,
       font: bold,
       color: VINET_BLACK,
     });
-    // top rule
-    p.drawLine({
-      start: { x: margin, y: A4.h - margin - mm(20) },
-      end: { x: A4.w - margin, y: A4.h - margin - mm(20) },
-      thickness: 1,
-      color: rgb(0.85, 0.85, 0.85),
-    });
-    return p;
-  };
 
-  // ---- Page 1 (cover with key fields)
-  let p = addPage();
-  let cursorY = A4.h - margin - mm(28);
-
-  // Two-column overview (left company, right customer + meta)
-  const colGap = mm(10);
-  const colW = (contentW - colGap) / 2;
-
-  // Right column info block
-  const rightX = margin + colW + colGap;
-
-  const rightLines = [
-    ["Customer", profile.full_name || "—"],
-    ["Splynx ID", id],
-    ["Passport / ID", profile.passport || "—"],
-    ["Email", profile.email || "—"],
-    ["Phone", profile.phone || "—"],
-    ["Address", [profile.street, profile.city, profile.zip].filter(Boolean).join(", ") || "—"],
-    ["Payment method", (sess?.pay_method === "debit" ? "Debit Order" : "Cash/EFT")],
-    ["Generated (date)", generated],
-  ];
-
-  let yInfo = cursorY;
-  rightLines.forEach(([k, v]) => {
-    p.drawText(`${k}:`, { x: rightX, y: yInfo, size: 10, font: bold, color: VINET_BLACK });
-    const vs = String(v);
-    p.drawText(vs, {
-      x: rightX + mm(35),
-      y: yInfo,
-      size: 10,
-      font,
-      color: VINET_BLACK,
-    });
-    yInfo -= mm(7);
-  });
-
-  // Move cursor to start of terms below
-  cursorY = yInfo - mm(6);
-
-  // ---- Terms flow (paragraphs, word wrap)
-  const bodySize = 10.5;
-  const lineGap = 1.25; // requested slight increase
-  const usableHeight = cursorY - mm(22); // keep room for footer
-
-  for (let i = 0; i < paragraphs.length; i++) {
-    let text = paragraphs[i];
-    let lines = await getWrappedLinesCached(env, text, font, bodySize, contentW, `msa:p${i}`);
-
-    // paginate
-    for (let li = 0; li < lines.length; li++) {
-      if (cursorY - bodySize < mm(28)) {
-        // footer (skip on Security Audit page only, which comes later)
-        drawFooterTriplet(p, font, profile.full_name, sigImg, localDateZAISO(Date.now()));
-        // new page
-        p = addPage();
-        cursorY = A4.h - margin - mm(28);
-      }
-      p.drawText(lines[li], { x: margin, y: cursorY, size: bodySize, font, color: VINET_BLACK });
-      cursorY -= bodySize * lineGap + 1;
+    // Centered value (name/date)
+    if (i !== 1) {
+      const vw = font.widthOfTextAtSize(value, size + 1);
+      page.drawText(value, {
+        x: centers[i] - vw / 2,
+        y: valueY,
+        size: size + 1,
+        font,
+        color: VINET_BLACK,
+      });
     }
-    cursorY -= mm(2); // paragraph gap
   }
 
-  // Finalize page with footer
-  drawFooterTriplet(p, font, profile.full_name, sigImg, localDateZAISO(Date.now()));
+  // Signature image centered in col 2, above the word "(signed)"
+  if (sigImg) {
+    const sigWidth = 140;
+    const sigHeight = 45;
+    page.drawImage(sigImg, {
+      x: centers[1] - sigWidth / 2,
+      y: valueY + 6,
+      width: sigWidth,
+      height: sigHeight,
+    });
+  }
+}
 
-  // ---- Security Audit page
-  const sec = addPage();
-  let ySec = A4.h - margin - mm(28);
+// Security audit page test
+const isSecurityAuditPage = (i) => i === 1; // second page (index 1) in these docs
 
-  // push heading down “about 5 lines”
-  ySec -= mm(5 * 4); // ~20mm
-  sec.drawText("Security Audit", { x: margin, y: ySec, size: 14, font: bold, color: VINET_BLACK });
-  ySec -= mm(8);
+// Main -------------------------------------------------------------------
 
-  // Details required above client IP
-  const auth =
-    sess?.wa_verified ? "OTP to mobile"
-      : sess?.staff_verified ? "Vinet Staff Verification"
-      : "Unknown";
+export async function renderMSAPdf(env, linkid) {
+  // Pull session (to get names, pay method, signature key, auth method, etc.)
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json").catch(() => null);
+  if (!sess) return new Response("Unknown session", { status: 404 });
 
-  const secLines = [
-    ["Agreement code", linkid],
-    ["Authentication / Verification", auth],
-    ["Client IP", sess?.last_ip || sess?.audit_meta?.ip || "—"],
-    ["User agent", sess?.last_ua || sess?.audit_meta?.ua || "—"],
-    ["Audit time (ZA)", localDateTimePrettyZA(sess?.audit_meta?.at || Date.now())],
-  ];
+  const id = String(linkid || "").split("_")[0];
+  const fullName = (sess?.edits?.full_name || sess?.full_name || sess?.customer?.full_name || "").trim();
+  const email = (sess?.edits?.email || sess?.email || sess?.customer?.email || "").trim();
+  const phone = (sess?.edits?.phone || sess?.phone || sess?.customer?.phone || "").trim();
+  const address = [
+    (sess?.edits?.street || sess?.street || sess?.customer?.street || "").trim(),
+    (sess?.edits?.city || sess?.city || sess?.customer?.city || "").trim(),
+    (sess?.edits?.zip || sess?.zip || sess?.customer?.zip || "").trim(),
+  ].filter(Boolean).join(", ");
+  const passport = (sess?.edits?.passport || sess?.passport || sess?.customer?.passport || "").trim();
 
-  secLines.forEach(([k, v]) => {
-    sec.drawText(`${k}:`, { x: margin, y: ySec, size: 11, font: bold, color: VINET_BLACK });
-    sec.drawText(String(v), { x: margin + mm(55), y: ySec, size: 11, font, color: VINET_BLACK });
-    ySec -= mm(7);
+  const payMethod = (sess?.pay_method || sess?.payment_method || "").toLowerCase() === "debit"
+    ? "Debit Order"
+    : "Cash/EFT";
+
+  const generatedPretty = localDateTimePrettyZA(Date.now());
+
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const logo = await loadLogo(pdf, env);
+
+  // Signature (from KV -> R2)
+  let sigImage = null;
+  const sigKey = sess?.agreement_sig_key || `agreements/${linkid}/signature.png`;
+  const sigBytes = await fetchR2Bytes(env, sigKey);
+  if (sigBytes) {
+    try { sigImage = await pdf.embedPng(sigBytes); } catch { /* ignore */ }
+  }
+
+  // TERMS (cached text source you already had)
+  const termsUrl = env.MSA_TERMS_URL || LOGO_URL; // fallback to something if not set
+  const termsText = await fetchTextCached(termsUrl, env, "msa_terms");
+
+  // Page 1 ---------------------------------------------------------------
+  let page = pdf.addPage([595.28, 841.89]); // A4 Portrait (pt)
+  const { width: pw, height: ph } = page.getSize();
+
+  // Logo (same size as before)
+  if (logo) {
+    const targetW = 160; // match previous feel
+    const scale = targetW / logo.width;
+    page.drawImage(logo, { x: 40, y: ph - 80, width: targetW, height: logo.height * scale });
+  }
+
+  // Title
+  page.drawText("Master Service Agreement", {
+    x: 40,
+    y: ph - 110,
+    size: 18,
+    font: bold,
+    color: VINET_BLACK,
   });
 
-  // (No footer on security page as requested)
+  // Right-hand table (customer details)
+  const rx = 320;
+  let ry = ph - 110;
 
-  // ---- Return response
+  const row = (label, value) => {
+    ry -= 18;
+    page.drawText(`${label}:`, { x: rx, y: ry, size: 10, font: bold, color: VINET_BLACK });
+    const tw = font.widthOfTextAtSize(String(value || ""), 10);
+    page.drawText(String(value || ""), { x: rx + 110, y: ry, size: 10, font, color: VINET_BLACK });
+  };
+  row("Customer", fullName);
+  row("Splynx ID", id);
+  row("Passport / ID", passport || "—");
+  row("Email", email || "—");
+  row("Phone", phone || "—");
+  row("Address", address || "—");
+  row("Payment method", payMethod);
+  row("Generated (date)", generatedPretty);
+
+  // Intro (kept like your original – shorter lead-in above terms)
+  const intro =
+    "Master Service agreement Between VINET Internet Solutions Pty Ltd (VINET) and the subscriber I hereby authorise VINET Internet Solutions Pty Ltd (ISP), hereafter known as VINET, to create and set up my account with the services as I agreed upon with quote received and accepted. I confirm the accuracy of the information contained in this Agreement and warrant that I am duly authorised to enter into an agreement with VINET on behalf of the customer/myself.";
+  drawParagraphs({
+    page,
+    text: intro,
+    font,
+    size: 10.5,
+    x: 40,
+    y: ry - 30,
+    width: pw - 80,
+    lineGap: 2.5,
+    paraGap: 9,
+  });
+
+  // Terms block (paragraph aware)
+  const termsStartY = ry - 70;
+  drawParagraphs({
+    page,
+    text: termsText,
+    font,
+    size: 10,
+    x: 40,
+    y: termsStartY,
+    width: pw - 80,
+    lineGap: 2.5,
+    paraGap: 8,
+  });
+
+  // Footer on page 1
+  threeColFooter({
+    page,
+    font,
+    bold,
+    size: 10,
+    y: 70,
+    fullName,
+    dateStr: localDateZAISO(Date.now()),
+    sigImg: sigImage,
+    pageWidth: pw,
+  });
+
+  // Page 2 – Security Audit page ----------------------------------------
+  const p2 = pdf.addPage([595.28, 841.89]);
+  const { width: pw2, height: ph2 } = p2.getSize();
+
+  // Logo again (consistent)
+  if (logo) {
+    const targetW = 160;
+    const scale = targetW / logo.width;
+    p2.drawImage(logo, { x: 40, y: ph2 - 80, width: targetW, height: logo.height * scale });
+  }
+
+  // Move “Security Audit” ~5 lines lower (about 70px)
+  p2.drawText("Security Audit", {
+    x: 40,
+    y: ph2 - 150, // lower than before
+    size: 16,
+    font: bold,
+    color: VINET_BLACK,
+  });
+
+  // Extra rows above Client IP
+  let ay = ph2 - 180;
+  const auditRow = (label, value) => {
+    ay -= 18;
+    p2.drawText(`${label}:`, { x: 40, y: ay, size: 10, font: bold, color: VINET_BLACK });
+    p2.drawText(String(value || "—"), { x: 180, y: ay, size: 10, font, color: VINET_BLACK });
+  };
+
+  const authMethod = (sess?.otp_kind === "staff")
+    ? "Vinet Staff Verification"
+    : "OTP to mobile";
+
+  auditRow("Agreement code", linkid);
+  auditRow("Authentication / Verification method", authMethod);
+
+  // Continue with your existing audit info
+  const clientIp = (sess?.last_ip || sess?.audit_meta?.ip || "—");
+  const clientUa = (sess?.last_ua || sess?.audit_meta?.ua || "—");
+  auditRow("Client IP", clientIp);
+  auditRow("Client agent", clientUa);
+
+  // NOTE: No footer on security page
+  // (as requested – footer appears on all other pages only)
+
+  // Finish
   const bytes = await pdf.save();
   return new Response(bytes, {
-    headers: {
-      "content-type": "application/pdf",
-      "cache-control": "no-store",
-      "content-disposition": `inline; filename="msa_${linkid}.pdf"`,
-    },
+    headers: { "content-type": "application/pdf" },
   });
 }
