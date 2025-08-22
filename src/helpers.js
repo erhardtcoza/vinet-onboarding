@@ -1,6 +1,7 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import { LOGO_URL, PDF_CACHE_TTL, VINET_BLACK } from "./constants.js";
-
+// re-export commonly used constants for convenience
+export { VINET_BLACK } from "./constants.js";
 export const escapeHtml = (s) =>
   String(s || "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
