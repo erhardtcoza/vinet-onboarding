@@ -1,305 +1,287 @@
-// src/pdf/msa.js
-//
-// Build the Master Service Agreement PDF with paragraph-aware terms,
-// repeated 3‑column footer (except on Security Audit page), and
-// first-page extras (Payment method, Generated date).
-//
-// Requires: pdf-lib ^1.17.1
-//
+// src/ui/msa.js
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-
-/** Small helpers */
-const mm = (v) => v * 2.834645669; // mm -> pt
-const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-
-function fmtJohannesburg(dt) {
-  try {
-    return new Date(dt).toLocaleString("en-ZA", {
-      timeZone: "Africa/Johannesburg",
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).replace(",", "");
-  } catch {
-    return new Date().toISOString();
-  }
-}
-
-/**
- * Paragraph-aware text layout with automatic paging.
- * Splits on blank lines to make paragraphs, keeps an extra gap between paragraphs,
- * and uses slightly looser line height for readability.
- */
-function layoutParagraphs({
-  doc, page, font, size, color = rgb(0, 0, 0),
-  x, y, w, h, text, lineGap = 0.25, // extra line spacing
-  addPage, drawFooter,
-}) {
-  const lineHeight = size * (1.2 + clamp(lineGap, 0, 1)); // slightly more generous
-  const paragraphGap = lineHeight * 0.6;
-
-  const wordsWidth = (s) => font.widthOfTextAtSize(s, size);
-  const spaceW = wordsWidth(" ");
-
-  let cursorY = y;
-  const paragraphs = String(text || "")
-    .replace(/\r\n/g, "\n")
-    .split(/\n\s*\n/g);
-
-  for (const para of paragraphs) {
-    const words = para.split(/\s+/);
-    let line = "";
-    let firstWordInLine = true;
-
-    const flushLine = () => {
-      if (!line) return;
-      if (cursorY - lineHeight < h) {
-        // New page
-        drawFooter?.(page); // close current page
-        page = addPage();
-        cursorY = page.getHeight() - mm(30); // fresh top margin
-      }
-      page.drawText(line, { x, y: cursorY - lineHeight, size, font, color, maxWidth: w });
-      cursorY -= lineHeight;
-      line = "";
-      firstWordInLine = true;
-    };
-
-    for (const word of words) {
-      const test = firstWordInLine ? word : line + " " + word;
-      const width = wordsWidth(test);
-      if (width > w && !firstWordInLine) {
-        flushLine();
-        line = word;
-        firstWordInLine = false;
-      } else {
-        line = test;
-        firstWordInLine = false;
-      }
-    }
-    flushLine();
-    cursorY -= paragraphGap;
-  }
-
-  return { page, y: cursorY };
-}
-
-/** Header with logo + title */
-async function drawHeader({ page, logoPng, title, font, fontBold, red }) {
-  const pw = page.getWidth();
-  const top = page.getHeight() - mm(20);
-
-  // Logo (consistent size for MSA & Debit)
-  const LOGO_W = mm(42); // ~ same across docs
-  const LOGO_H = mm(16);
-  if (logoPng) {
-    page.drawImage(logoPng, {
-      x: mm(20),
-      y: top - LOGO_H,
-      width: LOGO_W,
-      height: LOGO_H,
-    });
-  }
-
-  page.drawText(title, {
-    x: mm(20),
-    y: top - LOGO_H - mm(6),
-    size: 16,
-    font: fontBold,
-    color: red,
-  });
-
-  // red hairline
-  page.drawLine({
-    start: { x: mm(20), y: top - LOGO_H - mm(9) },
-    end: { x: pw - mm(20), y: top - LOGO_H - mm(9) },
-    thickness: 1,
-    color: red,
-  });
-}
-
-/** Two-column key/value block */
-function drawKeyVals({ page, font, fontBold, x, y, colGap, colW, rows }) {
-  let cy = y;
-  const keyCol = x;
-  const valCol = x + colW + colGap;
-  for (const [k, v] of rows) {
-    page.drawText(String(k), { x: keyCol, y: cy, size: 10, font: fontBold, color: rgb(0.2,0.2,0.2) });
-    page.drawText(String(v ?? ""), { x: valCol, y: cy, size: 10, font, color: rgb(0.15,0.15,0.15) });
-    cy -= mm(6);
-  }
-  return cy;
-}
-
-/** 3-column centered footer used on all pages except the Security Audit page */
-function drawFooter({ page, font, fontBold, name, dateStr, sigImg, red }) {
-  const ph = page.getHeight();
-  const y = mm(14);
-  const left = mm(20);
-  const right = page.getWidth() - mm(20);
-  const w = right - left;
-  const colW = w / 3;
-
-  const drawCol = (colIdx, label, value, img) => {
-    const cx = left + colIdx * colW + colW / 2;
-    // Value (e.g., name/signature/date) above label, centered
-    if (img) {
-      const IH = mm(12); const IW = mm(36);
-      page.drawImage(img, { x: cx - IW/2, y: y + mm(8), width: IW, height: IH });
-    } else {
-      const text = String(value ?? "");
-      const wv = font.widthOfTextAtSize(text, 10);
-      page.drawText(text, { x: cx - wv/2, y: y + mm(10), size: 10, font, color: rgb(0,0,0) });
-    }
-    const wl = fontBold.widthOfTextAtSize(label, 10);
-    page.drawText(label, { x: cx - wl/2, y: y, size: 10, font: fontBold, color: red });
-  };
-
-  drawCol(0, "Full name", name || "");
-  drawCol(1, "Signature", "", sigImg || null);
-  drawCol(2, "Date", dateStr || "");
-}
+import {
+  embedLogo,
+  fetchR2Bytes,
+  fetchTextCached,
+  getWrappedLinesCached,
+  localDateTimePrettyZA,
+  localDateZAISO,
+  VINET_BLACK,
+} from "../helpers.js";
+import { LOGO_URL } from "../constants.js";
 
 /**
  * Build the MSA PDF.
  *
- * @param {object} data
- * {
- *   logoBytes?: Uint8Array,
- *   signatureBytes?: Uint8Array,           // customer's drawn signature (PNG)
- *   termsText: string,                      // the big MSA text (paragraphs by blank lines)
- *   client: {
- *     code, full_name, passport, email, phone,
- *     street, city, zip, payment_method   // "eft" | "debit" | "cash" etc.
- *   },
- *   agreementId: string,                   // onboarding session id
- *   generatedAt?: string|number|Date,      // if omitted, uses Date.now()
- *   authMethod?: "otp" | "staff",          // for security page
- *   audit?: { ip, asn, org, approx, ua },  // security page
- * }
- * @returns Uint8Array
+ * @param {Env}   env
+ * @param {object} ctx
+ *  - linkid: string (session id / agreement code)
+ *  - profile: { id, full_name, email, phone, street, city, zip, payment_method }
+ *  - termsUrl: string (HTML/text source for the MSA terms)  OR
+ *  - termsText: string (raw text; if both present, termsText wins)
+ *  - verification: "otp" | "staff" (for Security Audit page)
+ *  - audit: { ip, asn, asOrganization, city, region, country, ua, at }  // from getClientMeta
+ *  - sigKey: R2 key for MSA signature PNG (optional)
+ *  - generatedAt: number (ms) optional; defaults now()
+ *
+ * @returns {Promise<Uint8Array>}
  */
-export async function buildMSAPdf(data) {
-  const doc = await PDFDocument.create();
+export async function buildMsaPdf(env, ctx) {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  // Embeds & colors
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const red = rgb(0.886, 0, 0.102);
-  const gray = rgb(0.15, 0.15, 0.15);
+  const logo = await embedLogo(pdf, env); // PNG/JPG logo
+  const now = typeof ctx.generatedAt === "number" ? ctx.generatedAt : Date.now();
+  const genPretty = localDateTimePrettyZA(now);
+  const genISO = localDateZAISO(now);
 
-  const logoPng = data.logoBytes ? await doc.embedPng(data.logoBytes) : null;
-  const sigImg = data.signatureBytes ? await doc.embedPng(data.signatureBytes) : null;
+  // Pull signature (optional)
+  let sigImg = null;
+  if (ctx.sigKey) {
+    const sigBytes = await fetchR2Bytes(env, ctx.sigKey);
+    if (sigBytes) {
+      try { sigImg = await pdf.embedPng(sigBytes); } catch { /* ignore */ }
+    }
+  }
 
-  // Page factory
-  const addPage = () => doc.addPage([mm(210), mm(297)]); // A4 portrait
-  let page = addPage();
+  // ----- Helpers -----
+  const mm = (v) => (v * 72) / 25.4;
+  const pageSize = { w: mm(210), h: mm(297) }; // A4
+  const margin = mm(18);
 
-  await drawHeader({ page, logoPng, title: "Master Service Agreement", font, fontBold, red });
+  function drawFooter(page) {
+    // not used on Security Audit page (we'll skip calling this there)
+    const y = mm(18); // footer block top
+    const colW = (page.getWidth() - margin * 2) / 3;
+    const labelsY = y - mm(6); // label baseline below the value
 
-  // First-page client details — two columns
-  const topStart = page.getHeight() - mm(40);
-  const x = mm(20);
-  const colGap = mm(12);
-  const colW = (page.getWidth() - mm(40) - colGap) / 2;
+    // centered value + label per column
+    const cols = [
+      { label: "Full name", value: ctx.profile?.full_name || "" },
+      { label: "Signature", value: "" }, // signature image drawn above label
+      { label: "Date", value: genISO },
+    ];
 
-  const payMethodFriendly = (() => {
-    const m = String(data?.client?.payment_method || "").toLowerCase();
-    if (m.startsWith("debit")) return "Debit Order";
-    if (m === "cash" || m === "eft" || m.includes("eft")) return "Cash/EFT";
-    return m || "—";
-  })();
+    // draw values
+    cols.forEach((c, i) => {
+      const xLeft = margin + i * colW;
+      const centerX = xLeft + colW / 2;
 
-  const genDate = fmtJohannesburg(data.generatedAt || Date.now());
+      // Value (name/date) or signature
+      if (i === 1 && sigImg) {
+        const sigMaxW = colW * 0.7;
+        const sigMaxH = mm(18);
+        const { width, height } = sigImg.scale(1);
+        const scale = Math.min(sigMaxW / width, sigMaxH / height);
+        const w = width * scale;
+        const h = height * scale;
+        page.drawImage(sigImg, {
+          x: centerX - w / 2,
+          y: y + mm(3),
+          width: w,
+          height: h,
+        });
+      } else {
+        const text = i === 2 ? ctx.profile?.signedDate || genPretty : c.value;
+        const tw = fontB.widthOfTextAtSize(text, 9);
+        page.drawText(text, {
+          x: centerX - tw / 2,
+          y: y + mm(8),
+          size: 9,
+          font: fontB,
+          color: VINET_BLACK,
+        });
+      }
 
-  let cyLeft = drawKeyVals({
-    page, font, fontBold, x, y: topStart, colGap, colW,
-    rows: [
-      ["Client code:", data?.client?.code ?? "—"],
-      ["Full Name:", data?.client?.full_name ?? "—"],
-      ["ID number:", data?.client?.passport ?? "—"],
-      ["Email address:", data?.client?.email ?? "—"],
-      ["Phone:", data?.client?.phone ?? "—"],
-    ]
+      // Label
+      const lw = font.widthOfTextAtSize(c.label, 9);
+      page.drawText(c.label, {
+        x: centerX - lw / 2,
+        y: labelsY,
+        size: 9,
+        font,
+        color: VINET_BLACK,
+      });
+    });
+  }
+
+  function drawHeader(page, title = "Master Service Agreement") {
+    // logo same size for MSA and Debit
+    let y = page.getHeight() - margin;
+    if (logo) {
+      const maxW = mm(54); // consistent logo width
+      const scale = Math.min(maxW / logo.width, 1);
+      page.drawImage(logo, {
+        x: margin,
+        y: y - logo.height * scale,
+        width: logo.width * scale,
+        height: logo.height * scale,
+      });
+      y -= logo.height * scale + mm(4);
+    }
+    page.drawText(title, { x: margin, y: y, size: 14, font: fontB, color: VINET_BLACK });
+    page.drawText("www.vinet.co.za  |  021 007 0200", {
+      x: page.getWidth() - margin - font.widthOfTextAtSize("www.vinet.co.za  |  021 007 0200", 9),
+      y,
+      size: 9,
+      font,
+      color: VINET_BLACK,
+    });
+  }
+
+  // Nicely render paragraphs with spacing
+  async function drawParagraphs(page, text, x, y, maxWidth, options = {}) {
+    const size = options.size ?? 10.5;
+    const lineGap = options.lineGap ?? 2.5; // increased
+    const paraGap = options.paraGap ?? 8;   // spacing between paragraphs
+
+    const paragraphs = String(text || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split(/\n{2,}/); // split on blank lines
+
+    for (const p of paragraphs) {
+      const lines = await getWrappedLinesCached(env, p, font, size, maxWidth, "msa-terms");
+      for (const ln of lines) {
+        page.drawText(ln, { x, y, size, font, color: VINET_BLACK });
+        y -= size + lineGap;
+        if (y < margin + mm(30)) {
+          drawFooter(page);
+          page = pdf.addPage([pageSize.w, pageSize.h]);
+          drawHeader(page);
+          y = page.getHeight() - margin - mm(24);
+        }
+      }
+      y -= paraGap;
+      if (y < margin + mm(30)) {
+        drawFooter(page);
+        page = pdf.addPage([pageSize.w, pageSize.h]);
+        drawHeader(page);
+        y = page.getHeight() - margin - mm(24);
+      }
+    }
+    return { page, y };
+  }
+
+  // -------- Page 1: Client summary --------
+  let page = pdf.addPage([pageSize.w, pageSize.h]);
+  drawHeader(page);
+
+  const leftX = margin;
+  const rightX = page.getWidth() / 2 + mm(6);
+
+  const lh = 11.5;
+  let y = page.getHeight() - margin - mm(18);
+
+  const P = ctx.profile || {};
+  const kvLeft = [
+    ["Client code:", String(P.id || "")],
+    ["Full Name:", P.full_name || ""],
+    ["ID number:", P.passport || ""], // this now comes from your fetchProfileForDisplay
+    ["Email address:", P.email || ""],
+    ["Phone:", P.phone || ""],
+  ];
+  const kvRight = [
+    ["Details", ""],
+    ["Street:", P.street || ""],
+    ["City:", P.city || ""],
+    ["Postal code:", P.zip || ""],
+    ["Payment method:", (P.payment_method || "").toLowerCase() === "debit" ? "Debit Order" : "Cash / EFT"],
+    ["Agreement ID:", ctx.linkid || ""],
+    ["Generated (date):", genPretty],
+  ];
+
+  function drawKV(list, x, startY) {
+    let yy = startY;
+    for (const [k, v] of list) {
+      if (k === "Details") {
+        page.drawText("Details", { x, y: yy, size: 11.5, font: fontB, color: VINET_BLACK });
+        yy -= lh;
+        continue;
+      }
+      page.drawText(k, { x, y: yy, size: 10.5, font: fontB, color: VINET_BLACK });
+      page.drawText(String(v), {
+        x: x + mm(40),
+        y: yy,
+        size: 10.5,
+        font,
+        color: VINET_BLACK,
+      });
+      yy -= lh;
+    }
+    return yy;
+  }
+
+  drawKV(kvLeft, leftX, y);
+  drawKV(kvRight, rightX, y);
+
+  // Divider title
+  y = page.getHeight() - margin - mm(70);
+  page.drawText("Master Service Agreement", { x: margin, y, size: 12.5, font: fontB, color: VINET_BLACK });
+  y -= mm(4);
+
+  // Terms body
+  const termsText =
+    (ctx.termsText && String(ctx.termsText)) ||
+    (ctx.termsUrl ? await fetchTextCached(ctx.termsUrl, env, "msa-terms") : "");
+  const bodyX = margin;
+  const bodyYStart = y - mm(4);
+  const bodyW = page.getWidth() - margin * 2;
+
+  let res = await drawParagraphs(page, termsText, bodyX, bodyYStart, bodyW, {
+    size: 10.5,
+    lineGap: 2.5,
+    paraGap: 8,
   });
+  page = res.page;
 
-  let cyRight = drawKeyVals({
-    page, font, fontBold, x: x + colW + colGap, y: topStart, colGap, colW,
-    rows: [
-      ["Street:", data?.client?.street ?? "—"],
-      ["City:", data?.client?.city ?? "—"],
-      ["Postal code:", data?.client?.zip ?? "—"],
-      ["Payment method:", payMethodFriendly],
-      ["Agreement ID:", data?.agreementId ?? "—"],
-      ["Generated (date):", genDate],
-    ]
-  });
+  // Final line on the last non-security page
+  drawFooter(page);
 
-  // Terms – paragraph aware
-  const textTop = Math.min(cyLeft, cyRight) - mm(6);
-  const marginX = mm(20);
-  const usableW = page.getWidth() - marginX * 2;
-  const bottomMargin = mm(28);
+  // -------- Security Audit page --------
+  let sec = pdf.addPage([pageSize.w, pageSize.h]);
+  drawHeader(sec, "Security Audit");
 
-  const drawFooterIfNeeded = (p) => drawFooter({
-    page: p, font, fontBold, name: data?.client?.full_name || "",
-    dateStr: genDate, sigImg, red
-  });
+  // push heading down ~5 lines
+  let sy = sec.getHeight() - margin - mm(18) - 5 * 11;
 
-  const flowed = layoutParagraphs({
-    doc,
-    page,
-    font,
-    size: 9.5,
-    color: gray,
-    x: marginX,
-    y: textTop,
-    w: usableW,
-    h: bottomMargin,
-    text: data.termsText || "",
-    lineGap: 0.25,
-    addPage: () => {
-      const np = addPage();
-      // header on continuation pages
-      drawHeader({ page: np, logoPng, title: "Master Service Agreement (continued)", font, fontBold, red });
-      return np;
-    },
-    drawFooter: drawFooterIfNeeded
-  });
+  const audit = ctx.audit || {};
+  const verify =
+    ctx.verification === "staff"
+      ? "Vinet Staff Verification"
+      : "WhatsApp OTP";
 
-  // Footer on the last terms page
-  drawFooterIfNeeded(flowed.page);
+  const secKV = [
+    ["Generated (Africa/Johannesburg):", genPretty],
+    ["Agreement code:", ctx.linkid || ""],
+    ["Authentication / Verification method:", verify],
+    [
+      "Client IP:",
+      `${audit.ip || "—"}  •  ASN: ${audit.asn || "—"}  •  Org: ${audit.asOrganization || "—"}`,
+    ],
+    [
+      "Approx Location:",
+      [audit.city, audit.region, audit.country].filter(Boolean).join(", ") || "—",
+    ],
+    ["Device:", audit.ua || "—"],
+  ];
 
-  // SECURITY AUDIT PAGE
-  const sec = addPage();
-  await drawHeader({ page: sec, logoPng, title: "Security Audit", font, fontBold, red });
+  for (const [k, v] of secKV) {
+    sec.drawText(k, { x: margin, y: sy, size: 10.5, font: fontB, color: VINET_BLACK });
+    const text = String(v);
+    const wrapped = await getWrappedLinesCached(env, text, font, 10.5, page.getWidth() - margin * 2 - mm(44), "msa-sec");
+    let yy = sy;
+    for (const ln of wrapped) {
+      const tw = font.widthOfTextAtSize(ln, 10.5);
+      sec.drawText(ln, { x: margin + mm(44), y: yy, size: 10.5, font, color: VINET_BLACK });
+      yy -= 12.5;
+    }
+    sy = Math.min(yy, sy) - 6;
+  }
 
-  // push the heading down “about 5 lines”
-  let ySec = sec.getHeight() - mm(40) - mm(10);
+  // No footer on the security page (per requirement)
 
-  const label = (k, v) => {
-    sec.drawText(k, { x: marginX, y: ySec, size: 10, font: fontBold, color: red });
-    ySec -= mm(6);
-    sec.drawText(String(v ?? "—"), { x: marginX, y: ySec, size: 10, font, color: gray });
-    ySec -= mm(8);
-  };
-
-  label("Generated (Africa/Johannesburg):", genDate);
-  label("Agreement code:", data?.agreementId ?? "—");
-  label("Authentication / Verification method:",
-    (data?.authMethod === "staff" ? "Vinet Staff Verification"
-      : data?.authMethod === "otp" ? "OTP to mobile" : "—"));
-
-  label("Client IP:", data?.audit?.ip ?? "—");
-  label("ASN:", data?.audit?.asn ?? "—");
-  label("Org:", data?.audit?.org ?? "—");
-  label("Approx Location:", data?.audit?.approx ?? "—");
-  label("Device:", data?.audit?.ua ?? "—");
-
-  // NOTE: NO footer on the security page
-
-  return await doc.save();
+  return await pdf.save();
 }
