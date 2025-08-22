@@ -7,24 +7,13 @@ import * as pdfRoutes from "./pdf.js";
 import * as agreements from "./agreements.js";
 import * as admin from "./admin.js";
 import * as onboard from "./onboard.js";
-import { handleAdminApi } from "./api-admin.js";
-import { handleSplynxApi } from "./api-splynx.js";
 
 export async function route(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const { pathname } = url;
   const method = request.method;
 
-  console.log(`[router] ${method} ${path}`);
-
-  if (path.startsWith("/api/splynx")) {
-    return handleSplynxApi(request, env);
-  }
-
-  if (path.startsWith("/api/admin")) {
-    return handleAdminApi(request, env);
-  }
-
+  // The order matters; earlier modules get first dibs.
   const modules = [
     publicRoutes,
     apiTerms,
@@ -37,7 +26,7 @@ export async function route(request, env) {
   ];
 
   for (const m of modules) {
-    if (m.match && m.handle && m.match(path, method)) {
+    if (m.match && m.handle && m.match(pathname, method)) {
       return m.handle(request, env);
     }
   }
