@@ -242,51 +242,6 @@ export async function route(request, env) {
     }
   }
 
-  // ----- Admin: approve (push to Splynx + upload docs + mark approved) -----
-  if (path === "/api/admin/approve" && method === "POST") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
-
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return json({ ok: false, error: "Not found" }, 404);
-
-    const splynxId = String(sess.id || "").trim() || String(linkid).split("_")[0];
-
-    // 1) push edits
-    let entityKind = "unknown";
-    try {
-      entityKind = await detectEntityKind(env, splynxId); // "customer" | "lead"
-      const payload = mapEditsToSplynxPayload(sess.edits || {}, sess.pay_method || "", sess.debit || null, []);
-      if (entityKind === "customer") {
-        await splynxPUT(env, `/admin/customers/${splynxId}`, payload);
-      } else if (entityKind === "lead") {
-        await splynxPUT(env, `/admin/crm/leads/${splynxId}`, payload);
-      }
-    } catch (e) {
-      console.error("approve: splynx update error", e);
-    }
-
-    // SAFETY: ensure API_URL for splynx PDF fetchers
-    env.API_URL = env.API_URL || url.origin;
-
-    // 2) upload all docs (RICA uploads + generated PDFs)
-    let uploadResult = null;
-    try {
-      uploadResult = await uploadAllSessionFilesToSplynx(env, linkid);
-    } catch (e) {
-      console.error("approve: uploadAllSessionFilesToSplynx error", e);
-    }
-
-    // 3) mark approved
-    await env.ONBOARD_KV.put(
-      `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), updated: Date.now(), uploadResult }),
-      { expirationTtl: 86400 }
-    );
-    return json({ ok: true, linkid, entityKind, uploadResult });
-  }
-
   // ----- Diagnostics -----
   if (path === "/api/admin/session/keys" && method === "GET") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
@@ -313,6 +268,77 @@ export async function route(request, env) {
     return json({ ok: true, linkid, found: !!sess, session: sess || null });
   }
 
+  // ----- Admin: approve (push to Splynx + mark approved) -----
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+
+  const { linkid } = await request.json().catch(() => ({}));
+  if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok: false, error: "Not found" }, 404);
+
+  const id = String(sess.id || "").trim();
+  if (!id) return json({ ok: false, error: "Missing Splynx ID" }, 400);
+
+  // Build payload (Splynx expects "name" for full name)
+  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+  const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
+  const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
+
+  const body = {
+    name:        sess.edits?.full_name || undefined,
+    email:       sess.edits?.email || undefined,
+    phone_mobile:sess.edits?.phone || undefined,
+    street_1:    sess.edits?.street || undefined,
+    city:        sess.edits?.city || undefined,
+    zip_code:    sess.edits?.zip || undefined,
+    attachments: publicFiles.length ? publicFiles : undefined,
+    payment_method: sess.pay_method || undefined,
+    debit:         sess.debit || undefined,
+  };
+
+  // Detect whether this ID is a customer or a lead and only call the matching endpoint(s)
+  let kind = "unknown";
+  try { kind = await detectEntityKind(env, id); } catch {}
+
+  const attempts = [];
+  const tryPut = async (endpoint) => {
+    try {
+      await splynxPUT(env, endpoint, body);
+      attempts.push({ endpoint, ok: true });
+    } catch (e) {
+      // Downgrade to warn; 404s on non-existent endpoints are expected on some installs
+      console.warn(`approve: splynx PUT failed ${endpoint}: ${e && e.message}`);
+      attempts.push({ endpoint, ok: false, error: String(e && e.message) });
+    }
+  };
+
+  if (kind === "customer") {
+    // The canonical customer endpoint on your install
+    await tryPut(`/admin/customers/customer/${id}`);
+    // (Optional) contacts endpoint—comment out if your API rejects it
+    // await tryPut(`/admin/customers/${id}/contacts`);
+  } else if (kind === "lead") {
+    await tryPut(`/admin/crm/leads/${id}`);
+    // (Optional) contacts endpoint—comment out if your API rejects it
+    // await tryPut(`/admin/crm/leads/${id}/contacts`);
+  } else {
+    // Fallback (very rare): try both “customer” (canonical) and “lead”
+    await tryPut(`/admin/customers/customer/${id}`);
+    await tryPut(`/admin/crm/leads/${id}`);
+  }
+
+  // Mark approved regardless of individual endpoint quirks
+  await env.ONBOARD_KV.put(
+    `onboard/${linkid}`,
+    JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), push_attempts: attempts }),
+    { expirationTtl: 86400 }
+  );
+
+  return json({ ok: true, kind, attempts });
+}
+  
   // ----- OTP: send -----
   if (path === "/api/otp/send" && method === "POST") {
     const { linkid } = await request.json().catch(() => ({}));
