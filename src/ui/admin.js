@@ -366,7 +366,8 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
     <h3>Uploads</h3>
     <div class="sec">
       ${uploads.length ? uploads.map(u=>{
-        const url = \`${r2PublicBase}/${u.key}\`;
+        // 🔧 FIX: avoid nested template literal inside outer template string
+        const url = '${r2PublicBase}/' + u.key;
         const kb = Math.round((u.size||0)/102.4)/10;
         return '<div><a href="' + url + '" target="_blank">' + esc(u.name) + '</a> <span class="muted">• ' + kb.toFixed(1) + ' KB</span></div>';
       }).join('') : '<div class="muted">No uploads</div>'}
