@@ -1,8 +1,27 @@
 // src/splynx.js
 
+// ---------- Utilities ----------
+const pick = (...vals) => {
+  for (const v of vals) {
+    if (v === null || v === undefined) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return "";
+};
+
 // ---------- Low-level HTTP helpers ----------
+function baseUrl(env) {
+  // Be tolerant to either binding name
+  return (
+    env.SPLYNX_API ||
+    env.SPLYNX_API_URL ||
+    "https://splynx.vinet.co.za/api/2.0"
+  );
+}
+
 async function splynxFetch(env, endpoint, init = {}) {
-  const url = `${env.SPLYNX_API}${endpoint}`;
+  const url = `${baseUrl(env)}${endpoint}`;
   const headers = new Headers(init.headers || {});
   headers.set("Authorization", `Basic ${env.SPLYNX_AUTH}`);
   const r = await fetch(url, { ...init, headers });
@@ -30,18 +49,18 @@ export async function splynxPUT(env, endpoint, body) {
 
 // ---------- Phone (for OTP) ----------
 export async function fetchCustomerMsisdn(env, id) {
-  // Lead first
+  // Try LEAD first
   try {
     const lead = await splynxGET(env, `/admin/crm/leads/${id}`);
-    const phone = lead?.phone ?? null;
-    if (phone) return String(phone).trim();
+    const phone = pick(lead?.phone, lead?.phone_mobile, lead?.mobile);
+    if (phone) return phone;
   } catch {}
 
-  // Then customer
+  // Then CUSTOMER
   try {
     const cust = await splynxGET(env, `/admin/customers/customer/${id}`);
-    const phone = cust?.phone ?? cust?.phone_mobile ?? null;
-    if (phone) return String(phone).trim();
+    const phone = pick(cust?.phone, cust?.phone_mobile);
+    if (phone) return phone;
   } catch {}
 
   return null;
@@ -49,74 +68,118 @@ export async function fetchCustomerMsisdn(env, id) {
 
 // ---------- Profile for onboarding (lead first, then customer) ----------
 export async function fetchProfileForDisplay(env, id) {
-  // Try LEAD
+  // 1) LEAD
   try {
     const lead = await splynxGET(env, `/admin/crm/leads/${id}`);
-    const street = lead.street ?? lead.address ?? lead.address_1 ?? lead.street_1 ?? "";
-    const city   = lead.city   ?? "";
-    const zip    = lead.zip_code ?? lead.zip ?? "";
-    const passport =
-      lead.passport || lead.id_number || lead.identity_number || "";
+
+    const street = pick(
+      lead.street,
+      lead.address,
+      lead.address_1,
+      lead.street_1
+    );
+    const city = pick(lead.city);
+    const zip = pick(lead.zip_code, lead.zip);
+
+    // Passport/ID can be stored under a few different names for leads
+    const passport = pick(
+      lead.passport,
+      lead.id_number,
+      lead.identity_number,
+      lead.identification_number,
+      lead?.additional_attributes?.social_id
+    );
 
     return {
       kind: "lead",
       id,
-      full_name: lead.full_name || lead.name || "",
-      email: lead.email || lead.billing_email || "",
-      phone: lead.phone || "",
-      street, city, zip, passport,
-      payment_method: lead.payment_method || "",
+      full_name: pick(lead.full_name, lead.name),
+      email: pick(lead.email, lead.billing_email),
+      phone: pick(lead.phone, lead.phone_mobile, lead.mobile),
+      street,
+      city,
+      zip,
+      passport,
+      payment_method: pick(lead.payment_method),
     };
   } catch {}
 
-  // Fallback: CUSTOMER
+  // 2) CUSTOMER (primary block)
   let cust = null;
-  try { cust = await splynxGET(env, `/admin/customers/customer/${id}`); } catch {}
+  try {
+    cust = await splynxGET(env, `/admin/customers/customer/${id}`);
+  } catch {}
+
   if (!cust) {
-    // give a minimal object to avoid hard failure
+    // Minimal object to keep UI alive (and let user edit)
     return {
       kind: "unknown",
       id,
       full_name: "",
       email: "",
       phone: "",
-      street: "", city: "", zip: "", passport: "",
+      street: "",
+      city: "",
+      zip: "",
+      passport: "",
       payment_method: "",
     };
   }
 
-  // Try to enrich with customer-info (passport/ID lives here often)
-  let custInfo = null;
-  try { custInfo = await splynxGET(env, `/admin/customers/customer-info/${id}`); } catch {}
+  // 2a) Enrich from customer-info (often contains the ID/passport)
+  let info = null;
+  try {
+    info = await splynxGET(env, `/admin/customers/customer-info/${id}`);
+  } catch {}
 
-  const street = cust.street ?? cust.address ?? cust.address_1 ?? cust.street_1 ?? "";
-  const city   = cust.city ?? "";
-  const zip    = cust.zip_code ?? cust.zip ?? "";
-  const passport =
-    (custInfo && (custInfo.passport || custInfo.id_number || custInfo.identity_number)) ||
-    cust.passport || cust.id_number || "";
+  // 2b) Some setups store ID under additional_attributes.social_id
+  const aa = cust?.additional_attributes || {};
+
+  const street = pick(cust.street, cust.address, cust.address_1, cust.street_1);
+  const city = pick(cust.city);
+  const zip = pick(cust.zip_code, cust.zip);
+
+  // Hunt ID/passport across all common places
+  const passport = pick(
+    info?.passport,
+    info?.id_number,
+    info?.identity_number,
+    info?.identification_number,
+    cust.passport,
+    cust.id_number,
+    cust.identity_number,
+    cust.identification_number,
+    aa.social_id // very common in Splynx
+  );
 
   return {
     kind: "customer",
     id,
-    full_name: cust.full_name || cust.name || "",
-    email: cust.email || cust.billing_email || "",
-    phone: cust.phone || cust.phone_mobile || "",
-    street, city, zip, passport,
-    payment_method: cust.payment_method || "",
+    full_name: pick(cust.full_name, cust.name),
+    email: pick(cust.email, cust.billing_email),
+    phone: pick(cust.phone, cust.phone_mobile),
+    street,
+    city,
+    zip,
+    passport,
+    payment_method: pick(cust.payment_method),
   };
 }
 
-// ---------- Map edits to Splynx payload (email + billing_email updated) ----------
-export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachments = []) {
+// ---------- Map edits to Splynx payload ----------
+export function mapEditsToSplynxPayload(
+  edits = {},
+  payMethod,
+  debit,
+  attachments = []
+) {
   const body = {};
 
-  // Splynx wants "name" (not full_name). Use edits.full_name if provided.
   if (edits.full_name) body.name = edits.full_name;
 
   if (edits.email) {
     body.email = edits.email;
-    body.billing_email = edits.email; // keep billing email in sync as requested
+    body.billing_email = edits.email; // keep billing in sync
   }
   if (edits.phone) body.phone = edits.phone;
 
@@ -124,6 +187,9 @@ export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachment
   if (edits.street) body.street_1 = edits.street;
   if (edits.city) body.city = edits.city;
   if (edits.zip) body.zip_code = edits.zip;
+
+  // Optional: allow writing passport back if you want to support that later
+  if (edits.passport) body.passport = edits.passport;
 
   // Payment
   if (payMethod) body.payment_method = payMethod;
@@ -150,8 +216,10 @@ export function mapEditsToSplynxPayload(edits = {}, payMethod, debit, attachment
  */
 export async function splynxCreateAndUpload(env, entity, id, opts) {
   const isLead = String(entity).toLowerCase() === "lead";
-  const baseCreate  = isLead ? `/admin/crm/leads-documents` : `/admin/customers/customer-documents`;
-  const baseUpload  = isLead ? `/admin/crm/leads-documents` : `/admin/customers/customer-documents`;
+  const baseCreate  = isLead
+    ? `/admin/crm/leads-documents`
+    : `/admin/customers/customer-documents`;
+  const baseUpload  = baseCreate;
 
   // 1) Create a document shell (type must be "uploaded")
   const createBody = {
@@ -175,12 +243,9 @@ export async function splynxCreateAndUpload(env, entity, id, opts) {
   const document_id = created?.id;
   if (!document_id) throw new Error("Create doc: missing id in response");
 
-  // 2) Upload the file bytes to the …/{id}--upload endpoint
-  //    This is the variant that worked in your cURL tests.
+  // 2) Upload the bytes to …/{id}--upload
   const uploadEndpoint = `${baseUpload}/${document_id}--upload`;
-
   const fd = new FormData();
-  // IMPORTANT: do NOT set Content-Type header; the runtime will set the boundary for multipart.
   const fileName = opts.filename || "document.bin";
   const blob = new Blob([opts.bytes], { type: opts.mime || "application/octet-stream" });
   fd.append("file", blob, fileName);
@@ -191,6 +256,5 @@ export async function splynxCreateAndUpload(env, entity, id, opts) {
     throw new Error(`Upload doc failed ${uploadRes.status}: ${t}`);
   }
 
-  // Done
   return { id: document_id };
 }
