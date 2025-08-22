@@ -4,7 +4,14 @@ import { renderMSAPdf } from "./pdf/msa.js";
 import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
 import { fetchTextCached, getClientMeta } from "./helpers.js";
-import { fetchProfileForDisplay, fetchCustomerMsisdn, splynxPUT } from "./splynx.js";
+import {
+  fetchProfileForDisplay,
+  fetchCustomerMsisdn,
+  splynxPUT,
+  mapEditsToSplynxPayload,
+  detectEntityKind,
+  uploadAllSessionFilesToSplynx,
+} from "./splynx.js";
 import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
@@ -132,10 +139,19 @@ export async function route(request, env) {
     const meta = getClientMeta(request);
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
-      JSON.stringify({ id, created: Date.now(), progress: 0, audit_meta: meta }),
+      JSON.stringify({
+        id,
+        created: Date.now(),
+        updated: Date.now(),
+        progress: 0,
+        status: "inprogress",
+        audit_meta: meta,
+        edits: {},
+        uploads: [],
+      }),
       { expirationTtl: 86400 }
     );
-    return json({ url: `${url.origin}/onboard/${linkid}` });
+    return json({ url: `${url.origin}/onboard/${linkid}`, linkid });
   }
 
   // ----- Admin: generate staff OTP -----
@@ -161,16 +177,16 @@ export async function route(request, env) {
       const s = await env.ONBOARD_KV.get(k.name, "json");
       if (!s) continue;
       const linkid = k.name.split("/")[1];
-      const updated = s.last_time || s.created || 0;
-      if (m === "inprog" && !s.agreement_signed) items.push({ linkid, id: s.id, updated });
+      const updated = s.updated || s.last_time || s.created || 0;
+      if (m === "inprog" && (s.status === "inprogress" || !s.agreement_signed)) items.push({ linkid, id: s.id, updated });
       if (m === "pending" && s.status === "pending") items.push({ linkid, id: s.id, updated });
       if (m === "approved" && s.status === "approved") items.push({ linkid, id: s.id, updated });
     }
     items.sort((a, b) => b.updated - a.updated);
-    return json({ items });
+    return json({ ok: true, items });
   }
 
-  // ----- Admin review (now passes original Splynx profile for side-by-side) -----
+  // ----- Admin review (passes original Splynx profile) -----
   if (path === "/admin/review" && method === "GET") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
@@ -181,7 +197,6 @@ export async function route(request, env) {
 
     const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
 
-    // Fetch original Splynx profile to compute diffs (non-fatal if fails)
     let original = null;
     try {
       const id = String(sess.id || "").trim();
@@ -205,7 +220,13 @@ export async function route(request, env) {
     if (!sess) return json({ ok: false, error: "Not found" }, 404);
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "rejected", reject_reason: String(reason || "").slice(0, 300), rejected_at: Date.now() }),
+      JSON.stringify({
+        ...sess,
+        status: "rejected",
+        reject_reason: String(reason || "").slice(0, 300),
+        rejected_at: Date.now(),
+        updated: Date.now(),
+      }),
       { expirationTtl: 86400 }
     );
     return json({ ok: true });
@@ -224,47 +245,73 @@ export async function route(request, env) {
     }
   }
 
-  // ----- Admin: approve (push to Splynx + mark approved) -----
+  // ----- Admin: approve (push to Splynx + upload docs + mark approved) -----
   if (path === "/api/admin/approve" && method === "POST") {
     if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
     if (!sess) return json({ ok: false, error: "Not found" }, 404);
 
-    const id = String(sess.id || "").trim();
-    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
+    const splynxId = String(sess.id || "").trim() || String(linkid).split("_")[0];
 
-    // Map to Splynx fields — IMPORTANT: Splynx uses `name` for the customer name
-    const body = {
-      name: sess.edits?.full_name || undefined,        // <— use `name` (not full_name)
-      email: sess.edits?.email || undefined,
-      phone_mobile: sess.edits?.phone || undefined,
-      street_1: sess.edits?.street || undefined,
-      city: sess.edits?.city || undefined,
-      zip_code: sess.edits?.zip || undefined,
-      // optional: attach uploaded files (public URLs) — actual document creation/upload
-      // is handled in a later iteration via the document APIs if required
-      attachments: publicFiles,
-      payment_method: sess.pay_method || undefined,
-      debit: sess.debit || undefined,
-    };
+    // 1) push edits
+    let entityKind = "unknown";
+    try {
+      entityKind = await detectEntityKind(env, splynxId); // "customer" | "lead"
+      const payload = mapEditsToSplynxPayload(sess.edits || {}, sess.pay_method || "", sess.debit || null, []);
+      if (entityKind === "customer") {
+        await splynxPUT(env, `/admin/customers/${splynxId}`, payload);
+      } else if (entityKind === "lead") {
+        await splynxPUT(env, `/admin/crm/leads/${splynxId}`, payload);
+      }
+    } catch (e) {
+      // Non-fatal
+      console.error("approve: splynx update error", e);
+    }
 
-    // Push to all relevant endpoints; ignore failures per endpoint so the action is resilient
-    try { await splynxPUT(env, `/admin/customers/customer/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/customers/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/crm/leads/${id}`, body); } catch {}
-    try { await splynxPUT(env, `/admin/customers/${id}/contacts`, body); } catch {}
-    try { await splynxPUT(env, `/admin/crm/leads/${id}/contacts`, body); } catch {}
+    // 2) upload all docs (RICA uploads + generated PDFs)
+    let uploadResult = null;
+    try {
+      uploadResult = await uploadAllSessionFilesToSplynx(env, linkid);
+    } catch (e) {
+      console.error("approve: uploadAllSessionFilesToSplynx error", e);
+    }
 
+    // 3) mark approved
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now() }),
+      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), updated: Date.now(), uploadResult }),
       { expirationTtl: 86400 }
     );
-    return json({ ok: true });
+    return json({ ok: true, linkid, entityKind, uploadResult });
+  }
+
+  // ----- Diagnostics (optional helpers you used) -----
+  if (path === "/api/admin/session/keys" && method === "GET") {
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+    const linkid = url.searchParams.get("linkid") || "";
+    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+    const prefixes = ["onboard/", "link:", "session:", "sess:", "inprogress:"];
+    const keysOut = [];
+    for (const p of prefixes) {
+      const l = await env.ONBOARD_KV.list({ prefix: p });
+      for (const k of l.keys) {
+        if (k.name.includes(linkid)) keysOut.push({ key: k.name, bytes: k.size || k.metadata?.size || 0 });
+      }
+    }
+    const raw = await env.ONBOARD_KV.get(linkid);
+    if (raw) keysOut.push({ key: linkid, bytes: raw.length });
+    return json({ ok: true, linkid, keys: keysOut });
+  }
+
+  if (path === "/api/admin/session/get" && method === "GET") {
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
+    const linkid = url.searchParams.get("linkid") || "";
+    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    return json({ ok: true, linkid, found: !!sess, session: sess || null });
   }
 
   // ----- OTP: send -----
@@ -311,7 +358,7 @@ export async function route(request, env) {
       if (sess) {
         await env.ONBOARD_KV.put(
           `onboard/${linkid}`,
-          JSON.stringify({ ...sess, otp_verified: true }),
+          JSON.stringify({ ...sess, otp_verified: true, updated: Date.now() }),
           { expirationTtl: 86400 }
         );
       }
@@ -333,7 +380,11 @@ export async function route(request, env) {
     await env.R2_UPLOADS.put(key, body);
     const uploads = Array.isArray(sess.uploads) ? sess.uploads.slice() : [];
     uploads.push({ key, name: fileName, size: body.byteLength, label });
-    await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({ ...sess, uploads }), { expirationTtl: 86400 });
+    await env.ONBOARD_KV.put(
+      `onboard/${linkid}`,
+      JSON.stringify({ ...sess, uploads, updated: Date.now() }),
+      { expirationTtl: 86400 }
+    );
     return json({ ok: true, key });
   }
 
@@ -348,6 +399,7 @@ export async function route(request, env) {
       last_ip: getIP(),
       last_ua: getUA(),
       last_time: Date.now(),
+      updated: Date.now(),
       audit_meta: existing.audit_meta || getClientMeta(request),
     };
     await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify(next), { expirationTtl: 86400 });
@@ -372,14 +424,13 @@ export async function route(request, env) {
     const record = { ...b, splynx_id: id, created: ts, ip: getIP(), ua: getUA() };
     await env.ONBOARD_KV.put(kvKey, JSON.stringify(record), { expirationTtl: 60 * 60 * 24 * 90 });
 
-    // Use linkid from body (preferred) or query string
     const linkidParam = (b.linkid && String(b.linkid)) || url.searchParams.get("linkid") || "";
     if (linkidParam) {
       const sess = await env.ONBOARD_KV.get(`onboard/${linkidParam}`, "json");
       if (sess) {
         await env.ONBOARD_KV.put(
           `onboard/${linkidParam}`,
-          JSON.stringify({ ...sess, debit: { ...record } }),
+          JSON.stringify({ ...sess, debit: { ...record }, updated: Date.now() }),
           { expirationTtl: 86400 }
         );
       }
@@ -400,7 +451,7 @@ export async function route(request, env) {
     if (sess) {
       await env.ONBOARD_KV.put(
         `onboard/${linkid}`,
-        JSON.stringify({ ...sess, debit_signed: true, debit_sig_key: sigKey }),
+        JSON.stringify({ ...sess, debit_signed: true, debit_sig_key: sigKey, updated: Date.now() }),
         { expirationTtl: 86400 }
       );
     }
@@ -420,7 +471,7 @@ export async function route(request, env) {
     if (!sess) return json({ ok: false, error: "Unknown session" }, 404);
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
-      JSON.stringify({ ...sess, agreement_signed: true, agreement_sig_key: sigKey, status: "pending" }),
+      JSON.stringify({ ...sess, agreement_signed: true, agreement_sig_key: sigKey, status: "pending", updated: Date.now() }),
       { expirationTtl: 86400 }
     );
     return json({ ok: true, sigKey });
