@@ -271,7 +271,7 @@ export function renderAdminPage() {
 }
 
 /* ===========================================================
-   REVIEW & APPROVE (with side‑by‑side diff)
+   REVIEW & APPROVE (with side‑by‑side diff + UX tweaks)
    =========================================================== */
 export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) {
   const esc = (s)=> String(s ?? "").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
@@ -282,8 +282,8 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   const splynxId = String(sess?.id ?? "").trim();
   const r2 = r2PublicBase || "";
   const e = sess?.edits || {};
-
   const leftObj = original || {};
+
   const FIELDS = [
     ['full_name','Full name'],
     ['passport','ID / Passport'],
@@ -298,6 +298,10 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   const uploadResult = (sess && sess.uploadResult && Array.isArray(sess.uploadResult.items))
     ? sess.uploadResult.items : null;
 
+  // simple inline SVGs for ticks/X
+  const svgTick = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+  const svgX    = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3 10.6 10.6 16.9 4.3z"/></svg>';
+
   return /*html*/`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -305,28 +309,44 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
 <title>Review & Approve</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  :root{ --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; --changed:#fff1f2; --ok:#067a00; --bad:#b00020; }
+  :root{
+    --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb;
+    --changed:#fff1f2; --ok:#067a00; --bad:#b00020; --pill:#eef1f6;
+  }
+  *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
   .wrap{max-width:980px;margin:28px auto;padding:0 18px}
   .card{background:#fff;border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
   h1{color:var(--vinet);margin:0 0 14px;font-size:28px}
-  .sec{margin:14px 0}
-  .chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:6px 9px;margin:3px 0;font-size:13px}
-  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;margin-right:10px}
+  .sec{margin:16px 0}
+  .chip{display:inline-flex;align-items:center;gap:8px;border:1px solid #e6e8ef;border-radius:12px;padding:10px 14px;margin:4px 6px 0 0;font-size:14px;background:#fff}
+  .chip strong{font-weight:800}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:12px;padding:12px 16px;cursor:pointer;margin-right:10px;font-weight:800}
   .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
   .muted{color:#6a6a6a}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .hdr{font-weight:800;margin:4px 0 6px}
-  table{width:100%;border-collapse:separate;border-spacing:0 8px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .hdr{font-weight:800;margin:6px 0 8px}
+  table{width:100%;border-collapse:separate;border-spacing:0 10px}
   th,td{text-align:left;vertical-align:top;font-size:14px}
   th.k{width:42%;color:#333}
-  td.v{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:8px 10px}
+  td.v{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:10px 12px;line-height:1.45}
   td.v.changed{background:var(--changed);border-color:#f3b8bf}
   .changed-badge{display:inline-block;font-size:11px;background:var(--vinet);color:#fff;border-radius:8px;padding:2px 6px;margin-left:6px}
-  .files{display:flex;flex-wrap:wrap;gap:8px}
-  .file{border:1px solid #eee;border-radius:10px;padding:6px 10px;background:#fafafa}
-  .pill{display:inline-flex;padding:3px 10px;border-radius:999px;background:#f0f1f5;color:#333;font-size:12px}
-  .ok{color:var(--ok)} .bad{color:var(--bad)}
+  .pills{display:flex;flex-wrap:wrap;gap:10px}
+  .pill-btn{display:inline-flex;align-items:center;gap:8px;background:var(--pill);border:1px solid #dfe3ea;border-radius:999px;padding:10px 14px;font-weight:700}
+  .pill-btn:hover{text-decoration:none}
+  .files{display:flex;flex-wrap:wrap;gap:10px}
+  .file{display:inline-flex;align-items:center;gap:8px;background:var(--pill);border:1px dashed #dfe3ea;border-radius:999px;padding:9px 14px}
+  .status-row{display:flex;flex-direction:column;gap:8px}
+  .status-item{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #eee;border-radius:12px;padding:10px 12px;background:#fafafa}
+  .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px}
+  .badge.ok{background:#e8f6ea;color:var(--ok)}
+  .badge.bad{background:#fde8ec;color:var(--bad)}
+  .foot-actions{display:flex;gap:10px;flex-wrap:wrap}
+  /* blocking overlay spinner */
+  .overlay{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center;z-index:50}
+  .spinner{width:64px;height:64px;border-radius:50%;border:6px solid #fff3;border-top-color:#fff;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -334,10 +354,12 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   <a href="${back}" class="chip">&larr; Back</a>
   <div class="card">
     <h1>Review & Approve</h1>
+
+    <!-- bigger info chips -->
     <div class="sec">
-      <span class="chip"><b>Splynx ID:</b> ${esc(splynxId||'—')}</span>
-      <span class="chip"><b>LinkID:</b> ${esc(linkid)}</span>
-      <span class="chip"><b>Status:</b> ${esc(sess?.status||'pending')}</span>
+      <span class="chip"><strong>Splynx ID</strong> ${esc(splynxId||'—')}</span>
+      <span class="chip"><strong>LinkID</strong> ${esc(linkid)}</span>
+      <span class="chip"><strong>Status</strong> ${esc(sess?.status||'pending')}</span>
       <span class="chip">${sess?.agreement_signed ? 'MSA signed' : 'MSA not signed'}</span>
       <span class="chip">${sess?.pay_method==='debit' ? (sess?.debit_signed ? 'Debit signed' : 'Debit pending') : 'Debit N/A'}</span>
     </div>
@@ -346,7 +368,7 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
     <div class="sec grid">
       <div>
         <div class="hdr">Splynx (current)</div>
-        <table id="tbl-left">
+        <table>
           ${FIELDS.map(([k,label])=>{
             const v = leftObj?.[k] ?? '';
             return `<tr><th class="k">${esc(label)}</th><td class="v">${esc(v)}</td></tr>`;
@@ -355,7 +377,7 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
       </div>
       <div>
         <div class="hdr">Edited by customer</div>
-        <table id="tbl-right">
+        <table>
           ${FIELDS.map(([k,label])=>{
             const lv = leftObj?.[k] ?? '';
             const rv = e?.[k] ?? (k==='payment_method' ? (sess?.pay_method||'') : '');
@@ -366,40 +388,45 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
       </div>
     </div>
 
+    <!-- Agreement PDFs as big pill buttons -->
+    <h3>Agreement PDFs</h3>
+    <div class="sec pills">
+      <a class="pill-btn" href="${msalink}" target="_blank" rel="noopener">MSA PDF</a>
+      <a class="pill-btn" href="${debitlink}" target="_blank" rel="noopener">Debit Order PDF</a>
+    </div>
+
+    <!-- Uploads as pills -->
     <h3>Uploads</h3>
     <div class="sec files">
       ${
         uploads.length
           ? uploads.map(u=>{
               const url = r2 ? (r2 + "/" + u.key) : "#";
-              return `<a class="file" href="${esc(url)}" target="_blank">${esc(u.label||u.name||u.key)}</a>`;
+              const name = u.label || u.name || u.key;
+              return `<a class="file" href="${esc(url)}" target="_blank" rel="noopener">${esc(name)}</a>`;
             }).join('')
           : '<div class="muted">No uploads</div>'
       }
     </div>
 
-    <h3>Agreement PDFs</h3>
-    <div class="sec">
-      <a class="chip" href="${msalink}" target="_blank">MSA PDF</a>
-      <a class="chip" href="${debitlink}" target="_blank">Debit PDF</a>
-    </div>
-
     ${
       uploadResult ? (`
       <h3>Splynx upload result</h3>
-      <div class="sec">
+      <div class="sec status-row">
         ${uploadResult.map(it=>{
-          const badge = it.ok ? '<span class="pill ok">ok</span>' : '<span class="pill bad">fail</span>';
-          const strat = it.strategy ? ' <span class="pill">'+esc(it.strategy)+'</span>' : '';
+          const ok = !!it.ok;
+          const icon = ok ? '${svgTick}' : '${svgX}';
+          const badge = ok ? '<span class="badge ok">${svgTick} Success</span>'
+                           : '<span class="badge bad">${svgX} Failed</span>';
+          const strat = it.strategy ? ' <span class="badge" style="background:#eef;color:#334;">'+esc(it.strategy)+'</span>' : '';
           const name = esc(it.name || it.title || '');
-          const err  = it.ok ? '' : '<div class="muted bad">'+esc(it.error||'')+'</div>';
-          return '<div class="item" style="border:1px solid #eee;border-radius:10px;padding:10px;margin:8px 0;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">'
-                 + '<div><b>'+name+'</b> '+badge+strat+'</div>'+ err +'</div>';
+          const err  = ok ? '' : '<div class="muted" style="margin-top:6px">'+esc(it.error||'')+'</div>';
+          return '<div class="status-item"><div style="display:flex;align-items:center;gap:10px"><div style="color:'+(ok?'var(--ok)':'var(--bad)')+'">'+icon+'</div><div><div style="font-weight:700">'+name+'</div>'+err+'</div></div><div>'+badge+strat+'</div></div>';
         }).join('')}
       </div>`):''
     }
 
-    <div class="sec">
+    <div class="sec foot-actions">
       <button class="btn" id="approve">Approve & Push</button>
       <button class="btn btn-ghost" id="reject">Reject</button>
       <button class="btn btn-ghost" id="delete">Delete</button>
@@ -407,9 +434,20 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   </div>
 </div>
 
+<!-- blocking overlay -->
+<div id="overlay" class="overlay" aria-hidden="true">
+  <div style="text-align:center;color:#fff">
+    <div class="spinner"></div>
+    <div style="margin-top:12px;font-weight:800">Uploading & applying changes…</div>
+  </div>
+</div>
+
 <script>
 (function(){
   const linkid = ${JSON.stringify(linkid)};
+  const overlay = document.getElementById('overlay');
+
+  function block(on){ overlay.style.display = on ? 'flex' : 'none'; }
 
   async function post(url, body){
     const r = await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
@@ -417,9 +455,15 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) 
   }
 
   document.getElementById('approve').onclick = async ()=>{
-    const d = await post('/api/admin/approve',{ linkid });
-    if (d && d.ok) location.reload();
-    else alert('Approve failed: '+(d.error||'unknown'));
+    try{
+      block(true);
+      const d = await post('/api/admin/approve',{ linkid });
+      if (d && d.ok) location.reload();
+      else { block(false); alert('Approve failed: '+(d.error||'unknown')); }
+    } catch {
+      block(false);
+      alert('Approve failed.');
+    }
   };
   document.getElementById('reject').onclick = async ()=>{
     const reason = prompt('Reason for rejection (optional):')||'';
