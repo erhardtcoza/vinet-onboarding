@@ -1,255 +1,213 @@
-// src/ui/debit.js
-import { PDFDocument, StandardFonts } from "pdf-lib";
+// src/pdf/debit.js
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import {
   embedLogo,
-  fetchR2Bytes,
   getWrappedLinesCached,
   localDateTimePrettyZA,
-  localDateZAISO,
-  VINET_BLACK,
+  fetchR2Bytes,
 } from "../helpers.js";
+import { VINET_BLACK } from "../constants.js";
 
-/**
- * Build the Debit Order PDF.
- *
- * @param {Env} env
- * @param {object} ctx
- *  - linkid: string
- *  - profile: { id, full_name, email, phone, street, city, zip, payment_method }
- *  - debit: { account_holder, id_number, bank_name, account_number, account_type, debit_day }
- *  - verification: "otp" | "staff"
- *  - audit: same shape as MSA
- *  - sigKey: R2 key for DEBIT signature PNG (optional)
- *  - generatedAt: number
- *  - termsText: string (Debit T&Cs body, optional)
- *
- * @returns {Promise<Uint8Array>}
- */
-export async function buildDebitPdf(env, ctx) {
+// ---------- Public wrapper used by routes.js ----------
+export async function renderDebitPdf(env, linkid) {
+  try {
+    const { bytes, filename } = await buildDebitPdf(env, { linkid });
+    return new Response(bytes, {
+      headers: {
+        "content-type": "application/pdf",
+        "content-disposition": `inline; filename="${filename}"`,
+        "cache-control": "no-store",
+      },
+    });
+  } catch (err) {
+    const msg = err && err.stack ? err.stack : String(err);
+    return new Response(`Debit PDF error: ${msg}`, {
+      status: 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+// ---------- Builder ----------
+export async function buildDebitPdf(env, { linkid }) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json").catch(() => null) || {};
+  const idStr = String(linkid || "");
+  const splynxId = idStr.split("_")[0] || (sess.splynx_id || "");
+  const name =
+    (sess.edits && (sess.edits.full_name || sess.edits.name)) ||
+    sess.full_name ||
+    sess.name ||
+    "";
+
+  const generatedAt = localDateTimePrettyZA(Date.now());
+  const r2SigKey = sess.debit_sig_key || ""; // PNG stored by /api/debit/sign
+  const sigBytes = await fetchR2Bytes(env, r2SigKey);
+
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const fontB = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  const logo = await embedLogo(pdf, env);
-  const now = typeof ctx.generatedAt === "number" ? ctx.generatedAt : Date.now();
-  const genPretty = localDateTimePrettyZA(now);
-  const genISO = localDateZAISO(now);
+  const MARGIN = 48;
+  const PAGE_W = 595.28;
+  const PAGE_H = 841.89;
+  const CONTENT_W = PAGE_W - MARGIN * 2;
 
-  let sigImg = null;
-  if (ctx.sigKey) {
-    const sigBytes = await fetchR2Bytes(env, ctx.sigKey);
-    if (sigBytes) {
-      try { sigImg = await pdf.embedPng(sigBytes); } catch {}
-    }
+  function drawHeader(page, title) {
+    page.drawText(title, {
+      x: MARGIN,
+      y: PAGE_H - MARGIN - 18,
+      size: 18,
+      font: fontBold,
+      color: rgb(0.89, 0, 0.10),
+    });
   }
 
-  const mm = (v) => (v * 72) / 25.4;
-  const pageSize = { w: mm(210), h: mm(297) };
-  const margin = mm(18);
+  async function drawFooter(page, isSecurityPage = false) {
+    if (isSecurityPage) return;
 
-  function drawFooter(page) {
-    const y = mm(18);
-    const colW = (page.getWidth() - margin * 2) / 3;
-    const labelsY = y - mm(6);
-
-    const cols = [
-      { label: "Full name", value: ctx.profile?.full_name || "" },
-      { label: "Signature", value: "" },
-      { label: "Date", value: genISO },
+    const footerY = 58;
+    const colW = CONTENT_W / 3;
+    const labels = ["Full name", "Signature", "Date"];
+    const values = [
+      name || "—",
+      "(signed)",
+      localDateTimePrettyZA(sess.debit_signed_at || sess.updated || Date.now()),
     ];
-    cols.forEach((c, i) => {
-      const xLeft = margin + i * colW;
-      const centerX = xLeft + colW / 2;
 
-      if (i === 1 && sigImg) {
-        const sigMaxW = colW * 0.7;
-        const sigMaxH = mm(18);
-        const { width, height } = sigImg.scale(1);
-        const scale = Math.min(sigMaxW / width, sigMaxH / height);
-        const w = width * scale;
-        const h = height * scale;
+    if (sigBytes) {
+      try {
+        const sigImg = await pdf.embedPng(sigBytes);
+        const sigW = 140, sigH = (sigImg.height / sigImg.width) * sigW;
+        const cx = MARGIN + colW * 1 + colW / 2;
         page.drawImage(sigImg, {
-          x: centerX - w / 2,
-          y: y + mm(3),
-          width: w,
-          height: h,
+          x: cx - sigW / 2,
+          y: footerY + 10,
+          width: sigW,
+          height: sigH,
         });
-      } else {
-        const text = i === 2 ? ctx.profile?.signedDate || genPretty : c.value;
-        const tw = fontB.widthOfTextAtSize(text, 9);
-        page.drawText(text, {
-          x: centerX - tw / 2,
-          y: y + mm(8),
-          size: 9,
-          font: fontB,
-          color: VINET_BLACK,
-        });
-      }
+      } catch {}
+    }
 
-      const lw = font.widthOfTextAtSize(c.label, 9);
-      page.drawText(c.label, {
-        x: centerX - lw / 2,
-        y: labelsY,
-        size: 9,
+    for (let i = 0; i < 3; i++) {
+      const left = MARGIN + colW * i;
+      const centerX = left + colW / 2;
+
+      const val = values[i];
+      const valW = font.widthOfTextAtSize(val, 10);
+      page.drawText(val, {
+        x: centerX - valW / 2,
+        y: footerY + 28,
+        size: 10,
         font,
         color: VINET_BLACK,
       });
-    });
-  }
 
-  function drawHeader(page, title = "Debit Order Agreement") {
-    let y = page.getHeight() - margin;
-    if (logo) {
-      const maxW = mm(54); // match MSA logo width
-      const scale = Math.min(maxW / logo.width, 1);
-      page.drawImage(logo, {
-        x: margin,
-        y: y - logo.height * scale,
-        width: logo.width * scale,
-        height: logo.height * scale,
-      });
-      y -= logo.height * scale + mm(4);
-    }
-    page.drawText(title, { x: margin, y: y, size: 14, font: fontB, color: VINET_BLACK });
-    page.drawText("www.vinet.co.za  |  021 007 0200", {
-      x: page.getWidth() - margin - font.widthOfTextAtSize("www.vinet.co.za  |  021 007 0200", 9),
-      y,
-      size: 9,
-      font,
-      color: VINET_BLACK,
-    });
-  }
-
-  // PAGE 1: Summary + Debit details
-  let page = pdf.addPage([pageSize.w, pageSize.h]);
-  drawHeader(page);
-
-  const leftX = margin;
-  const rightX = page.getWidth() / 2 + mm(6);
-  const lh = 11.5;
-  let y = page.getHeight() - margin - mm(18);
-
-  const P = ctx.profile || {};
-  const D = ctx.debit || {};
-
-  function drawKV(list, x, startY) {
-    let yy = startY;
-    for (const [k, v] of list) {
-      page.drawText(k, { x, y: yy, size: 10.5, font: fontB, color: VINET_BLACK });
-      page.drawText(String(v), {
-        x: x + mm(40),
-        y: yy,
-        size: 10.5,
-        font,
+      const lab = labels[i];
+      const labW = fontBold.widthOfTextAtSize(lab, 9.5);
+      page.drawText(lab, {
+        x: centerX - labW / 2,
+        y: footerY + 12,
+        size: 9.5,
+        font: fontBold,
         color: VINET_BLACK,
       });
-      yy -= lh;
+
+      page.drawLine({
+        start: { x: left + 14, y: footerY + 24 },
+        end: { x: left + colW - 14, y: footerY + 24 },
+        thickness: 0.8,
+        color: VINET_BLACK,
+      });
     }
-    return yy;
   }
 
-  const kvLeft = [
-    ["Client code:", String(P.id || "")],
-    ["Full Name:", P.full_name || ""],
-    ["ID number:", P.passport || ""],
-    ["Email address:", P.email || ""],
-    ["Phone:", P.phone || ""],
-  ];
-  const kvRight = [
-    ["Street:", P.street || ""],
-    ["City:", P.city || ""],
-    ["Postal code:", P.zip || ""],
-    ["Agreement ID:", ctx.linkid || ""],
-    ["Generated (date):", genPretty],
-  ];
-  drawKV(kvLeft, leftX, y);
-  drawKV(kvRight, rightX, y);
+  // --- First page
+  const page1 = pdf.addPage([PAGE_W, PAGE_H]);
+  drawHeader(page1, "Debit Order Agreement");
 
-  y = page.getHeight() - margin - mm(70);
-  page.drawText("Debit Order Details", { x: margin, y, size: 12.5, font: fontB, color: VINET_BLACK });
-  y -= mm(6);
+  // Logo (use the same size as MSA for consistency)
+  try {
+    const img = await embedLogo(pdf, env);
+    if (img) {
+      const W = 140;
+      const H = (img.height / img.width) * W;
+      page1.drawImage(img, { x: PAGE_W - MARGIN - W, y: PAGE_H - MARGIN - H, width: W, height: H });
+    }
+  } catch {}
 
-  const kvDebit = [
-    ["Account Holder", D.account_holder || ""],
-    ["ID Number", D.id_number || ""],
-    ["Bank", D.bank_name || ""],
-    ["Account Number", D.account_number || ""],
-    ["Account Type", (D.account_type || "").toUpperCase()],
-    ["Debit Day", String(D.debit_day || "")],
-  ];
-  drawKV(kvDebit, margin, y);
+  // Summary
+  let y = PAGE_H - MARGIN - 40;
+  const L = MARGIN;
+  page1.drawText(`Customer: ${name || "—"}`, { x: L, y, size: 12, font, color: VINET_BLACK }); y -= 16;
+  page1.drawText(`Splynx ID: ${splynxId || "—"}`, { x: L, y, size: 12, font, color: VINET_BLACK }); y -= 16;
+  page1.drawText(`Generated (date): ${generatedAt}`, { x: L, y, size: 12, font, color: VINET_BLACK }); y -= 18;
 
-  drawFooter(page);
+  // Terms (paragraph aware) – reusing the "debit" terms content you serve
+  const termsDebit = await env.ONBOARD_KV.get("terms:debit", "text").catch(() => "") || "";
+  const paras = termsDebit.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
 
-  // PAGE 2: Terms (optional) + Security Audit (like MSA)
-  // Terms page (render if provided)
-  if (ctx.termsText) {
-    page = pdf.addPage([pageSize.w, pageSize.h]);
-    drawHeader(page, "Debit Order Terms");
-    let by = page.getHeight() - margin - mm(18) - mm(6);
-    const lines = (ctx.termsText || "").split(/\n{2,}/);
-    for (const p of lines) {
-      const wrapped = await getWrappedLinesCached(env, p, font, 10.5, page.getWidth() - margin * 2, "debit-terms");
-      for (const ln of wrapped) {
-        page.drawText(ln, { x: margin, y: by, size: 10.5, font, color: VINET_BLACK });
-        by -= 13;
-        if (by < margin + mm(30)) {
-          drawFooter(page);
-          page = pdf.addPage([pageSize.w, pageSize.h]);
-          drawHeader(page, "Debit Order Terms");
-          by = page.getHeight() - margin - mm(18);
+  for (const p of paras) {
+    const lines = await getWrappedLinesCached(env, p, font, 10.5, CONTENT_W, "debit-terms");
+    for (const ln of lines) {
+      page1.drawText(ln, { x: L, y, size: 10.5, font, color: VINET_BLACK });
+      y -= 13;
+      if (y < 100) break;
+    }
+    y -= 6;
+    if (y < 100) break;
+  }
+  await drawFooter(page1, false);
+
+  // If there’s more text, add continuation pages
+  if (y < 100 && paras.length > 0) {
+    let idx = 0;
+    // Rough continuation (draw remaining paragraphs on more pages)
+    while (idx < paras.length) {
+      const page = pdf.addPage([PAGE_W, PAGE_H]);
+      drawHeader(page, "Debit Order Agreement (cont.)");
+      let y2 = PAGE_H - MARGIN - 28;
+      while (y2 > 100 && idx < paras.length) {
+        const p = paras[idx++];
+        const lines = await getWrappedLinesCached(env, p, font, 10.5, CONTENT_W, "debit-terms");
+        for (const ln of lines) {
+          page.drawText(ln, { x: L, y: y2, size: 10.5, font, color: VINET_BLACK });
+          y2 -= 13;
+          if (y2 <= 100) break;
         }
+        y2 -= 6;
       }
-      by -= 8;
-      if (by < margin + mm(30)) {
-        drawFooter(page);
-        page = pdf.addPage([pageSize.w, pageSize.h]);
-        drawHeader(page, "Debit Order Terms");
-        by = page.getHeight() - margin - mm(18);
-      }
+      await drawFooter(page, false);
     }
-    drawFooter(page);
   }
 
-  // Security page
-  let sec = pdf.addPage([pageSize.w, pageSize.h]);
+  // --- Security Audit page (same treatment)
+  const sec = pdf.addPage([PAGE_W, PAGE_H]);
+  const secTitleY = PAGE_H - MARGIN - 40 - 60; // push down ~5 lines
   drawHeader(sec, "Security Audit");
 
-  let sy = sec.getHeight() - margin - mm(18) - 5 * 11; // push down by ~5 lines
-  const audit = ctx.audit || {};
-  const verify =
-    ctx.verification === "staff"
-      ? "Vinet Staff Verification"
-      : "WhatsApp OTP";
+  const audit = sess.audit_meta || {};
+  const ip = sess.last_ip || audit.ip || "—";
+  const method = (sess.verif_kind || (sess.staff_verified ? "staff" : "wa")) === "staff"
+    ? "Vinet Staff Verification"
+    : "OTP to mobile";
 
-  const secKV = [
-    ["Generated (Africa/Johannesburg):", genPretty],
-    ["Agreement code:", ctx.linkid || ""],
-    ["Authentication / Verification method:", verify],
-    [
-      "Client IP:",
-      `${audit.ip || "—"}  •  ASN: ${audit.asn || "—"}  •  Org: ${audit.asOrganization || "—"}`,
-    ],
-    [
-      "Approx Location:",
-      [audit.city, audit.region, audit.country].filter(Boolean).join(", ") || "—",
-    ],
-    ["Device:", audit.ua || "—"],
-  ];
+  let ys = secTitleY - 26;
+  const row = (k, v) => {
+    sec.drawText(k, { x: L, y: ys, size: 11, font: fontBold, color: VINET_BLACK });
+    sec.drawText(String(v || "—"), { x: L + 160, y: ys, size: 11, font, color: VINET_BLACK });
+    ys -= 16;
+  };
+  row("Agreement code", linkid);
+  row("Authentication / Verification method", method);
+  row("Client IP", ip);
+  row("User-Agent", audit.ua || "—");
+  row("ASN", audit.asn || "—");
+  row("AS Org", audit.asOrganization || "—");
+  row("City", audit.city || "—");
+  row("Region", audit.region || "—");
+  row("Country", audit.country || "—");
+  // no footer on security page
 
-  for (const [k, v] of secKV) {
-    sec.drawText(k, { x: margin, y: sy, size: 10.5, font: fontB, color: VINET_BLACK });
-    const text = String(v);
-    const wrapped = await getWrappedLinesCached(env, text, font, 10.5, sec.getWidth() - margin * 2 - mm(44), "debit-sec");
-    let yy = sy;
-    for (const ln of wrapped) {
-      sec.drawText(ln, { x: margin + mm(44), y: yy, size: 10.5, font, color: VINET_BLACK });
-      yy -= 12.5;
-    }
-    sy = Math.min(yy, sy) - 6;
-  }
-  // no footer here
-
-  return await pdf.save();
+  const bytes = await pdf.save();
+  return { bytes, filename: `debit_${splynxId || "document"}.pdf` };
 }
-export { buildDebitPdf as renderDebitPdf };
