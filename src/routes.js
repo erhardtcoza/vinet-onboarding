@@ -590,5 +590,3 @@ export async function route(request, env) {
 
   return new Response("Not found", { status: 404 });
 }
-
-If anything still looks off after you paste this in, ping me with the exact build error line and I’ll patch it fast.
