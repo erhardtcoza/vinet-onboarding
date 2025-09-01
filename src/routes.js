@@ -605,40 +605,39 @@ export async function route(request, env) {
   }
 
 // ----- Turnstile: verify and mark session human-ok -----
+// routes.js (add alongside your other /api/* handlers)
 if (path === "/api/turnstile/verify" && method === "POST") {
-  const { linkid, token } = await request.json().catch(() => ({}));
-  if (!linkid || !token) {
-    return new Response(JSON.stringify({ ok: false, error: "missing-params" }), {
-      status: 400,
-      headers: { "content-type": "application/json" }
+  const { token, linkid } = await request.json().catch(() => ({}));
+  if (!token || !linkid) {
+    return new Response(JSON.stringify({ ok:false, error:"Missing token/linkid" }), {
+      status: 400, headers: { "content-type": "application/json" }
     });
   }
-  if (!env.TURNSTILE_SECRET_KEY) {
-    return new Response(JSON.stringify({ ok: false, error: "server-not-configured" }), {
-      status: 500,
-      headers: { "content-type": "application/json" }
-    });
+  const form = new URLSearchParams();
+  form.set("secret", env.TURNSTILE_SECRET_KEY || "");
+  form.set("response", token);
+  form.set("remoteip", request.headers.get("CF-Connecting-IP") || "");
+
+  const ver = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    body: form,
+    headers: { "content-type": "application/x-www-form-urlencoded" }
+  });
+  const data = await ver.json().catch(() => ({}));
+
+  // Optionally persist a “human_ok” flag on the session
+  if (data.success) {
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    if (sess) {
+      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
+        ...sess, human_ok: true, updated: Date.now()
+      }), { expirationTtl: 86400 });
+    }
   }
-  const ip =
-    request.headers.get("CF-Connecting-IP") ||
-    request.headers.get("x-forwarded-for") ||
-    request.headers.get("x-real-ip") || "";
-  try {
-    const ok = await verifyTurnstileToken(env.TURNSTILE_SECRET_KEY, token, ip);
-    if (!ok) return new Response(JSON.stringify({ ok: false }), {
-      status: 403, headers: { "content-type": "application/json" }
-    });
-    const marked = await markHumanOK(env, linkid);
-    return new Response(JSON.stringify({ ok: marked }), {
-      status: marked ? 200 : 404,
-      headers: { "content-type": "application/json" }
-    });
-  } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: String(e && e.message || e) }), {
-      status: 500,
-      headers: { "content-type": "application/json" }
-    });
-  }
+
+  return new Response(JSON.stringify({ ok: !!data.success, data }), {
+    headers: { "content-type": "application/json" }
+  });
 }
   
   // ----- Splynx profile (for Personal Info step) -----
