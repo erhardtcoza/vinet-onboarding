@@ -2,8 +2,9 @@
 import { LOGO_URL } from "../constants.js";
 
 // ---------- Onboarding HTML renderer ----------
-export function renderOnboardUI(linkid, turnstileSiteKey = "") {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
+// onboard.js
+export function renderOnboardUI(linkid, turnstileSiteKey = "") { /* ... */ }
+return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
 <title>Onboarding</title><meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
