@@ -1,6 +1,9 @@
 name = "splynx-onboarding"
 main = "src/index.js"
 compatibility_date = "2025-08-05"
+# node_compat = true            # <- enable only if you need Node APIs
+# [placement]
+# mode = "smart"
 
 [[d1_databases]]
 binding = "DB"
@@ -19,17 +22,21 @@ bucket_name = "vinet-onboarding-uploads"
 SPLYNX_API = "https://splynx.vinet.co.za/api/2.0"
 SPLYNX_AUTH = "NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
 API_URL = "https://onboard.vinet.co.za"
+
 PHONE_NUMBER_ID = "104043025887306"
 WHATSAPP_TOKEN = "EAALpZCXUFpXsBO9tCyAuJUdO9MObRocFxZAZCJlxheOZBNp8CTvDn1Was9K48VkK3G3QZADZCYKur24nnXe9FNmwaCuttnzgOezJQi9tZApBZCVaq9ZCsID3FxlvJb6E1p7uLZADEtNoRRpiLGL3UCCY0ZBVp4YxxZC7TL3iIGvaqDH6hwQbZAIToVJeVceeAQjEkyxQZD"
 VERIFY_TOKEN = "vinet-whatsapp"
 BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en_US"
-WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
-ALLOW_WARP=1
-ADMIN_IPS = "160.226.128.0/20, 104.16.0.0/12 2a09:bac0::/29, 203.0.113.0/24, 198.51.100.0/24"
+WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"  # ok to keep the comment
+
+ALLOW_WARP = "1"
+ADMIN_IPS = "160.226.128.0/20, 104.16.0.0/12, 2a09:bac0::/29, 203.0.113.0/24, 198.51.100.0/24"
+
 TERMS_SERVICE_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"
 TERMS_DEBIT_URL   = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt"
+
 EFT_BANK_NAME    = "First National Bank (FNB/RMB)"
 EFT_ACCOUNT_NAME = "Vinet Internet Solutions"
 EFT_ACCOUNT_NO   = "62757054996"
@@ -37,13 +44,16 @@ EFT_BRANCH_CODE  = "250655"
 EFT_REFERENCE    = "SPLYNX-ID"
 EFT_NOTES        = "Please remember that all accounts are payable on or before the 1st of every month."
 
-# If you want PDFs generated (upload blank/fillable PDFs to R2 and set keys)
 SERVICE_TEMPLATE_URL = "https://onboarding-uploads.vinethosting.org/templates/VINET_MSA.pdf"
 DEBIT_TEMPLATE_URL   = "https://onboarding-uploads.vinethosting.org/templates/VINET_DO.pdf"
 
-# Optional email via MailChannels (from domain must be verified in MC DNS)
 MAIL_FROM    = "Vinet Onboarding <no-reply@vinet.co.za>"
 MAIL_SUBJECT = "Your signed Vinet onboarding documents"
 
-[observability.logs]
+[observability]
 enabled = true
+
+# If you want this Worker on the custom domain directly via wrangler:
+# [[routes]]
+# pattern = "onboard.vinet.co.za/*"
+# zone_name = "vinet.co.za"
