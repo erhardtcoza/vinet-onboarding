@@ -1,10 +1,10 @@
 // src/branding.js
 
-// ---------------- IPv4 helpers ----------------
+// ---------- IPv4 helpers ----------
 function ipv4ToInt(ip) {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  const [a, b, c, d] = parts.map((x) => Number(x));
+  const p = ip.split(".");
+  if (p.length !== 4) return null;
+  const [a, b, c, d] = p.map((x) => Number(x));
   if ([a, b, c, d].some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
   return (((a << 24) >>> 0) | (b << 16) | (c << 8) | d) >>> 0;
 }
@@ -22,9 +22,9 @@ function ipInCidrV4(ip, parsed) {
   return (x & parsed.mask) === (parsed.base & parsed.mask);
 }
 
-// ---------------- IPv6 helpers ----------------
+// ---------- IPv6 helpers (BigInt only) ----------
 function expandIpv6(ip) {
-  // Expand shorthand like "2001:db8::1" to 8 hextets
+  // expand "2001:db8::1" -> 8 hextets
   const hasDbl = ip.includes("::");
   let head = "", tail = "";
   if (hasDbl) {
@@ -34,20 +34,12 @@ function expandIpv6(ip) {
   } else {
     head = ip;
   }
-  const headParts = head ? head.split(":") : [];
-  const tailParts = tail ? tail.split(":") : [];
-
-  // Reject IPv4-embedded forms here (not needed for our allowlist use)
-  if (headParts.some(p => p.includes(".")) || tailParts.some(p => p.includes("."))) return null;
-
-  const needed = 8 - (headParts.filter(Boolean).length + tailParts.filter(Boolean).length);
+  const H = head ? head.split(":") : [];
+  const T = tail ? tail.split(":") : [];
+  if (H.some(h => h.includes(".")) || T.some(h => h.includes("."))) return null; // skip IPv4-embedded
+  const needed = 8 - (H.filter(Boolean).length + T.filter(Boolean).length);
   if (needed < 0) return null;
-
-  const full = [
-    ...headParts.filter(Boolean),
-    ...Array(needed).fill("0"),
-    ...tailParts.filter(Boolean),
-  ];
+  const full = [...H.filter(Boolean), ...Array(needed).fill("0"), ...T.filter(Boolean)];
   if (full.length !== 8) return null;
   return full.map(h => h || "0");
 }
@@ -66,25 +58,22 @@ function parseCidrV6(cidr) {
   const baseVal = ipv6ToBigInt(ip);
   const bits = prefixStr === undefined || prefixStr === "" ? 128 : Number(prefixStr);
   if (baseVal == null || !Number.isInteger(bits) || bits < 0 || bits > 128) return null;
-
   const all = (1n << 128n) - 1n;
   const mask = bits === 0 ? 0n : ((all << (128n - BigInt(bits))) & all);
-  const base = baseVal & mask; // normalize network address
+  const base = baseVal & mask;
   return { v: 6, base, mask, bits };
 }
 function ipInCidrV6(ip, parsed) {
   const v = ipv6ToBigInt(ip);
   if (v == null || !parsed) return false;
-  // All operands are BigInt here
   return (v & parsed.mask) === parsed.base;
 }
 
-// ---------------- Dispatcher ----------------
+// ---------- Dispatcher ----------
 function parseCidrAny(x) {
   const s = String(x || "").trim();
   if (!s) return null;
   if (!s.includes("/")) {
-    // Single host -> /32 or /128
     return s.includes(":") ? parseCidrV6(`${s}/128`) : parseCidrV4(`${s}/32`);
   }
   return s.includes(":") ? parseCidrV6(s) : parseCidrV4(s);
@@ -95,15 +84,17 @@ function ipInCidrAny(ip, parsed) {
 }
 
 /**
- * Allowlist by IP/CIDR (IPv4 + IPv6).
- * - Always allow 127.0.0.1 and ::1
- * - Default allow: VNET 160.226.128.0/20
- * - Extra ranges via env.ALLOW_IP_CIDRS (comma/space/newline-separated)
+ * Allowlist by IP/CIDR (IPv4 + IPv6), with optional Cloudflare WARP allow.
  *
- * Examples:
- *   ALLOW_IP_CIDRS="203.0.113.0/24, 2a09:bac5::/32, 2a09:bac5:d4d2:46e::71:40/128"
+ * Defaults:
+ *   - Always allow 127.0.0.1 and ::1
+ *   - VNET 160.226.128.0/20
+ * Extra:
+ *   - env.ALLOW_IP_CIDRS = "cidr1, cidr2 …" (comma/space/newline separated)
+ *   - env.ALLOW_WARP = "1" to allow when cf.asn == 13335 (Cloudflare)
  */
 export function ipAllowed(request, env = {}) {
+  // Find caller IP (prefer CF header)
   let ip =
     request.headers.get("CF-Connecting-IP") ||
     request.headers.get("x-forwarded-for") ||
@@ -115,18 +106,26 @@ export function ipAllowed(request, env = {}) {
   // Local dev
   if (ip === "127.0.0.1" || ip === "::1") return true;
 
-  const defaults = ["160.226.128.0/20"]; // VNET block
+  // Optional: allow Cloudflare WARP/Zero-Trust egress by ASN
+  // (set ALLOW_WARP=1 in env to enable)
+  try {
+    const cf = request.cf || {};
+    if (env.ALLOW_WARP === "1" && (cf.asn === 13335 || String(cf.asOrganization || "").toLowerCase().includes("cloudflare"))) {
+      return true;
+    }
+  } catch {}
 
+  // Your existing VNET IPv4 block
+  const defaults = ["160.226.128.0/20"];
+
+  // Optional extra CIDRs (IPv4 and/or IPv6)
   const extra = String(env.ALLOW_IP_CIDRS || "")
     .split(/[, \n]+/)
-    .map(s => s.trim())
+    .map((s) => s.trim())
     .filter(Boolean);
 
-  const cidrs = [...defaults, ...extra]
-    .map(parseCidrAny)
-    .filter(Boolean);
+  const cidrs = [...defaults, ...extra].map(parseCidrAny).filter(Boolean);
 
-  // Basic check: must look like IPv4 or IPv6
   const isV4 = /^\d+\.\d+\.\d+\.\d+$/.test(ip);
   const isV6 = ip.includes(":");
   if (!isV4 && !isV6) return false;
