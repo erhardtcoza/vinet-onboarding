@@ -121,3 +121,42 @@ export function getClientMeta(request) {
     at: Date.now(),
   };
 }
+// ---- Turnstile helpers ----
+async function verifyTurnstileToken(secret, token, ip) {
+  // https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
+  const body = new URLSearchParams();
+  body.set("secret", secret);
+  body.set("response", token);
+  if (ip) body.set("remoteip", ip);
+
+  const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+    method: "POST",
+    body,
+  });
+  if (!r.ok) throw new Error(`turnstile verify http ${r.status}`);
+  const data = await r.json();
+  return !!data.success;
+}
+
+async function markHumanOK(env, linkid) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return false;
+  await env.ONBOARD_KV.put(
+    `onboard/${linkid}`,
+    JSON.stringify({ ...sess, ts_ok: true, ts_at: Date.now() }),
+    { expirationTtl: 86400 }
+  );
+  return true;
+}
+
+async function isHuman(env, linkid) {
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  return !!(sess && sess.ts_ok === true);
+}
+
+function humanRequiredResponse() {
+  return new Response(JSON.stringify({ ok: false, error: "human-check-required" }), {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  });
+}
