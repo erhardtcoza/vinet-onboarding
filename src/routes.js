@@ -10,6 +10,7 @@ import {
   fetchCustomerMsisdn,
   splynxPUT,
   detectEntityKind,
+  uploadAllSessionFilesToSplynx,   // ✅ missing import
 } from "./splynx.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
@@ -63,7 +64,7 @@ function restrictedResponse(request, env) {
   return new Response(html, { status: 403, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
-/* -------------- WhatsApp send helpers (unchanged) -------------- */
+/* -------------- WhatsApp send helpers -------------- */
 async function sendWhatsAppTemplate(env, toMsisdn, code, lang = "en") {
   const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
   const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -114,21 +115,21 @@ export async function route(request, env) {
 
   // ----- Admin dashboard -----
   if (path === "/" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅ branded 403
     return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   // ----- EFT info page -----
   if (path === "/info/eft" && method === "GET") {
     const id = url.searchParams.get("id") || "";
-    const LOGO_URL = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
+    const LOGO_URL_LOCAL = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
     const escapeHtml = (s) =>
       String(s || "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
     return new Response(
       `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>EFT Payment Details</title>
 <style>body{font-family:Arial,sans-serif;background:#f7f7fa}.container{max-width:900px;margin:40px auto;background:#fff;padding:28px;border-radius:16px;box-shadow:0 4px 18px rgba(0,0,0,.06)}h1{color:#e2001a;font-size:34px;margin:8px 0 18px}.grid{display:grid;gap:12px;grid-template-columns:1fr 1fr}.grid .full{grid-column:1 / -1}label{font-weight:700;color:#333;font-size:14px}input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #ddd;border-radius:8px;background:#fafafa}button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius:10px;cursor:pointer;width:100%;font-weight:700}.note{font-size:13px;color:#555}.logo{display:block;margin:0 auto 8px;height:68px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body>
 <div class="container">
-  <img src="${LOGO_URL}" class="logo" alt="Vinet">
+  <img src="${LOGO_URL_LOCAL}" class="logo" alt="Vinet">
   <h1>EFT Payment Details</h1>
   <div class="grid">
     <div><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"></div>
@@ -172,7 +173,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate onboarding link -----
   if (path === "/api/admin/genlink" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const { id } = await request.json().catch(() => ({}));
     if (!id) return json({ error: "Missing id" }, 400);
     const token = Math.random().toString(36).slice(2, 10);
@@ -197,7 +198,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate staff OTP -----
   if (path === "/api/staff/gen" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -209,7 +210,7 @@ export async function route(request, env) {
 
   // ----- Admin: list sessions -----
   if (path === "/api/admin/list" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const mode = url.searchParams.get("mode") || "pending";
     const m = mode === "completed" ? "pending" : mode; // alias
     const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
@@ -229,7 +230,7 @@ export async function route(request, env) {
 
   // ----- Admin review -----
   if (path === "/admin/review" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return new Response("Missing linkid", { status: 400 });
 
@@ -254,7 +255,7 @@ export async function route(request, env) {
 
   // ----- Admin: reject -----
   if (path === "/api/admin/reject" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const { linkid, reason } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -275,7 +276,7 @@ export async function route(request, env) {
 
   // ----- Admin: delete (full cleanup) -----
   if (path === "/api/admin/delete" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     try {
@@ -288,7 +289,7 @@ export async function route(request, env) {
 
   // ----- Diagnostics -----
   if (path === "/api/admin/session/keys" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const prefixes = ["onboard/", "link:", "session:", "sess:", "inprogress:"];
@@ -305,7 +306,7 @@ export async function route(request, env) {
   }
 
   if (path === "/api/admin/session/get" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -314,7 +315,7 @@ export async function route(request, env) {
 
   // ----- Admin: approve (push to Splynx + mark approved) -----
   if (path === "/api/admin/approve" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
 
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
