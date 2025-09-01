@@ -1,5 +1,6 @@
 // src/routes.js
 import { ipAllowed } from "./branding.js";
+import { LOGO_URL, DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { renderMSAPdf } from "./pdf/msa.js";
 import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
@@ -9,16 +10,60 @@ import {
   fetchCustomerMsisdn,
   splynxPUT,
   detectEntityKind,
-  uploadAllSessionFilesToSplynx,
 } from "./splynx.js";
-import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
 
+/* ------------------------- helpers ------------------------- */
 const json = (o, s = 200) =>
   new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
 
-// --- WhatsApp helpers ---
+// Branded 403 page + log the blocked IP
+function restrictedResponse(request, env) {
+  const ip =
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("x-forwarded-for") ||
+    request.headers.get("x-real-ip") ||
+    "";
+  const ua = request.headers.get("user-agent") || "";
+  const path = new URL(request.url).pathname;
+
+  // Will appear in Cloudflare Worker logs
+  console.warn("Admin access blocked", { ip, path, ua });
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Restricted Access • Vinet</title>
+  <style>
+    :root { --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif}
+    .wrap{max-width:900px;margin:56px auto;padding:0 22px}
+    .card{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #00000012,0 1px 2px #0001;padding:26px;text-align:center}
+    .logo{display:block;margin:0 auto 16px;max-width:520px;width:100%;height:auto}
+    h1{margin:10px 0 8px;font-size:26px;color:var(--vinet);font-weight:900}
+    p{margin:8px 0;font-size:16px;color:#333}
+    .muted{color:var(--muted);font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <img class="logo" src="${LOGO_URL}" alt="Vinet Internet Solutions" />
+      <h1>Restricted Access</h1>
+      <p>Sorry, this page is only accessible from within the <b>Vinet Internet Solutions</b> network.</p>
+      <p class="muted">If you have any questions please contact our office on <b>021&nbsp;007&nbsp;0200</b> or <a href="mailto:support@vinet.co.za">support@vinet.co.za</a>.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+  return new Response(html, { status: 403, headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+/* -------------- WhatsApp send helpers (unchanged) -------------- */
 async function sendWhatsAppTemplate(env, toMsisdn, code, lang = "en") {
   const templateName = env.WHATSAPP_TEMPLATE_NAME || "vinetotp";
   const endpoint = `https://graph.facebook.com/v20.0/${env.PHONE_NUMBER_ID}/messages`;
@@ -54,7 +99,7 @@ async function sendWhatsAppTextIfSessionOpen(env, toMsisdn, bodyText) {
   if (!r.ok) throw new Error(`WA text send failed ${r.status} ${await r.text().catch(() => "")}`);
 }
 
-// --- Main router ---
+/* ---------------------------- router ---------------------------- */
 export async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
