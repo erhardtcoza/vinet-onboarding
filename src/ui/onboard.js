@@ -4,69 +4,6 @@ import { LOGO_URL } from "../constants.js";
 // ---------- Onboarding HTML renderer ----------
 export function renderOnboardUI(linkid, turnstileSiteKey = "") {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
-  <!-- Turnstile -->
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-<div id="human-check" style="background:#fff;border:1px solid #eee;padding:16px;border-radius:12px;margin:12px 0">
-  <h3 style="margin:0 0 10px;color:#e2001a">Quick human check</h3>
-  <div id="ts-widget"></div>
-  <div id="ts-status" style="font-size:13px;color:#555;margin-top:8px">Please complete the check above.</div>
-</div>
-
-<script>
-(function(){
-  const siteKey = ${JSON.stringify("${turnstileSiteKey}")};
-  const linkid  = ${JSON.stringify("${linkid}")};
-
-  // Disable all buttons/inputs that cause server actions until human is verified
-  const actionable = ()=> Array.from(document.querySelectorAll('button, [type="submit"], a[data-action], .actionable'))
-    .filter(el => !el.closest('#human-check'));
-  function setDisabled(dis){
-    actionable().forEach(el => { try { el.disabled = dis; } catch{} });
-  }
-  setDisabled(true);
-
-  let tsWidgetId = null;
-  function onVerified(token){
-    // Send token to server to mark this session as human-ok
-    fetch('/api/turnstile/verify', {
-      method: 'POST',
-      headers: {'content-type':'application/json'},
-      body: JSON.stringify({ linkid, token })
-    })
-    .then(r=>r.json()).then(d=>{
-      if (d && d.ok){
-        document.getElementById('ts-status').textContent = '✅ Verified. You can continue.';
-        setDisabled(false);
-        // Optionally collapse the card:
-        // document.getElementById('human-check').style.display='none';
-      } else {
-        document.getElementById('ts-status').textContent = '❌ Verification failed. Please retry.';
-        setDisabled(true);
-        if (window.turnstile && tsWidgetId) turnstile.reset(tsWidgetId);
-      }
-    }).catch(()=>{
-      document.getElementById('ts-status').textContent = '❌ Network error. Please retry.';
-      setDisabled(true);
-      if (window.turnstile && tsWidgetId) turnstile.reset(tsWidgetId);
-    });
-  }
-
-  // Render the widget when Turnstile script is ready
-  function renderTS(){
-    if (!window.turnstile) { setTimeout(renderTS, 100); return; }
-    tsWidgetId = turnstile.render('#ts-widget', {
-      sitekey: siteKey,
-      callback: onVerified,
-      'error-callback': ()=>{ document.getElementById('ts-status').textContent = '❌ Error. Please reload.'; },
-      'expired-callback': ()=>{
-        document.getElementById('ts-status').textContent = '⚠️ Expired. Please retry.';
-        setDisabled(true);
-      }
-    });
-  }
-  renderTS();
-})();
-</script>
 <title>Onboarding</title><meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
@@ -125,7 +62,65 @@ export function renderOnboardUI(linkid, turnstileSiteKey = "") {
       if (m) m.textContent = d.ok ? 'Code sent. Check your WhatsApp.' : (d.error||'Failed to send.');
     }catch{ if(m) m.textContent='Network error.'; }
   }
+<!-- Turnstile (visible/managed mode) -->
+<div id="ts-wrap" style="margin:12px 0 16px">
+  <div
+    class="cf-turnstile"
+    data-sitekey="YOUR_TURNSTILE_SITE_KEY"
+    data-callback="vinetTsOk"
+    data-error-callback="vinetTsErr"
+    data-expired-callback="vinetTsExp">
+  </div>
+  <div id="ts-msg" style="font:13px/1.35 system-ui; color:#555; margin-top:6px">
+    Quick human check — please complete the check above.
+  </div>
+</div>
 
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<script>
+  // make linkid available here if you haven't already
+  // e.g. const linkid = location.pathname.split("/")[2];
+  const linkid = window.__LINKID || (location.pathname.split("/")[2] || "");
+
+  const $tsMsg = () => document.getElementById("ts-msg");
+
+  // Success: send token to server to verify & mark session as human
+  async function vinetTsOk(token) {
+    try {
+      const r = await fetch("/api/turnstile/verify", {
+        method: "POST",
+        headers: {"content-type":"application/json"},
+        body: JSON.stringify({ token, linkid })
+      });
+      const d = await r.json().catch(()=>({}));
+      if (d && d.ok) {
+        $tsMsg().textContent = "Thanks! You’re verified.";
+        $tsMsg().style.color = "#2e7d32"; // green
+        // (optional) enable buttons/steps you were gating:
+        // document.querySelector("#sendOtpBtn")?.removeAttribute("disabled");
+        // document.querySelectorAll("[data-needs-human]").forEach(el=>el.removeAttribute("disabled"));
+      } else {
+        $tsMsg().textContent = "Could not verify the check. Please retry.";
+        $tsMsg().style.color = "#b71c1c";
+      }
+    } catch {
+      $tsMsg().textContent = "Network issue verifying the check. Please retry.";
+      $tsMsg().style.color = "#b71c1c";
+    }
+  }
+
+  // Error or blocked
+  function vinetTsErr() {
+    $tsMsg().textContent = "There was an error with the check. Please refresh and try again.";
+    $tsMsg().style.color = "#b71c1c";
+  }
+
+  // Expired — Turnstile will re-render itself; message is just for UX
+  function vinetTsExp() {
+    $tsMsg().textContent = "The check expired — please complete it again.";
+    $tsMsg().style.color = "#b76e00";
+  }
+</script>
   function sigPad(canvas){
     const ctx=canvas.getContext('2d'); let draw=false,last=null,dirty=false;
     function resize(){ const scale=window.devicePixelRatio||1; const rect=canvas.getBoundingClientRect(); canvas.width=Math.floor(rect.width*scale); canvas.height=Math.floor(rect.height*scale); ctx.scale(scale,scale); ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#222'; }
