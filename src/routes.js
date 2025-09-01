@@ -8,9 +8,9 @@ import {
   fetchProfileForDisplay,
   fetchCustomerMsisdn,
   splynxPUT,
-  mapEditsToSplynxPayload, // kept for future use
+  mapEditsToSplynxPayload,
   detectEntityKind,
-  uploadAllSessionFilesToSplynx, // kept for future use
+  uploadAllSessionFilesToSplynx,
 } from "./splynx.js";
 import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { deleteOnboardAll } from "./storage.js";
@@ -70,7 +70,7 @@ export async function route(request, env) {
 
   // ----- Admin dashboard -----
   if (path === "/" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
@@ -128,7 +128,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate onboarding link -----
   if (path === "/api/admin/genlink" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { id } = await request.json().catch(() => ({}));
     if (!id) return json({ error: "Missing id" }, 400);
     const token = Math.random().toString(36).slice(2, 10);
@@ -153,7 +153,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate staff OTP -----
   if (path === "/api/staff/gen" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -165,7 +165,7 @@ export async function route(request, env) {
 
   // ----- Admin: list sessions -----
   if (path === "/api/admin/list" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const mode = url.searchParams.get("mode") || "pending";
     const m = mode === "completed" ? "pending" : mode; // alias
     const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
@@ -185,7 +185,7 @@ export async function route(request, env) {
 
   // ----- Admin review -----
   if (path === "/admin/review" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return new Response("Missing linkid", { status: 400 });
 
@@ -210,7 +210,7 @@ export async function route(request, env) {
 
   // ----- Admin: reject -----
   if (path === "/api/admin/reject" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid, reason } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -231,7 +231,7 @@ export async function route(request, env) {
 
   // ----- Admin: delete (full cleanup) -----
   if (path === "/api/admin/delete" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     try {
@@ -244,7 +244,7 @@ export async function route(request, env) {
 
   // ----- Diagnostics -----
   if (path === "/api/admin/session/keys" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const prefixes = ["onboard/", "link:", "session:", "sess:", "inprogress:"];
@@ -261,7 +261,7 @@ export async function route(request, env) {
   }
 
   if (path === "/api/admin/session/get" && method === "GET") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -269,75 +269,76 @@ export async function route(request, env) {
   }
 
   // ----- Admin: approve (push to Splynx + mark approved) -----
-  if (path === "/api/admin/approve" && method === "POST") {
-    if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+if (path === "/api/admin/approve" && method === "POST") {
+  if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
 
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+  const { linkid } = await request.json().catch(() => ({}));
+  if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
 
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return json({ ok: false, error: "Not found" }, 404);
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return json({ ok: false, error: "Not found" }, 404);
 
-    const id = String(sess.id || "").trim();
-    if (!id) return json({ ok: false, error: "Missing Splynx ID" }, 400);
+  const id = String(sess.id || "").trim();
+  if (!id) return json({ ok: false, error: "Missing Splynx ID" }, 400);
 
-    // Build payload (Splynx expects "name" for full name)
-    const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
-    const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
+  // Build payload (Splynx expects "name" for full name)
+  const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
+  const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
+  const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
 
-    const body = {
-      name:         sess.edits?.full_name || undefined,
-      email:        sess.edits?.email || undefined,
-      phone_mobile: sess.edits?.phone || undefined,
-      street_1:     sess.edits?.street || undefined,
-      city:         sess.edits?.city || undefined,
-      zip_code:     sess.edits?.zip || undefined,
-      attachments:  publicFiles.length ? publicFiles : undefined,
-      payment_method: sess.pay_method || undefined,
-      debit:          sess.debit || undefined,
-    };
+  const body = {
+    name:        sess.edits?.full_name || undefined,
+    email:       sess.edits?.email || undefined,
+    phone_mobile:sess.edits?.phone || undefined,
+    street_1:    sess.edits?.street || undefined,
+    city:        sess.edits?.city || undefined,
+    zip_code:    sess.edits?.zip || undefined,
+    attachments: publicFiles.length ? publicFiles : undefined,
+    payment_method: sess.pay_method || undefined,
+    debit:         sess.debit || undefined,
+  };
 
-    // Detect whether this ID is a customer or a lead and only call the matching endpoint(s)
-    let kind = "unknown";
-    try { kind = await detectEntityKind(env, id); } catch {}
+  // Detect whether this ID is a customer or a lead and only call the matching endpoint(s)
+  let kind = "unknown";
+  try { kind = await detectEntityKind(env, id); } catch {}
 
-    const attempts = [];
-    const tryPut = async (endpoint) => {
-      try {
-        await splynxPUT(env, endpoint, body);
-        attempts.push({ endpoint, ok: true });
-      } catch (e) {
-        // 404s on non-existent endpoints are expected on some installs
-        console.warn(`approve: splynx PUT failed ${endpoint}: ${e && e.message}`);
-        attempts.push({ endpoint, ok: false, error: String(e && e.message) });
-      }
-    };
-
-    if (kind === "customer") {
-      await tryPut(`/admin/customers/customer/${id}`);
-      // Optional: contacts
-      // await tryPut(`/admin/customers/${id}/contacts`);
-    } else if (kind === "lead") {
-      await tryPut(`/admin/crm/leads/${id}`);
-      // Optional: contacts
-      // await tryPut(`/admin/crm/leads/${id}/contacts`);
-    } else {
-      // Fallback (very rare)
-      await tryPut(`/admin/customers/customer/${id}`);
-      await tryPut(`/admin/crm/leads/${id}`);
+  const attempts = [];
+  const tryPut = async (endpoint) => {
+    try {
+      await splynxPUT(env, endpoint, body);
+      attempts.push({ endpoint, ok: true });
+    } catch (e) {
+      // Downgrade to warn; 404s on non-existent endpoints are expected on some installs
+      console.warn(`approve: splynx PUT failed ${endpoint}: ${e && e.message}`);
+      attempts.push({ endpoint, ok: false, error: String(e && e.message) });
     }
+  };
 
-    // Mark approved regardless of individual endpoint quirks
-    await env.ONBOARD_KV.put(
-      `onboard/${linkid}`,
-      JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), push_attempts: attempts }),
-      { expirationTtl: 86400 }
-    );
-
-    return json({ ok: true, kind, attempts });
+  if (kind === "customer") {
+    // The canonical customer endpoint on your install
+    await tryPut(`/admin/customers/customer/${id}`);
+    // (Optional) contacts endpoint—comment out if your API rejects it
+    // await tryPut(`/admin/customers/${id}/contacts`);
+  } else if (kind === "lead") {
+    await tryPut(`/admin/crm/leads/${id}`);
+    // (Optional) contacts endpoint—comment out if your API rejects it
+    // await tryPut(`/admin/crm/leads/${id}/contacts`);
+  } else {
+    // Fallback (very rare): try both “customer” (canonical) and “lead”
+    await tryPut(`/admin/customers/customer/${id}`);
+    await tryPut(`/admin/crm/leads/${id}`);
   }
 
+  // Mark approved regardless of individual endpoint quirks
+  await env.ONBOARD_KV.put(
+    `onboard/${linkid}`,
+    JSON.stringify({ ...sess, status: "approved", approved_at: Date.now(), push_attempts: attempts }),
+    { expirationTtl: 86400 }
+  );
+
+  return json({ ok: true, kind, attempts });
+}
+  
   // ----- OTP: send -----
   if (path === "/api/otp/send" && method === "POST") {
     const { linkid } = await request.json().catch(() => ({}));
@@ -563,11 +564,11 @@ export async function route(request, env) {
   }
 
   // ----- PDF generators -----
-  if (path.startsWith("/pdf/msa/") && method === "GET")) {
+  if (path.startsWith("/pdf/msa/") && method === "GET") {
     const linkid = path.split("/").pop();
     return await renderMSAPdf(env, linkid);
   }
-  if (path.startsWith("/pdf/debit/") && method === "GET")) {
+  if (path.startsWith("/pdf/debit/") && method === "GET") {
     const linkid = path.split("/").pop();
     return await renderDebitPdf(env, linkid);
   }
