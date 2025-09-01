@@ -668,7 +668,10 @@ if (path === "/api/turnstile/verify" && method === "POST") {
     const linkid = path.split("/")[2] || "";
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
     if (!sess) return new Response("Link expired or invalid", { status: 404 });
-    return new Response(renderOnboardUI(linkid), { headers: { "content-type": "text/html; charset=utf-8" } });
+return new Response(
+  renderOnboardUI(linkid, env.TURNSTILE_SITE_KEY || ""),
+  { headers: { "content-type": "text/html; charset=utf-8" } }
+);
   }
 
   return new Response("Not found", { status: 404 });
