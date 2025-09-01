@@ -1,7 +1,3 @@
-Here is my last working onboard.js file before we made the changes (2weeks ago)
-
-Please provide me with a fully updated file to copy and paste
-
 // /src/ui/onboard.js
 import { LOGO_URL } from "../constants.js";
 
