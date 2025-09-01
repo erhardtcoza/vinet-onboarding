@@ -1,5 +1,7 @@
 // src/routes.js
 import { ipAllowed } from "./branding.js";
+// routes.js
+if (!ipAllowed(request, env)) return new Response("Forbidden", { status: 403 });
 import { renderMSAPdf } from "./pdf/msa.js";
 import { renderDebitPdf } from "./pdf/debit.js";
 import { renderAdminPage, renderAdminReviewHTML } from "./ui/admin.js";
