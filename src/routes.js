@@ -664,15 +664,16 @@ if (path === "/api/turnstile/verify" && method === "POST") {
   }
 
   // ----- Onboarding UI -----
-  if (path.startsWith("/onboard/") && method === "GET") {
-    const linkid = path.split("/")[2] || "";
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess) return new Response("Link expired or invalid", { status: 404 });
-return new Response(
-  renderOnboardUI(linkid, env.TURNSTILE_SITE_KEY || ""),
-  { headers: { "content-type": "text/html; charset=utf-8" } }
-);
-  }
-
+// routes.js
+// ...
+if (path.startsWith("/onboard/") && method === "GET") {
+  const linkid = path.split("/")[2] || "";
+  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+  if (!sess) return new Response("Link expired or invalid", { status: 404 });
+  const siteKey = env.TURNSTILE_SITE_KEY || "";
+  return new Response(renderOnboardUI(linkid, siteKey), {
+    headers: { "content-type": "text/html; charset=utf-8" }
+  });
+}
   return new Response("Not found", { status: 404 });
 }
