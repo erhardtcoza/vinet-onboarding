@@ -604,6 +604,43 @@ export async function route(request, env) {
     return new Response("Unknown agreement type", { status: 400 });
   }
 
+// ----- Turnstile: verify and mark session human-ok -----
+if (path === "/api/turnstile/verify" && method === "POST") {
+  const { linkid, token } = await request.json().catch(() => ({}));
+  if (!linkid || !token) {
+    return new Response(JSON.stringify({ ok: false, error: "missing-params" }), {
+      status: 400,
+      headers: { "content-type": "application/json" }
+    });
+  }
+  if (!env.TURNSTILE_SECRET_KEY) {
+    return new Response(JSON.stringify({ ok: false, error: "server-not-configured" }), {
+      status: 500,
+      headers: { "content-type": "application/json" }
+    });
+  }
+  const ip =
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("x-forwarded-for") ||
+    request.headers.get("x-real-ip") || "";
+  try {
+    const ok = await verifyTurnstileToken(env.TURNSTILE_SECRET_KEY, token, ip);
+    if (!ok) return new Response(JSON.stringify({ ok: false }), {
+      status: 403, headers: { "content-type": "application/json" }
+    });
+    const marked = await markHumanOK(env, linkid);
+    return new Response(JSON.stringify({ ok: marked }), {
+      status: marked ? 200 : 404,
+      headers: { "content-type": "application/json" }
+    });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: String(e && e.message || e) }), {
+      status: 500,
+      headers: { "content-type": "application/json" }
+    });
+  }
+}
+  
   // ----- Splynx profile (for Personal Info step) -----
   if (path === "/api/splynx/profile" && method === "GET") {
     const id = url.searchParams.get("id");
