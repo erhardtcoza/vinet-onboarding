@@ -26,6 +26,7 @@ BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en_US"
 WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"   # or any valid URL
+ALLOW_WARP=1
 ADMIN_IPS = "ALLOW_IP_CIDRS=160.226.128.0/20, 2a09:bac5:d4d2:46e::71:40/128"
 TERMS_SERVICE_URL = "https://onboarding-uploads.vinethosting.org/vinet-master-terms.txt"
 TERMS_DEBIT_URL   = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt"
