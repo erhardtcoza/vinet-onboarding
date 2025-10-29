@@ -2,9 +2,8 @@
 import { LOGO_URL } from "../constants.js";
 
 // ---------- Onboarding HTML renderer ----------
-// onboard.js
-export function renderOnboardUI(linkid, turnstileSiteKey = "") { /* ... */ }
-return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
+export function renderOnboardUI(linkid) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
 <title>Onboarding</title><meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   body{font-family:system-ui,sans-serif;background:#fafbfc;color:#232}
@@ -12,7 +11,6 @@ return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
   .logo{display:block;margin:0 auto 1em;max-width:160px}
   h1,h2{color:#e2001a}
   .btn{background:#e2001a;color:#fff;border:0;border-radius:.7em;padding:.7em 2em;font-size:1em;cursor:pointer;margin:.8em 0 0}
-  .btn[disabled]{opacity:.6;cursor:not-allowed}
   .btn-outline{background:#fff;color:#e2001a;border:2px solid #e2001a;border-radius:.7em;padding:.6em 1.4em}
   .field{margin:1em 0} input,select,textarea{width:100%;padding:.7em;font-size:1em;border-radius:.5em;border:1px solid #ddd}
   .note{font-size:12px;color:#666}
@@ -36,10 +34,7 @@ return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
   .doclist a { text-decoration:none; }
   .doclist a:hover { text-decoration:underline; }
   .error{color:#b00020;font-size:.95em;margin-top:.25em}
-</style>
-<!-- Turnstile loader (visible/managed mode) -->
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-</head><body>
+</style></head><body>
 <div class="card">
   <img class="logo" src="${LOGO_URL}" alt="Vinet Logo"/>
   <div class="progressbar"><div id="prog" class="progress" style="width:14%"></div></div>
@@ -54,55 +49,12 @@ return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
   let step = 0;
   let state = { progress: 0, edits: {}, uploads: [], pay_method: 'eft' };
 
-  // Human check flag (set by Turnstile callback)
-  window.__TS_OK = false;
-
-  // Expose Turnstile callbacks globally for the widget attributes
-  window.vinetTsOk = async function(token){
-    const msg = document.getElementById('ts-msg');
-    try{
-      const r = await fetch('/api/turnstile/verify', {
-        method:'POST',
-        headers:{'content-type':'application/json'},
-        body: JSON.stringify({ token, linkid })
-      });
-      const d = await r.json().catch(()=>({}));
-      if (d && d.ok){
-        window.__TS_OK = true;
-        if (msg){ msg.textContent = 'Thanks! You’re verified.'; msg.style.color = '#2e7d32'; }
-        // enable "Send code" button
-        const btn = document.getElementById('sendOtpBtn');
-        if (btn) btn.removeAttribute('disabled');
-      } else {
-        window.__TS_OK = false;
-        if (msg){ msg.textContent = 'Could not verify the check. Please retry.'; msg.style.color = '#b71c1c'; }
-      }
-    }catch{
-      window.__TS_OK = false;
-      if (msg){ msg.textContent = 'Network issue verifying the check. Please retry.'; msg.style.color = '#b71c1c'; }
-    }
-  };
-  window.vinetTsErr = function(){
-    window.__TS_OK = false;
-    const msg = document.getElementById('ts-msg');
-    if (msg){ msg.textContent = 'There was an error with the check. Please refresh and try again.'; msg.style.color = '#b71c1c'; }
-  };
-  window.vinetTsExp = function(){
-    window.__TS_OK = false;
-    const msg = document.getElementById('ts-msg');
-    if (msg){ msg.textContent = 'The check expired — please complete it again.'; msg.style.color = '#b76e00'; }
-  };
-
   function pct(){ return Math.min(100, Math.round(((step+1)/(6+1))*100)); }
   function setProg(){ progEl.style.width = pct() + '%'; }
   function save(){ fetch('/api/progress/'+linkid, { method:'POST', body: JSON.stringify(state) }).catch(()=>{}); }
 
   async function sendOtp(){
     const m = document.getElementById('otpmsg');
-    if (!window.__TS_OK){
-      if (m) m.textContent = 'Please complete the human check first.';
-      return;
-    }
     if (m) m.textContent = 'Sending code to WhatsApp...';
     try{
       const r = await fetch('/api/otp/send',{method:'POST',body:JSON.stringify({linkid})});
@@ -130,105 +82,93 @@ return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
-  // Step 1: Verify (WhatsApp OTP or Staff code)
-  function step1(){
-    stepEl.innerHTML = [
-      '<h2>Verify your identity</h2>',
+// Step 1: Verify (WhatsApp OTP or Staff code)
+function step1(){
+  stepEl.innerHTML = [
+    '<h2>Verify your identity</h2>',
+    '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
+    '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+    '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+  ].join('');
 
-      // Turnstile widget (visible/managed)
-      '<div id="ts-wrap" class="field" style="margin-top:6px;">',
-      '  <div class="cf-turnstile"',
-      `       data-sitekey="${turnstileSiteKey}"`,
-      '       data-callback="vinetTsOk"',
-      '       data-error-callback="vinetTsErr"',
-      '       data-expired-callback="vinetTsExp"></div>',
-      '  <div id="ts-msg" class="note" style="margin-top:.4em">Quick human check — please complete the check above.</div>',
-      '</div>',
+  const wa = document.getElementById('waBox');
+  wa.innerHTML = ''
+    + '<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div>'
+    + '<form id="otpForm" autocomplete="off" class="field">'
+    + '  <div class="row">'
+    + '    <input id="otp" name="otp" type="text" inputmode="numeric" '
+    + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required />'
+    + '    <button class="btn" type="submit">Verify</button>'
+    + '  </div>'
+    + '</form>'
+    + '<a class="btn-outline" id="resend">Resend code</a>';
 
-      '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
-      '<div id="waBox" class="field" style="margin-top:10px;"></div>',
-      '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
-    ].join('');
+  // Send initial WhatsApp OTP
+  sendOtp();
+  document.getElementById('resend').onclick = (e)=>{ e.preventDefault(); sendOtp(); };
 
-    const wa = document.getElementById('waBox');
-    wa.innerHTML = ''
-      + '<div id="otpmsg" class="note" style="margin:.4em 0 1em;"></div>'
-      + '<div class="row">'
-      + '  <button id="sendOtpBtn" class="btn" disabled>Send code</button>'
-      + '</div>'
-      + '<form id="otpForm" autocomplete="off" class="field" style="margin-top:.6em">'
-      + '  <div class="row">'
-      + '    <input id="otp" name="otp" type="text" inputmode="numeric" '
-      + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required />'
-      + '    <button class="btn" type="submit">Verify</button>'
-      + '  </div>'
-      + '</form>';
+  // Robust client-side validation (works even if browser pattern is picky)
+  const otpInput = document.getElementById('otp');
+  otpInput.addEventListener('input', () => {
+    // keep only digits and trim to 6
+    otpInput.value = otpInput.value.replace(/\D+/g, '').slice(0, 6);
+  });
 
-    // Send OTP (gated by Turnstile success)
-    document.getElementById('sendOtpBtn').onclick = (e)=>{ e.preventDefault(); sendOtp(); };
-
-    // OTP input guard
-    const otpInput = document.getElementById('otp');
-    otpInput.addEventListener('input', () => {
-      otpInput.value = otpInput.value.replace(/\\D+/g, '').slice(0, 6);
+  document.getElementById('otpForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const otp = otpInput.value.trim();
+    if (otp.length !== 6) {
+      document.getElementById('otpmsg').textContent = 'Please enter the 6‑digit code.';
+      return;
+    }
+    const r = await fetch('/api/otp/verify', {
+      method:'POST',
+      body: JSON.stringify({ linkid, otp, kind: "wa" })
     });
+    const d = await r.json().catch(()=>({ ok:false }));
+    if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
+    else { document.getElementById('otpmsg').textContent = 'Invalid code. Try again.'; }
+  };
 
-    document.getElementById('otpForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const otp = otpInput.value.trim();
-      if (otp.length !== 6) {
-        document.getElementById('otpmsg').textContent = 'Please enter the 6-digit code.';
-        return;
-      }
-      const r = await fetch('/api/otp/verify', {
-        method:'POST',
-        body: JSON.stringify({ linkid, otp, kind: "wa" })
-      });
-      const d = await r.json().catch(()=>({ ok:false }));
-      if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
-      else { document.getElementById('otpmsg').textContent = 'Invalid code. Try again.'; }
-    };
+  // Staff code UI
+  const staff = document.getElementById('staffBox');
+  staff.innerHTML = ''
+    + '<div class="note">Ask Vinet for a one-time staff code.</div>'
+    + '<form id="staffForm" autocomplete="off" class="field">'
+    + '  <div class="row">'
+    + '    <input id="staffOtp" name="otp" type="text" inputmode="numeric" '
+    + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code from Vinet" required />'
+    + '    <button class="btn" type="submit">Verify</button>'
+    + '  </div>'
+    + '</form>'
+    + '<div id="staffMsg" class="note"></div>';
 
-    // Staff code UI
-    const staff = document.getElementById('staffBox');
-    staff.innerHTML = ''
-      + '<div class="note">Ask Vinet for a one-time staff code.</div>'
-      + '<form id="staffForm" autocomplete="off" class="field">'
-      + '  <div class="row">'
-      + '    <input id="staffOtp" name="otp" type="text" inputmode="numeric" '
-      + '           pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code from Vinet" required />'
-      + '    <button class="btn" type="submit">Verify</button>'
-      + '  </div>'
-      + '</form>'
-      + '<div id="staffMsg" class="note"></div>';
+  const staffInput = document.getElementById('staffOtp');
+  staffInput.addEventListener('input', () => {
+    staffInput.value = staffInput.value.replace(/\D+/g, '').slice(0, 6);
+  });
 
-    const staffInput = document.getElementById('staffOtp');
-    staffInput.addEventListener('input', () => {
-      staffInput.value = staffInput.value.replace(/\\D+/g, '').slice(0, 6);
+  document.getElementById('staffForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const otp = staffInput.value.trim();
+    if (otp.length !== 6) {
+      document.getElementById('staffMsg').textContent = 'Please enter the 6‑digit code.';
+      return;
+    }
+    const r = await fetch('/api/otp/verify', {
+      method:'POST',
+      body: JSON.stringify({ linkid, otp, kind: "staff" })
     });
+    const d = await r.json().catch(()=>({ ok:false }));
+    if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
+    else { document.getElementById('staffMsg').textContent = 'Invalid or expired staff code.'; }
+  };
 
-    document.getElementById('staffForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const otp = staffInput.value.trim();
-      if (otp.length !== 6) {
-        document.getElementById('staffMsg').textContent = 'Please enter the 6-digit code.';
-        return;
-      }
-      const r = await fetch('/api/otp/verify', {
-        method:'POST',
-        body: JSON.stringify({ linkid, otp, kind: "staff" })
-      });
-      const d = await r.json().catch(()=>({ ok:false }));
-      if (d.ok) { step=2; state.progress=step; setProg(); save(); render(); }
-      else { document.getElementById('staffMsg').textContent = 'Invalid or expired staff code.'; }
-    };
-
-    // Tabs toggle
-    const pwa = document.getElementById('p-wa'), pst = document.getElementById('p-staff');
-    pwa.onclick = () => { pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
-    pst.onclick = () => { pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
-  }
-
+  // Toggle tabs
+  const pwa = document.getElementById('p-wa'), pst = document.getElementById('p-staff');
+  pwa.onclick = () => { pwa.classList.add('active'); pst.classList.remove('active'); wa.style.display='block'; staff.style.display='none'; };
+  pst.onclick = () => { pst.classList.add('active'); pwa.classList.remove('active'); wa.style.display='none'; staff.style.display='block'; };
+}
   // Step 2: Personal info (pulled from Splynx, editable)
   function step2(){
     stepEl.innerHTML='<h2>Confirm your details</h2><div id="box" class="note">Loading…</div>';
