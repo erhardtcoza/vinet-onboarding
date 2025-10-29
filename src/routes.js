@@ -562,22 +562,6 @@ if (path === "/api/otp/send" && method === "POST") {
   }
 }
   
-    // cache OTP + msisdn in KV for 10 mins
-    await env.ONBOARD_KV.put(`otp/${linkid}`, code, {
-      expirationTtl: 600,
-    });
-    await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, {
-      expirationTtl: 600,
-    });
-
-    try {
-      await sendWhatsAppTemplate(env, msisdn, code, "en");
-      return json({ ok: true });
-    } catch {
-      return json({ ok: false, error: "WhatsApp send failed (template)" }, 502);
-    }
-  }
-
   // OTP verify
   if (path === "/api/otp/verify" && method === "POST") {
     const { linkid, otp, kind } = await request.json().catch(() => ({}));
