@@ -148,8 +148,7 @@ export async function route(request, env) {
   // EFT printable helper
   if (path === "/info/eft" && method === "GET") {
     const id = url.searchParams.get("id") || "";
-    const LOGO_URL_LOCAL =
-      "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
+    const LOGO_URL_LOCAL = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
     const escapeHtml = (s) =>
       String(s || "").replace(/[&<>"]/g, (m) => ({
         "&": "&amp;",
@@ -197,10 +196,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   // Terms proxy (MSA + Debit)
   if (path === "/api/terms" && method === "GET") {
     const kind = (url.searchParams.get("kind") || "").toLowerCase();
-    const svcUrl =
-      env.TERMS_MSA_URL ||
-      env.TERMS_SERVICE_URL ||
-      DEFAULT_MSA_TERMS_URL;
+    const svcUrl = env.TERMS_MSA_URL || env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
     const debUrl = env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS_URL;
 
     async function getText(u) {
@@ -304,10 +300,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
       const linkid = k.name.split("/")[1];
       const updated = s.updated || s.last_time || s.created || 0;
 
-      if (
-        m === "inprog" &&
-        (s.status === "inprogress" || !s.agreement_signed)
-      )
+      if (m === "inprog" && (s.status === "inprogress" || !s.agreement_signed))
         items.push({ linkid, id: s.id, updated });
       if (m === "pending" && s.status === "pending")
         items.push({ linkid, id: s.id, updated });
@@ -329,9 +322,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
     if (!sess) return new Response("Not found", { status: 404 });
 
-    const r2PublicBase =
-      env.R2_PUBLIC_BASE ||
-      "https://onboarding-uploads.vinethosting.org";
+    const r2PublicBase = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
 
     let original = null;
     try {
@@ -388,10 +379,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
       const res = await deleteOnboardAll(env, linkid);
       return json({ ok: true, ...res });
     } catch (e) {
-      return json(
-        { ok: false, error: String((e && e.message) || e) },
-        500
-      );
+      return json({ ok: false, error: String((e && e.message) || e) }, 500);
     }
   }
 
@@ -454,9 +442,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
 
     // Build payload (mapped to Splynx)
     const uploads = Array.isArray(sess.uploads) ? sess.uploads : [];
-    const r2Base =
-      env.R2_PUBLIC_BASE ||
-      "https://onboarding-uploads.vinethosting.org";
+    const r2Base = env.R2_PUBLIC_BASE || "https://onboarding-uploads.vinethosting.org";
     const publicFiles = uploads.map((u) => `${r2Base}/${u.key}`);
 
     const body = {
@@ -485,9 +471,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
         await splynxPUT(env, endpoint, body);
         attempts.push({ endpoint, ok: true });
       } catch (e) {
-        console.warn(
-          `approve: splynx PUT failed ${endpoint}: ${e && e.message}`
-        );
+        console.warn(`approve: splynx PUT failed ${endpoint}: ${e && e.message}`);
         attempts.push({
           endpoint,
           ok: false,
@@ -549,17 +533,11 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     try {
       msisdn = await fetchCustomerMsisdn(env, splynxId);
     } catch {
-      return json(
-        { ok: false, error: "Splynx lookup failed" },
-        502
-      );
+      return json({ ok: false, error: "Splynx lookup failed" }, 502);
     }
 
     if (!msisdn) {
-      return json(
-        { ok: false, error: "No WhatsApp number on file" },
-        404
-      );
+      return json({ ok: false, error: "No WhatsApp number on file" }, 404);
     }
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -575,19 +553,15 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     try {
       await sendWhatsAppTemplate(env, msisdn, code, "en");
       return json({ ok: true });
-    } catch (err) {
-      return json(
-        { ok: false, error: "WhatsApp send failed (template)" },
-        502
-      );
+    } catch {
+      return json({ ok: false, error: "WhatsApp send failed (template)" }, 502);
     }
   }
 
   // OTP verify
   if (path === "/api/otp/verify" && method === "POST") {
     const { linkid, otp, kind } = await request.json().catch(() => ({}));
-    if (!linkid || !otp)
-      return json({ ok: false, error: "Missing params" }, 400);
+    if (!linkid || !otp) return json({ ok: false, error: "Missing params" }, 400);
 
     const key = kind === "staff" ? `staffotp/${linkid}` : `otp/${linkid}`;
     const expected = await env.ONBOARD_KV.get(key);
@@ -657,8 +631,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     const linkid = path.split("/")[3];
     const body = await request.json().catch(() => ({}));
 
-    const existing =
-      (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
+    const existing = (await env.ONBOARD_KV.get(`onboard/${linkid}`, "json")) || {};
 
     const next = {
       ...existing,
@@ -703,9 +676,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
       }
     }
 
-    const id =
-      (b.splynx_id || b.client_id || "").toString().trim() ||
-      "unknown";
+    const id = (b.splynx_id || b.client_id || "").toString().trim() || "unknown";
     const ts = Date.now();
     const kvKey = `debit/${id}/${ts}`;
 
@@ -751,21 +722,12 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   // Debit signature upload
   if (path === "/api/debit/sign" && method === "POST") {
     const { linkid, dataUrl } = await request.json().catch(() => ({}));
-    if (
-      !linkid ||
-      !dataUrl ||
-      !/^data:image\/png;base64,/.test(dataUrl)
-    ) {
-      return json(
-        { ok: false, error: "Missing/invalid signature" },
-        400
-      );
+    if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
+      return json({ ok: false, error: "Missing/invalid signature" }, 400);
     }
 
     const pngB64 = dataUrl.split(",")[1];
-    const bytes = Uint8Array.from(atob(pngB64), (c) =>
-      c.charCodeAt(0)
-    );
+    const bytes = Uint8Array.from(atob(pngB64), (c) => c.charCodeAt(0));
 
     const sigKey = `debit_agreements/${linkid}/signature.png`;
 
@@ -793,21 +755,12 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   // Service agreement signature (MSA)
   if (path === "/api/sign" && method === "POST") {
     const { linkid, dataUrl } = await request.json().catch(() => ({}));
-    if (
-      !linkid ||
-      !dataUrl ||
-      !/^data:image\/png;base64,/.test(dataUrl)
-    ) {
-      return json(
-        { ok: false, error: "Missing/invalid signature" },
-        400
-      );
+    if (!linkid || !dataUrl || !/^data:image\/png;base64,/.test(dataUrl)) {
+      return json({ ok: false, error: "Missing/invalid signature" }, 400);
     }
 
     const pngB64 = dataUrl.split(",")[1];
-    const bytes = Uint8Array.from(atob(pngB64), (c) =>
-      c.charCodeAt(0)
-    );
+    const bytes = Uint8Array.from(atob(pngB64), (c) => c.charCodeAt(0));
 
     const sigKey = `agreements/${linkid}/signature.png`;
 
@@ -816,8 +769,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     });
 
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess)
-      return json({ ok: false, error: "Unknown session" }, 404);
+    if (!sess) return json({ ok: false, error: "Unknown session" }, 404);
 
     await env.ONBOARD_KV.put(
       `onboard/${linkid}`,
@@ -838,8 +790,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   if (path.startsWith("/agreements/sig/") && method === "GET") {
     const linkid = (path.split("/").pop() || "").replace(/\.png$/i, "");
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess || !sess.agreement_sig_key)
-      return new Response("Not found", { status: 404 });
+    if (!sess || !sess.agreement_sig_key) return new Response("Not found", { status: 404 });
 
     const obj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
     if (!obj) return new Response("Not found", { status: 404 });
@@ -852,8 +803,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   if (path.startsWith("/agreements/sig-debit/") && method === "GET") {
     const linkid = (path.split("/").pop() || "").replace(/\.png$/i, "");
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess || !sess.debit_sig_key)
-      return new Response("Not found", { status: 404 });
+    if (!sess || !sess.debit_sig_key) return new Response("Not found", { status: 404 });
 
     const obj = await env.R2_UPLOADS.get(sess.debit_sig_key);
     if (!obj) return new Response("Not found", { status: 404 });
@@ -866,8 +816,7 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   // Agreement "view in browser" (terms-only view)
   if (path.startsWith("/agreements/") && method === "GET") {
     const [, , type, linkid] = path.split("/");
-    if (!type || !linkid)
-      return new Response("Bad request", { status: 400 });
+    if (!type || !linkid) return new Response("Bad request", { status: 400 });
 
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
     if (!sess || !sess.agreement_signed)
@@ -884,13 +833,8 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
       }[t]));
 
     if (type === "msa") {
-      const src =
-        env.TERMS_MSA_URL ||
-        env.TERMS_SERVICE_URL ||
-        DEFAULT_MSA_TERMS_URL;
-      const text =
-        (await fetchTextCached(src, env, "terms:msa:html")) ||
-        "Terms unavailable.";
+      const src = env.TERMS_MSA_URL || env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
+      const text = (await fetchTextCached(src, env, "terms:msa:html")) || "Terms unavailable.";
 
       return new Response(
         `<!doctype html><meta charset="utf-8"><title>Master Service Agreement</title><h2>Master Service Agreement</h2><pre style="white-space:pre-wrap">${esc(
@@ -901,11 +845,8 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     }
 
     if (type === "debit") {
-      const src =
-        env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS_URL;
-      const text =
-        (await fetchTextCached(src, env, "terms:debit:html")) ||
-        "Terms unavailable.";
+      const src = env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS_URL;
+      const text = (await fetchTextCached(src, env, "terms:debit:html")) || "Terms unavailable.";
 
       return new Response(
         `<!doctype html><meta charset="utf-8"><title>Debit Order Instruction</title><h2>Debit Order Instruction</h2><pre style="white-space:pre-wrap">${esc(
@@ -922,39 +863,24 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   if (path === "/api/turnstile/verify" && method === "POST") {
     const { token, linkid } = await request.json().catch(() => ({}));
     if (!token || !linkid) {
-      return json(
-        { ok: false, error: "Missing token/linkid" },
-        400
-      );
+      return json({ ok: false, error: "Missing token/linkid" }, 400);
     }
 
     const form = new URLSearchParams();
     form.set("secret", env.TURNSTILE_SECRET_KEY || "");
     form.set("response", token);
-    form.set(
-      "remoteip",
-      request.headers.get("CF-Connecting-IP") || ""
-    );
+    form.set("remoteip", request.headers.get("CF-Connecting-IP") || "");
 
-    const ver = await fetch(
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-      {
-        method: "POST",
-        body: form,
-        headers: {
-          "content-type":
-            "application/x-www-form-urlencoded",
-        },
-      }
-    );
+    const ver = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      body: form,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
 
     const data = await ver.json().catch(() => ({}));
 
     if (data.success) {
-      const sess = await env.ONBOARD_KV.get(
-        `onboard/${linkid}`,
-        "json"
-      );
+      const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
       if (sess) {
         await env.ONBOARD_KV.put(
           `onboard/${linkid}`,
@@ -995,13 +921,17 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
     return await renderDebitPdf(env, linkid);
   }
 
-  // onboarding app JS (static module)
+  // Serve the modular onboarding app JS from KV
   if (path === "/onboard-app.js" && method === "GET") {
-    // This is served from /public/onboard-app.js contents.
-    // We read from env.STATIC_ONBOARD_JS if you choose to store it in KV,
-    // but for now you can bundle it at build and attach to env at deploy.
-    // Simpler: store it alongside the worker as env.STATIC_ONBOARD_JS.
-    const js = env.STATIC_ONBOARD_JS || "";
+    // You said you've uploaded the file to ONBOARD_KV already.
+    // Let's expect the key "static/onboard-app.js".
+    const js = await env.ONBOARD_KV.get("static/onboard-app.js");
+    if (!js) {
+      return new Response("// not found", {
+        status: 404,
+        headers: { "content-type": "application/javascript; charset=utf-8" },
+      });
+    }
     return new Response(js, {
       headers: {
         "content-type": "application/javascript; charset=utf-8",
