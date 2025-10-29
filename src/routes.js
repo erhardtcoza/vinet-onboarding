@@ -604,42 +604,6 @@ export async function route(request, env) {
     return new Response("Unknown agreement type", { status: 400 });
   }
 
-// ----- Turnstile: verify and mark session human-ok -----
-// routes.js (add alongside your other /api/* handlers)
-if (path === "/api/turnstile/verify" && method === "POST") {
-  const { token, linkid } = await request.json().catch(() => ({}));
-  if (!token || !linkid) {
-    return new Response(JSON.stringify({ ok:false, error:"Missing token/linkid" }), {
-      status: 400, headers: { "content-type": "application/json" }
-    });
-  }
-  const form = new URLSearchParams();
-  form.set("secret", env.TURNSTILE_SECRET_KEY || "");
-  form.set("response", token);
-  form.set("remoteip", request.headers.get("CF-Connecting-IP") || "");
-
-  const ver = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: form,
-    headers: { "content-type": "application/x-www-form-urlencoded" }
-  });
-  const data = await ver.json().catch(() => ({}));
-
-  // Optionally persist a “human_ok” flag on the session
-  if (data.success) {
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (sess) {
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
-        ...sess, human_ok: true, updated: Date.now()
-      }), { expirationTtl: 86400 });
-    }
-  }
-
-  return new Response(JSON.stringify({ ok: !!data.success, data }), {
-    headers: { "content-type": "application/json" }
-  });
-}
-  
   // ----- Splynx profile (for Personal Info step) -----
   if (path === "/api/splynx/profile" && method === "GET") {
     const id = url.searchParams.get("id");
@@ -663,16 +627,12 @@ if (path === "/api/turnstile/verify" && method === "POST") {
   }
 
   // ----- Onboarding UI -----
-// routes.js
-// ...
-if (path.startsWith("/onboard/") && method === "GET") {
-  const linkid = path.split("/")[2] || "";
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Link expired or invalid", { status: 404 });
-  const siteKey = env.TURNSTILE_SITE_KEY || "";
-  return new Response(renderOnboardUI(linkid, siteKey), {
-    headers: { "content-type": "text/html; charset=utf-8" }
-  });
-}
+  if (path.startsWith("/onboard/") && method === "GET") {
+    const linkid = path.split("/")[2] || "";
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    if (!sess) return new Response("Link expired or invalid", { status: 404 });
+    return new Response(renderOnboardUI(linkid), { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
   return new Response("Not found", { status: 404 });
 }
