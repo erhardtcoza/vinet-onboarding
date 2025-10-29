@@ -8,7 +8,7 @@ database_name = "vinet-onboarding-db"
 database_id = "d273502b-7566-4934-abc9-ae1e38b7ccdc"
 
 [[d1_databases]]
-binding = "DB"
+binding = "DB2"
 database_name = "vinet-lead-db"
 database_id = "32a41a72-1f22-44e1-989a-eef7c6731d02"
 
