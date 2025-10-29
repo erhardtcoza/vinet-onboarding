@@ -14,6 +14,54 @@ import {
 } from "./splynx.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
+import { ensureLeadsTable, getAllLeads, getLead, insertLead, updateLead, deleteLeads, undoByToken, stageUndo } from "./leads-storage.js";
+import { pushLeadToSplynx } from "./leads-splynx.js";
+import { sendOnboardingInvite } from "./leads-whatsapp.js";
+import { createOnboardingSession } from "./api-onboard.js"; // reuse your existing helper
+
+// Public route: lead capture
+router.add("GET", "/lead", async (req, env) => {
+  return new Response(renderLeadFormHTML(), { headers: { "Content-Type": "text/html" } });
+});
+
+router.add("POST", "/api/lead/create", async (req, env) => {
+  const form = await req.formData();
+  const data = Object.fromEntries(form);
+  await insertLead(env, data);
+  return Response.json({ ok: true, message: "Lead captured successfully" });
+});
+
+// Admin route: view leads
+router.add("GET", "/admin/leads", guard(async (req, env) => {
+  const leads = await getAllLeads(env);
+  return new Response(renderLeadsDashboard(leads), { headers: { "Content-Type": "text/html" } });
+}));
+
+// Push to Splynx
+router.add("POST", "/api/leads/push-splynx", guard(async (req, env) => {
+  const form = await req.formData();
+  const id = form.get("id");
+  const lead = await getLead(env, id);
+  const res = await pushLeadToSplynx(env, lead);
+  await updateLead(env, id, { splynx_id: res.id });
+  return Response.json(res);
+}));
+
+// Send onboarding link via WhatsApp
+router.add("POST", "/api/leads/send-onboarding", guard(async (req, env) => {
+  const form = await req.formData();
+  const id = form.get("id");
+  const lead = await getLead(env, id);
+  let splynxId = lead.splynx_id;
+  if (!splynxId) {
+    const res = await pushLeadToSplynx(env, lead);
+    splynxId = res.id;
+    await updateLead(env, id, { splynx_id: res.id });
+  }
+  const { url } = await createOnboardingSession(env, splynxId);
+  await sendOnboardingInvite(env, lead.whatsapp || lead.phone, lead.name, url);
+  return Response.json({ ok: true, sent: true, url });
+}));
 
 /* ------------------------- helpers ------------------------- */
 const json = (o, s = 200) =>
