@@ -21,7 +21,7 @@ export function renderAdminPage() {
   a{color:var(--vinet);text-decoration:none} a:hover{text-decoration:underline}
   .wrap{max-width:1100px;margin:30px auto;padding:0 18px}
   .brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
-  .brand img{height:60px} /* +50% */
+  .brand img{height:60px}
   .brand h1{font-size:22px;color:var(--vinet);margin:0;font-weight:800}
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
   @media(max-width:900px){.grid-2{grid-template-columns:1fr}}
@@ -40,19 +40,18 @@ export function renderAdminPage() {
   .list-col{background:var(--card);border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
   .group-title{font-weight:800;margin:0 0 8px}
   .empty{color:var(--muted);font-style:italic}
-  .item{border:1px solid #eee;border-radius:12px;padding:12px;margin:10px 0}
+  .item{border:1px solid #eee;border-radius:12px;padding:12px;margin:10px 0;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
   .meta{font-size:12px;color:#445}
   .links{display:flex;gap:12px;margin:8px 0}
   .btn-row{display:flex;gap:10px;flex-wrap:wrap}
   .btn-small{padding:7px 12px;border-radius:9px;font-size:14px}
   .muted{color:#6a6a6a}
-  .urlchip{display:inline-block;background:#fafafa;border:1px dashed #ddd;border-radius:10px;padding:6px 10px;font-size:12px;color:#333}
   .center{display:flex;justify-content:center;margin-top:8px}
   /* Modal */
   .modal-back{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:20}
   .modal{background:#fff;border-radius:16px;box-shadow:0 10px 40px #0004;max-width:560px;width:min(92vw,560px);padding:16px 16px 14px}
   .modal .title{font-weight:900;color:var(--vinet);margin:0 0 8px}
-  .modal .box{border:2px solid var(--vinet);border-radius:12px;padding:10px 12px;background:#fff;margin:6px 0;overflow:auto}
+  .modal .box{border:2px solid var(--vinet);border-radius:12px;padding:10px 12px;background:#fff;margin:6px 0;overflow:auto;word-break:break-all}
   .modal .row{justify-content:flex-end}
   .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222;color:#fff;border-radius:10px;padding:9px 12px;font-size:13px;display:none;z-index:25}
 </style>
@@ -76,7 +75,7 @@ export function renderAdminPage() {
         <p class="h">Generate Verification code (linkid)</p>
         <input id="linkId" class="input" placeholder="e.g. 319_abcd1234" />
         <div class="center"><button id="genStaff" class="btn">Generate</button></div>
-        <p class="sub">No records.</p>
+        <p class="sub">Creates a one‑time staff code for the given link.</p>
       </div>
     </div>
 
@@ -157,7 +156,7 @@ export function renderAdminPage() {
     try{
       const r = await fetch('/api/staff/gen', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
       const d = await r.json();
-      if (d && d.ok) showModalLink(\`Staff code for \${linkid}: \${d.code || '(check logs)'}\`);
+      if (d && d.ok) showModalLink('Staff code for '+linkid+': '+(d.code || '(check logs)'));
     }catch{}
     $('#genStaff').disabled = false;
   };
@@ -183,9 +182,9 @@ export function renderAdminPage() {
     const ms = Date.now()-ts;
     const m = Math.max(0, Math.round(ms/60000));
     if (m < 1) return 'just now';
-    if (m < 60) return \`\${m}m ago\`;
+    if (m < 60) return m+'m ago';
     const h = Math.round(m/60);
-    return \`\${h}h ago\`;
+    return h+'h ago';
   }
 
   async function fetchList(kind){
@@ -201,54 +200,35 @@ export function renderAdminPage() {
     return await fetch('/api/admin/list?mode='+encodeURIComponent(kind)).then(r=>r.json()).catch(()=>({items:[]}));
   }
 
-  function itemHtml(it){
+  function row(it, context){
     const id = it.id || '—';
     const linkid = it.linkid || '';
-    const updated = it.updated ? new Date(it.updated).toLocaleString() : '—';
+    const updated = it.updated ? new Date(it.updated).toLocaleString('en-ZA',{timeZone:'Africa/Johannesburg'}) : '—';
     const ago = fmtAgo(it.updated);
 
-    if (mode==='pending'){
-      const url = \`\${location.origin}/onboard/\${linkid}\`;
-      return \`
-        <div class="item">
-          <div class="meta"><b>Customer/Lead \${id}</b></div>
-          <div class="meta muted">Updated: \${updated} (\${ago})</div>
-          <div style="margin:8px 0"><span class="urlchip">\${url}</span></div>
-          <div class="btn-row">
-            <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
-          </div>
-        </div>\`;
-    }
-    if (mode==='approved'){
-      return \`
-        <div class="item">
-          <div class="meta"><b>Customer/Lead \${id}</b></div>
-          <div class="meta muted">Updated: \${updated} (\${ago})</div>
-          <div class="links">
-            <a target="_blank" href="/admin/review?linkid=\${linkid}">Review</a>
-            <a target="_blank" href="/pdf/msa/\${linkid}">MSA</a>
-            <a target="_blank" href="/pdf/debit/\${linkid}">Debit</a>
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
-          </div>
-        </div>\`;
-    }
-    return \`
-      <div class="item">
-        <div class="meta"><b>Customer/Lead \${id}</b></div>
-        <div class="meta muted">Updated: \${updated} (\${ago})</div>
-        <div class="links">
-          <a target="_blank" href="/admin/review?linkid=\${linkid}">Review</a>
-          <a target="_blank" href="/pdf/msa/\${linkid}">MSA</a>
-          <a target="_blank" href="/pdf/debit/\${linkid}">Debit</a>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn-small" data-act="approve" data-linkid="\${linkid}">Approve</button>
-          <button class="btn btn-small btn-ghost" data-act="reject" data-linkid="\${linkid}">Reject</button>
-          <button class="btn btn-small btn-ghost" data-act="delete" data-linkid="\${linkid}">Delete</button>
-        </div>
-      </div>\`;
+    const left = '<div class="meta"><b>Customer/Lead '+id+'</b><div class="muted">Updated: '+updated+' ('+ago+')</div></div>';
+    const right_inprog = '<div class="btn-row">'
+      + '<a class="btn btn-small btn-ghost" target="_blank" href="/onboard/'+encodeURIComponent(linkid)+'">Open</a>'
+      + '<a class="btn btn-small" href="/admin/review?linkid='+encodeURIComponent(linkid)+'">Review</a>'
+      + '<button class="btn btn-small btn-ghost" data-act="approve" data-linkid="'+linkid+'">Approve</button>'
+      + '<button class="btn btn-small btn-ghost" data-act="reject" data-linkid="'+linkid+'">Reject</button>'
+      + '<button class="btn btn-small btn-ghost" data-act="delete" data-linkid="'+linkid+'">Delete</button>'
+      + '</div>';
+
+    const right_pending = '<div class="btn-row">'
+      + '<a class="btn btn-small" href="/admin/review?linkid='+encodeURIComponent(linkid)+'">Review</a>'
+      + '<button class="btn btn-small btn-ghost" data-act="delete" data-linkid="'+linkid+'">Delete</button>'
+      + '</div>';
+
+    const right_approved = '<div class="btn-row">'
+      + '<a class="btn btn-small btn-ghost" target="_blank" href="/admin/review?linkid='+encodeURIComponent(linkid)+'">Review</a>'
+      + '<a class="btn btn-small btn-ghost" target="_blank" href="/pdf/msa/'+encodeURIComponent(linkid)+'">MSA</a>'
+      + '<a class="btn btn-small btn-ghost" target="_blank" href="/pdf/debit/'+encodeURIComponent(linkid)+'">Debit</a>'
+      + '<button class="btn btn-small btn-ghost" data-act="delete" data-linkid="'+linkid+'">Delete</button>'
+      + '</div>';
+
+    const right = context==='pending' ? right_pending : context==='approved' ? right_approved : right_inprog;
+    return '<div class="item">'+left+right+'</div>';
   }
 
   async function loadList(){
@@ -259,7 +239,7 @@ export function renderAdminPage() {
       emptyMsg.style.display = 'block';
       return;
     }
-    listBody.innerHTML = items.map(itemHtml).join('');
+    listBody.innerHTML = items.map(it => row(it, mode==='all' ? (it.status||'inprog') : mode)).join('');
     listBody.querySelectorAll('[data-act]').forEach(btn=>{
       const act = btn.getAttribute('data-act');
       const linkid = btn.getAttribute('data-linkid');
@@ -291,95 +271,18 @@ export function renderAdminPage() {
 }
 
 /* ===========================================================
-   REVIEW & APPROVE (with side‑by‑side diff)
+   REVIEW & APPROVE (with side‑by‑side diff + UX tweaks)
    =========================================================== */
-export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
+export function renderAdminReviewHTML({ linkid, sess, r2PublicBase, original }) {
   const esc = (s)=> String(s ?? "").replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
   const uploads = Array.isArray(sess?.uploads) ? sess.uploads : [];
   const msalink = `/pdf/msa/${linkid}`;
   const debitlink = `/pdf/debit/${linkid}`;
   const back = `/`;
   const splynxId = String(sess?.id ?? "").trim();
-
-  return /*html*/`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Review & Approve</title>
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<style>
-  :root{ --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb; --changed:#fff1f2; }
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
-  .wrap{max-width:980px;margin:28px auto;padding:0 18px}
-  .card{background:#fff;border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
-  h1{color:var(--vinet);margin:0 0 14px;font-size:28px}
-  .sec{margin:14px 0}
-  .chip{display:inline-block;border:1px solid #ddd;border-radius:10px;padding:6px 9px;margin:3px 0;font-size:13px}
-  .btn{background:var(--vinet);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer;margin-right:10px}
-  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
-  .muted{color:#6a6a6a}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .hdr{font-weight:800;margin:4px 0 6px}
-  table{width:100%;border-collapse:separate;border-spacing:0 8px}
-  th,td{text-align:left;vertical-align:top;font-size:14px}
-  th.k{width:42%;color:#333}
-  td.v{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:8px 10px}
-  td.v.changed{background:var(--changed);border-color:#f3b8bf}
-  .changed-badge{display:inline-block;font-size:11px;background:var(--vinet);color:#fff;border-radius:8px;padding:2px 6px;margin-left:6px}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <a href="${back}" class="chip">&larr; Back</a>
-  <div class="card">
-    <h1>Review & Approve</h1>
-    <div class="sec">
-      <span class="chip"><b>Splynx ID:</b> ${esc(splynxId||'—')}</span>
-      <span class="chip"><b>LinkID:</b> ${esc(linkid)}</span>
-      <span class="chip"><b>Status:</b> ${esc(sess?.status||'pending')}</span>
-    </div>
-
-    <!-- Two‑column diff -->
-    <div class="sec grid">
-      <div>
-        <div class="hdr">Splynx (current)</div>
-        <table id="tbl-left"></table>
-      </div>
-      <div>
-        <div class="hdr">Edited by customer</div>
-        <table id="tbl-right"></table>
-      </div>
-    </div>
-
-    <h3>Uploads</h3>
-    <div class="sec">
-      ${uploads.length ? uploads.map(u=>{
-        const url = `${r2PublicBase}/${u.key}`;
-        const kb = Math.round((u.size||0)/102.4)/10;
-        return `<div><a href="${url}" target="_blank">${esc(u.name)}</a> <span class="muted">• ${kb.toFixed(1)} KB</span></div>`;
-      }).join('') : '<div class="muted">No uploads</div>'}
-    </div>
-
-    <h3>Agreement</h3>
-    <div class="sec">
-      <div class="chip">Accepted: ${sess?.agreement_signed ? 'Yes' : 'No'}</div>
-      <div class="chip"><a href="${msalink}" target="_blank">MSA PDF</a></div>
-      <div class="chip"><a href="${debitlink}" target="_blank">Debit PDF</a></div>
-    </div>
-
-    <div class="sec">
-      <button class="btn" id="approve">Approve & Push</button>
-      <button class="btn btn-ghost" id="reject">Reject</button>
-      <button class="btn btn-ghost" id="delete">Delete</button>
-    </div>
-  </div>
-</div>
-
-<script>
-(function(){
-  const linkid = ${JSON.stringify(linkid)};
-  const splynxId = ${JSON.stringify(splynxId)};
-  const edits = ${JSON.stringify(sess?.edits || {})};
+  const r2 = r2PublicBase || "";
+  const e = sess?.edits || {};
+  const leftObj = original || {};
 
   const FIELDS = [
     ['full_name','Full name'],
@@ -388,51 +291,192 @@ export function renderAdminReviewHTML({ linkid, sess, r2PublicBase }) {
     ['phone','Phone'],
     ['street','Street'],
     ['city','City'],
-    ['zip','ZIP']
+    ['zip','ZIP'],
+    ['payment_method','Payment method']
   ];
 
-  function esc(s){ return String(s ?? '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+  const uploadResult = (sess && sess.uploadResult && Array.isArray(sess.uploadResult.items))
+    ? sess.uploadResult.items : null;
 
-  async function loadSplynx(){
-    let left = {};
-    try{
-      const r = await fetch('/api/splynx/profile?id='+encodeURIComponent(splynxId));
-      if (r.ok) left = await r.json();
-    }catch{}
-    renderTables(left, edits);
+  // simple inline SVGs for ticks/X
+  const svgTick = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+  const svgX    = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3 10.6 10.6 16.9 4.3z"/></svg>';
+
+  return /*html*/`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Review & Approve</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --vinet:#e2001a; --ink:#222; --muted:#666; --card:#fff; --bg:#f7f8fb;
+    --changed:#fff1f2; --ok:#067a00; --bad:#b00020; --pill:#eef1f6;
   }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  .wrap{max-width:980px;margin:28px auto;padding:0 18px}
+  .card{background:#fff;border-radius:18px;box-shadow:0 6px 24px #0000000d,0 1px 2px #0001;padding:18px}
+  h1{color:var(--vinet);margin:0 0 14px;font-size:28px}
+  .sec{margin:16px 0}
+  .chip{display:inline-flex;align-items:center;gap:8px;border:1px solid #e6e8ef;border-radius:12px;padding:10px 14px;margin:4px 6px 0 0;font-size:14px;background:#fff}
+  .chip strong{font-weight:800}
+  .btn{background:var(--vinet);color:#fff;border:0;border-radius:12px;padding:12px 16px;cursor:pointer;margin-right:10px;font-weight:800}
+  .btn-ghost{background:#fff;color:var(--vinet);border:2px solid var(--vinet)}
+  .muted{color:#6a6a6a}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .hdr{font-weight:800;margin:6px 0 8px}
+  table{width:100%;border-collapse:separate;border-spacing:0 10px}
+  th,td{text-align:left;vertical-align:top;font-size:14px}
+  th.k{width:42%;color:#333}
+  td.v{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:10px 12px;line-height:1.45}
+  td.v.changed{background:var(--changed);border-color:#f3b8bf}
+  .changed-badge{display:inline-block;font-size:11px;background:var(--vinet);color:#fff;border-radius:8px;padding:2px 6px;margin-left:6px}
+  .pills{display:flex;flex-wrap:wrap;gap:10px}
+  .pill-btn{display:inline-flex;align-items:center;gap:8px;background:var(--pill);border:1px solid #dfe3ea;border-radius:999px;padding:10px 14px;font-weight:700}
+  .pill-btn:hover{text-decoration:none}
+  .files{display:flex;flex-wrap:wrap;gap:10px}
+  .file{display:inline-flex;align-items:center;gap:8px;background:var(--pill);border:1px dashed #dfe3ea;border-radius:999px;padding:9px 14px}
+  .status-row{display:flex;flex-direction:column;gap:8px}
+  .status-item{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #eee;border-radius:12px;padding:10px 12px;background:#fafafa}
+  .badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px}
+  .badge.ok{background:#e8f6ea;color:var(--ok)}
+  .badge.bad{background:#fde8ec;color:var(--bad)}
+  .foot-actions{display:flex;gap:10px;flex-wrap:wrap}
+  /* blocking overlay spinner */
+  .overlay{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center;z-index:50}
+  .spinner{width:64px;height:64px;border-radius:50%;border:6px solid #fff3;border-top-color:#fff;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a href="${back}" class="chip">&larr; Back</a>
+  <div class="card">
+    <h1>Review & Approve</h1>
 
-  function renderTables(left, right){
-    const tl = document.getElementById('tbl-left');
-    const tr = document.getElementById('tbl-right');
-    tl.innerHTML = ''; tr.innerHTML = '';
-    for (const [k,label] of FIELDS){
-      const lv = left[k] ?? '';
-      const rv = right[k] ?? '';
-      const changed = String(lv||'') !== String(rv||'');
-      tl.insertAdjacentHTML('beforeend',
-        '<tr><th class="k">'+esc(label)+'</th><td class="v">'+esc(lv)+'</td></tr>');
-      tr.insertAdjacentHTML('beforeend',
-        '<tr><th class="k">'+esc(label)+'</th><td class="v'+(changed?' changed':'')+'">'+esc(rv)+(changed?' <span class="changed-badge">changed</span>':'')+'</td></tr>');
+    <!-- bigger info chips -->
+    <div class="sec">
+      <span class="chip"><strong>Splynx ID</strong> ${esc(splynxId||'—')}</span>
+      <span class="chip"><strong>LinkID</strong> ${esc(linkid)}</span>
+      <span class="chip"><strong>Status</strong> ${esc(sess?.status||'pending')}</span>
+      <span class="chip">${sess?.agreement_signed ? 'MSA signed' : 'MSA not signed'}</span>
+      <span class="chip">${sess?.pay_method==='debit' ? (sess?.debit_signed ? 'Debit signed' : 'Debit pending') : 'Debit N/A'}</span>
+    </div>
+
+    <!-- Two‑column diff -->
+    <div class="sec grid">
+      <div>
+        <div class="hdr">Splynx (current)</div>
+        <table>
+          ${FIELDS.map(([k,label])=>{
+            const v = leftObj?.[k] ?? '';
+            return `<tr><th class="k">${esc(label)}</th><td class="v">${esc(v)}</td></tr>`;
+          }).join('')}
+        </table>
+      </div>
+      <div>
+        <div class="hdr">Edited by customer</div>
+        <table>
+          ${FIELDS.map(([k,label])=>{
+            const lv = leftObj?.[k] ?? '';
+            const rv = e?.[k] ?? (k==='payment_method' ? (sess?.pay_method||'') : '');
+            const changed = String(lv||'') !== String(rv||'');
+            return `<tr><th class="k">${esc(label)}</th><td class="v${changed?' changed':''}">${esc(rv)}${changed?'<span class="changed-badge">changed</span>':''}</td></tr>`;
+          }).join('')}
+        </table>
+      </div>
+    </div>
+
+    <!-- Agreement PDFs as big pill buttons -->
+    <h3>Agreement PDFs</h3>
+    <div class="sec pills">
+      <a class="pill-btn" href="${msalink}" target="_blank" rel="noopener">MSA PDF</a>
+      <a class="pill-btn" href="${debitlink}" target="_blank" rel="noopener">Debit Order PDF</a>
+    </div>
+
+    <!-- Uploads as pills -->
+    <h3>Uploads</h3>
+    <div class="sec files">
+      ${
+        uploads.length
+          ? uploads.map(u=>{
+              const url = r2 ? (r2 + "/" + u.key) : "#";
+              const name = u.label || u.name || u.key;
+              return `<a class="file" href="${esc(url)}" target="_blank" rel="noopener">${esc(name)}</a>`;
+            }).join('')
+          : '<div class="muted">No uploads</div>'
+      }
+    </div>
+
+    ${
+      uploadResult ? (`
+      <h3>Splynx upload result</h3>
+      <div class="sec status-row">
+        ${uploadResult.map(it=>{
+          const ok = !!it.ok;
+          const icon = ok ? '${svgTick}' : '${svgX}';
+          const badge = ok ? '<span class="badge ok">${svgTick} Success</span>'
+                           : '<span class="badge bad">${svgX} Failed</span>';
+          const strat = it.strategy ? ' <span class="badge" style="background:#eef;color:#334;">'+esc(it.strategy)+'</span>' : '';
+          const name = esc(it.name || it.title || '');
+          const err  = ok ? '' : '<div class="muted" style="margin-top:6px">'+esc(it.error||'')+'</div>';
+          return '<div class="status-item"><div style="display:flex;align-items:center;gap:10px"><div style="color:'+(ok?'var(--ok)':'var(--bad)')+'">'+icon+'</div><div><div style="font-weight:700">'+name+'</div>'+err+'</div></div><div>'+badge+strat+'</div></div>';
+        }).join('')}
+      </div>`):''
     }
+
+    <div class="sec foot-actions">
+      <button class="btn" id="approve">Approve & Push</button>
+      <button class="btn btn-ghost" id="reject">Reject</button>
+      <button class="btn btn-ghost" id="delete">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- blocking overlay -->
+<div id="overlay" class="overlay" aria-hidden="true">
+  <div style="text-align:center;color:#fff">
+    <div class="spinner"></div>
+    <div style="margin-top:12px;font-weight:800">Uploading & applying changes…</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const linkid = ${JSON.stringify(linkid)};
+  const overlay = document.getElementById('overlay');
+
+  function block(on){ overlay.style.display = on ? 'flex' : 'none'; }
+
+  async function post(url, body){
+    const r = await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+    return r.json().catch(()=>({}));
   }
 
   document.getElementById('approve').onclick = async ()=>{
-    await fetch('/api/admin/approve', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
-    location.href = '/';
+    try{
+      block(true);
+      const d = await post('/api/admin/approve',{ linkid });
+      if (d && d.ok) location.reload();
+      else { block(false); alert('Approve failed: '+(d.error||'unknown')); }
+    } catch {
+      block(false);
+      alert('Approve failed.');
+    }
   };
   document.getElementById('reject').onclick = async ()=>{
     const reason = prompt('Reason for rejection (optional):')||'';
-    await fetch('/api/admin/reject', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid, reason })});
-    location.href = '/';
+    const d = await post('/api/admin/reject',{ linkid, reason });
+    if (d && d.ok) location.href = '/';
+    else alert('Reject failed: '+(d.error||'unknown'));
   };
   document.getElementById('delete').onclick = async ()=>{
     if (!confirm('Delete this onboarding session (including uploads)?')) return;
-    await fetch('/api/admin/delete', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ linkid })});
-    location.href = '/';
+    const d = await post('/api/admin/delete',{ linkid });
+    if (d && d.ok) location.href = '/';
+    else alert('Delete failed: '+(d.error||'unknown'));
   };
-
-  loadSplynx();
 })();
 </script>
 </body>

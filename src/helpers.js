@@ -1,9 +1,8 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import { LOGO_URL, PDF_CACHE_TTL, VINET_BLACK } from "./constants.js";
-
 export const escapeHtml = (s) =>
   String(s || "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
-
+export { VINET_BLACK } from "./constants.js";
 export function localDateZAISO(ts=Date.now()) {
   // YYYY-MM-DD in Africa/Johannesburg
   const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year:"numeric", month:"2-digit", day:"2-digit" });
