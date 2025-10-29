@@ -7,6 +7,11 @@ binding = "DB"
 database_name = "vinet-onboarding-db"
 database_id = "d273502b-7566-4934-abc9-ae1e38b7ccdc"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "vinet-lead-db"
+database_id = "32a41a72-1f22-44e1-989a-eef7c6731d02"
+
 [[kv_namespaces]]
 binding = "ONBOARD_KV"
 id = "fc2d1cfd11a84226b9de86f8957be5d3"
