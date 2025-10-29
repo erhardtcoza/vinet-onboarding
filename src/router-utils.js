@@ -1,11 +1,13 @@
+// src/router-utils.js
 import { LOGO_URL } from "./constants.js";
 
 /* basic json helper */
-export const json = (o, s = 200) =>
-  new Response(JSON.stringify(o), {
+export function json(o, s = 200) {
+  return new Response(JSON.stringify(o), {
     status: s,
     headers: { "content-type": "application/json" },
   });
+}
 
 export function getIP(req) {
   return (
@@ -21,7 +23,7 @@ export function getUA(req) {
 }
 
 /* Branded 403 page (Admin lock) */
-export function restrictedResponse(request) {
+export function restrictedResponse() {
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -51,6 +53,7 @@ export function restrictedResponse(request) {
   </div>
 </body>
 </html>`;
+
   return new Response(html, {
     status: 403,
     headers: { "content-type": "text/html; charset=utf-8" },
