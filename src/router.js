@@ -1,4 +1,4 @@
-// src/routes.js
+// src/router.js
 import { ipAllowed } from "./branding.js";
 import { LOGO_URL, DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "./constants.js";
 import { renderMSAPdf } from "./pdf/msa.js";
@@ -134,7 +134,7 @@ async function sendWhatsAppTemplate(env, toMsisdn, code, lang = "en") {
 }
 
 /* ---------------------------- main router ---------------------------- */
-export async function route(request, env) {
+export async function router(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
