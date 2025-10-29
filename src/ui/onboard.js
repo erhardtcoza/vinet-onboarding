@@ -138,7 +138,7 @@ return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" />
       // Turnstile widget (visible/managed)
       '<div id="ts-wrap" class="field" style="margin-top:6px;">',
       '  <div class="cf-turnstile"',
-      `       data-sitekey="${turnstileSiteKey}"`,
+      '       data-sitekey="${turnstileSiteKey}"`,
       '       data-callback="vinetTsOk"',
       '       data-error-callback="vinetTsErr"',
       '       data-expired-callback="vinetTsExp"></div>',
