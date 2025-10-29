@@ -2,6 +2,18 @@ name = "splynx-onboarding"
 main = "src/index.js"
 compatibility_date = "2025-08-05"
 
+routes = [
+  # All three subdomains go to the same worker
+  { pattern = "new.vinet.co.za/*", zone_name = "vinet.co.za" },
+  { pattern = "crm.vinet.co.za/*", zone_name = "vinet.co.za" },
+  { pattern = "onboard.vinet.co.za/*", zone_name = "vinet.co.za" }
+]
+
+[assets]
+# Served when host=new.vinet.co.za (we'll gate in code)
+directory = "./public"
+binding = "ASSETS"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "vinet-onboarding-db"
