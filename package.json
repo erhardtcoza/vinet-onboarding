@@ -1,0 +1,14 @@
+{
+  "name": "vinet-onboarding",
+  "version": "2.0.0",
+  "main": "src/index.js",
+  "type": "module",
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "start": "wrangler dev",
+    "deploy": "wrangler publish"
+  }
+}
