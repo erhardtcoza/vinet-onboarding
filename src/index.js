@@ -1,8 +1,11 @@
-// index.js (or index.js, whichever you currently deploy)
-import { route } from "./src/router.js";
+import { route } from "./routes.js";
 
 export default {
-  fetch(request, env, ctx) {
-    return route(request, env, ctx);
-  },
+  async fetch(request, env, ctx) {
+    try { return await route(request, env); }
+    catch (e) {
+      const msg = (e && e.stack) ? e.stack : String(e);
+      return new Response(`Internal Error\n\n${msg}`, { status: 500, headers:{ "content-type":"text/plain" } });
+    }
+  }
 };
