@@ -18,6 +18,8 @@ import { ensureLeadsTable, getAllLeads, getLead, insertLead, updateLead, deleteL
 import { pushLeadToSplynx } from "./leads-splynx.js";
 import { sendOnboardingInvite } from "./leads-whatsapp.js";
 import { createOnboardingSession } from "./routes/api-onboard.js"; // reuse your existing helper
+import { mountPublicLeads } from "./routes/public_leads.js";
+import { mountCRMLeads }    from "./routes/crm_leads.js";
 
 // Public route: lead capture
 router.add("GET", "/lead", async (req, env) => {
@@ -652,41 +654,6 @@ export async function route(request, env) {
     return new Response("Unknown agreement type", { status: 400 });
   }
 
-// ----- Turnstile: verify and mark session human-ok -----
-// routes.js (add alongside your other /api/* handlers)
-if (path === "/api/turnstile/verify" && method === "POST") {
-  const { token, linkid } = await request.json().catch(() => ({}));
-  if (!token || !linkid) {
-    return new Response(JSON.stringify({ ok:false, error:"Missing token/linkid" }), {
-      status: 400, headers: { "content-type": "application/json" }
-    });
-  }
-  const form = new URLSearchParams();
-  form.set("secret", env.TURNSTILE_SECRET_KEY || "");
-  form.set("response", token);
-  form.set("remoteip", request.headers.get("CF-Connecting-IP") || "");
-
-  const ver = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: form,
-    headers: { "content-type": "application/x-www-form-urlencoded" }
-  });
-  const data = await ver.json().catch(() => ({}));
-
-  // Optionally persist a “human_ok” flag on the session
-  if (data.success) {
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (sess) {
-      await env.ONBOARD_KV.put(`onboard/${linkid}`, JSON.stringify({
-        ...sess, human_ok: true, updated: Date.now()
-      }), { expirationTtl: 86400 });
-    }
-  }
-
-  return new Response(JSON.stringify({ ok: !!data.success, data }), {
-    headers: { "content-type": "application/json" }
-  });
-}
   
   // ----- Splynx profile (for Personal Info step) -----
   if (path === "/api/splynx/profile" && method === "GET") {
