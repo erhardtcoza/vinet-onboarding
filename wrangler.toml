@@ -9,11 +9,6 @@ routes = [
   { pattern = "onboard.vinet.co.za/*", zone_name = "vinet.co.za" }
 ]
 
-[assets]
-# Served when host=new.vinet.co.za (we'll gate in code)
-directory = "./public"
-binding = "ASSETS"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "vinet-onboarding-db"
