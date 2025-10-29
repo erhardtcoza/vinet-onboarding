@@ -82,14 +82,25 @@ export function renderOnboardUI(linkid) {
     document.getElementById('start').onclick=()=>{ step=1; state.progress=step; setProg(); save(); render(); };
   }
 
-// Step 1: Verify (WhatsApp OTP or Staff code)
-function step1(){
-  stepEl.innerHTML = [
-    '<h2>Verify your identity</h2>',
-    '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
-    '<div id="waBox" class="field" style="margin-top:10px;"></div>',
-    '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
-  ].join('');
+  // Step 1: Verify (WhatsApp OTP or Staff code)
+  function step1(){
+    stepEl.innerHTML = [
+      '<h2>Verify your identity</h2>',
+
+      // Turnstile widget (visible/managed)
+      '<div id="ts-wrap" class="field" style="margin-top:6px;">',
+      '  <div class="cf-turnstile"',
+      `       data-sitekey="${turnstileSiteKey}"`,
+      '       data-callback="vinetTsOk"',
+      '       data-error-callback="vinetTsErr"',
+      '       data-expired-callback="vinetTsExp"></div>',
+      '  <div id="ts-msg" class="note" style="margin-top:.4em">Quick human check — please complete the check above.</div>',
+      '</div>',
+
+      '<div class="pill-wrap"><span class="pill active" id="p-wa">WhatsApp OTP</span><span class="pill" id="p-staff">I have a staff code</span></div>',
+      '<div id="waBox" class="field" style="margin-top:10px;"></div>',
+      '<div id="staffBox" class="field" style="margin-top:10px; display:none;"></div>'
+    ].join('');
 
   const wa = document.getElementById('waBox');
   wa.innerHTML = ''
