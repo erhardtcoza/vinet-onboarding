@@ -17,7 +17,7 @@ import { renderOnboardUI } from "./ui/onboard.js";
 import { ensureLeadsTable, getAllLeads, getLead, insertLead, updateLead, deleteLeads, undoByToken, stageUndo } from "./leads-storage.js";
 import { pushLeadToSplynx } from "./leads-splynx.js";
 import { sendOnboardingInvite } from "./leads-whatsapp.js";
-import { createOnboardingSession } from "./api-onboard.js"; // reuse your existing helper
+import { createOnboardingSession } from "./routes/api-onboard.js"; // reuse your existing helper
 
 // Public route: lead capture
 router.add("GET", "/lead", async (req, env) => {
