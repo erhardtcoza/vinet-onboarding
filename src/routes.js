@@ -516,32 +516,52 @@ button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius
   /* ---------------- Public onboarding APIs ---------------- */
 
   // OTP send (WhatsApp only; no SMS/text fallback)
-  if (path === "/api/otp/send" && method === "POST") {
-    const { linkid } = await request.json().catch(() => ({}));
-    if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
+if (path === "/api/otp/send" && method === "POST") {
+  const { linkid } = await request.json().catch(() => ({}));
+  if (!linkid) return json({ ok: false, where: "pre", error: "Missing linkid" }, 400);
 
-    if (!env.PHONE_NUMBER_ID || !env.WHATSAPP_TOKEN) {
-      return json(
-        { ok: false, error: "WhatsApp credentials not configured" },
-        500
-      );
-    }
+  if (!env.PHONE_NUMBER_ID || !env.WHATSAPP_TOKEN) {
+    return json(
+      { ok: false, where: "config", error: "WhatsApp credentials not configured" },
+      500
+    );
+  }
 
-    const splynxId = (linkid || "").split("_")[0];
+  const splynxId = (linkid || "").split("_")[0];
 
-    let msisdn = null;
-    try {
-      msisdn = await fetchCustomerMsisdn(env, splynxId);
-    } catch {
-      return json({ ok: false, error: "Splynx lookup failed" }, 502);
-    }
+  let msisdn = null;
+  try {
+    msisdn = await fetchCustomerMsisdn(env, splynxId);
+  } catch (e) {
+    return json(
+      { ok: false, where: "splynx", error: "Splynx lookup failed", detail: String(e && e.message) },
+      502
+    );
+  }
 
-    if (!msisdn) {
-      return json({ ok: false, error: "No WhatsApp number on file" }, 404);
-    }
+  if (!msisdn) {
+    return json(
+      { ok: false, where: "splynx", error: "No WhatsApp number on file", splynxId },
+      404
+    );
+  }
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(Math.floor(100000 + Math.random() * 900000));
 
+  await env.ONBOARD_KV.put(`otp/${linkid}`, code, { expirationTtl: 600 });
+  await env.ONBOARD_KV.put(`otp_msisdn/${linkid}`, msisdn, { expirationTtl: 600 });
+
+  try {
+    await sendWhatsAppTemplate(env, msisdn, code, "en");
+    return json({ ok: true, where: "ok", sent_to: msisdn });
+  } catch (e) {
+    return json(
+      { ok: false, where: "wa", error: "WhatsApp send failed (template)", detail: String(e && e.message) },
+      502
+    );
+  }
+}
+  
     // cache OTP + msisdn in KV for 10 mins
     await env.ONBOARD_KV.put(`otp/${linkid}`, code, {
       expirationTtl: 600,
