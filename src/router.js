@@ -14,6 +14,10 @@ import {
 } from "./splynx.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardHTMLShell } from "./ui/onboard.js";
+import { handlePublicRoutes } from "./router-public.js";
+import { handleAdminRoutes } from "./router-admin.js";
+import { handleOnboardingRoutes } from "./router-onboarding.js";
+import { handleAssetRoutes } from "./router-assets.js";
 
 /* ------------------------- tiny helpers ------------------------- */
 const json = (o, s = 200) =>
