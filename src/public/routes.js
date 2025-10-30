@@ -1,124 +1,119 @@
-// /src/public/routes.js
-import { html, json, hasCookie, safeStr } from "../utils/http.js";
-import { DATE_TODAY, nowSec } from "../utils/misc.js";
+// Public host (new.*): splash -> Turnstile -> landing -> /lead form + submit
+import { html, json, hasCookie } from "../utils/http.js";
 import { ensureLeadSchema } from "../db/schema.js";
-import { splashHTML } from "../ui/splash.js";
+import { renderSplashHTML } from "../ui/splash.js";
 import { renderLandingHTML } from "../ui/landing.js";
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
+import { DATE_TODAY, nowSec } from "../utils/misc.js";
 
-function hdrSet(c){ return { "set-cookie": c }; }
+function isNewHost(req) {
+  const h = new URL(req.url).hostname;
+  return /^new\./i.test(h);
+}
 
 export async function handlePublic(request, env) {
   const url = new URL(request.url);
   const { pathname } = url;
 
-  // Splash
+  // Only own these routes on new.vinet.co.za
+  if (!isNewHost(request)) return null;
+
+  // 1) Splash page
   if (request.method === "GET" && (pathname === "/" || pathname === "/index" || pathname === "/index.html")) {
-    return html(splashHTML(env.TURNSTILE_SITE_KEY || "dummy"));
+    const failed = url.searchParams.get("ts") === "fail";
+    return html(renderSplashHTML({ failed, siteKey: env.TURNSTILE_SITE_KEY || "" }));
   }
 
-  // Turnstile verify
+  // 2) Turnstile verify (POST)
   if (request.method === "POST" && pathname === "/ts-verify") {
-    let token = null; try { ({ token } = await request.json()); } catch {}
-    if (!token) return json({ ok:false, error:"missing token" }, 400);
-
-    const missing = !env.TURNSTILE_SECRET_KEY || (env.TURNSTILE_SITE_KEY||"dummy")==="dummy";
-    const fail = token === "TURNSTILE-NOT-AVAILABLE" || missing;
-
-    if (fail) {
-      // mark fail, do NOT set ts_ok; still allow landing
-      return json(
-        { ok:false, status:"fail" },
-        200,
-        hdrSet("ts_status=fail; Max-Age=86400; Path=/; Secure; SameSite=Lax")
-      );
-    }
-
     try {
-      const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-        method: "POST",
-        body: new URLSearchParams({
-          secret: env.TURNSTILE_SECRET_KEY,
-          response: token,
-          remoteip: request.headers.get("CF-Connecting-IP") || ""
-        })
-      });
-      const r = await vr.json().catch(() => ({ success: false }));
-      if (!r.success) {
-        return json(
-          { ok:false, status:"fail" },
-          200,
-          hdrSet("ts_status=fail; Max-Age=86400; Path=/; Secure; SameSite=Lax")
-        );
+      const { token } = await request.json().catch(() => ({}));
+      if (!token) return json({ ok: false, error: "missing token" }, 400);
+
+      const secret = env.TURNSTILE_SECRET_KEY || "";
+      let ok = false;
+
+      if (secret && token !== "skip") {
+        const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+          method: "POST",
+          body: new URLSearchParams({
+            secret,
+            response: token,
+            remoteip: request.headers.get("CF-Connecting-IP") || ""
+          }),
+        });
+        const res = await vr.json().catch(() => ({ success: false }));
+        ok = !!res.success;
       }
-      // success
-      return json(
-        { ok:true, status:"ok" },
-        200,
-        hdrSet([
-          "ts_status=ok; Max-Age=86400; Path=/; Secure; SameSite=Lax",
-          "ts_ok=1; Max-Age=86400; Path=/; Secure; SameSite=Lax"
-        ].join(", "))
-      );
+
+      // Cookie notes:
+      // ts_ok=1 -> secured; ts_ok=0 -> not secured but allowed.
+      const val = ok ? "1" : "0";
+      const cookie = `ts_ok=${val}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
+      return json({ ok, proceed: true }, 200, { "set-cookie": cookie });
     } catch {
-      return json(
-        { ok:false, status:"fail" },
-        200,
-        hdrSet("ts_status=fail; Max-Age=86400; Path=/; Secure; SameSite=Lax")
-      );
+      const cookie = `ts_ok=0; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
+      return json({ ok: false, proceed: true }, 200, { "set-cookie": cookie });
     }
   }
 
-  // Landing — always accessible; shows banner if failed
+  // 3) Landing (after splash)
   if (request.method === "GET" && pathname === "/landing") {
-    const cookies = (request.headers.get("cookie") || "");
-    const status = /ts_status=ok/.test(cookies) ? "ok" : (/ts_status=fail/.test(cookies) ? "fail" : "unknown");
-    return html(renderLandingHTML(status));
+    const secured = hasCookie(request, "ts_ok", "1");
+    const seen    = hasCookie(request, "ts_ok"); // either 0 or 1
+    return html(renderLandingHTML({ secured, seen }));
   }
 
-  // Lead page — allow open even if Turnstile failed; submission remains protected
+  // 4) Lead form & submit
   if (request.method === "GET" && pathname === "/lead") {
     return html(renderPublicLeadHTML());
   }
 
-  // Submit — still requires successful Turnstile (ts_ok)
   if (request.method === "POST" && pathname === "/submit") {
-    if (!hasCookie(request, "ts_ok", "1")) return json({ error: "Session not verified" }, 403);
-
     await ensureLeadSchema(env);
-    const form = await request.formData().catch(() => null);
-    if (!form) return json({ error: "Bad form" }, 400);
 
-    const full_name = safeStr(form.get("full_name") || form.get("name"));
-    const phone     = safeStr(form.get("phone"));
-    const email     = safeStr(form.get("email"));
-    const source    = safeStr(form.get("source") || "web");
-    const city      = safeStr(form.get("city"));
-    const street    = safeStr(form.get("street"));
-    const zip       = safeStr(form.get("zip"));
-    const service   = safeStr(form.get("service") || form.get("service_interested"));
-    const partner   = safeStr(form.get("partner") || "main");
-    const location  = safeStr(form.get("location") || "main");
-    const consent   = String(form.get("consent") || "") !== "";
+    const form = await request.json().catch(() => null);
+    if (!form) return json({ error: "Bad payload" }, 400);
 
-    if (!full_name || !phone || !email || !source || !city || !street || !zip || !service || !consent) {
-      return json({ error: "Missing required fields" }, 400);
-    }
-
-    const payload = {
-      name: full_name,
-      phone, email, source, city, street, zip,
-      billing_email: email, score: 1, date_added: DATE_TODAY(),
-      captured_by: "public", service_interested: service, partner, location
+    const safe = (v) => String(v ?? "").trim();
+    const normalizeMsisdn = (p) => {
+      const d = ("" + p).replace(/\D+/g, "");
+      if (d.startsWith("0")) return "27" + d.slice(1);
+      if (d.startsWith("27")) return d;
+      return d;
     };
 
+    const payload = {
+      name: safe(form.name),
+      phone: normalizeMsisdn(form.phone),
+      email: safe(form.email),
+      source: safe(form.source || "web"),
+      city: safe(form.city),
+      street: safe(form.street),
+      zip: safe(form.zip),
+      billing_email: safe(form.email),
+      score: 1,
+      date_added: DATE_TODAY(),
+      captured_by: "public",
+      service_interested: safe(form.service || form.service_interested || ""),
+      partner: safe(form.partner || "main"),
+      location: safe(form.location || "main"),
+      notes: safe(form.notes || ""),
+      lat: form.lat ?? null,
+      lng: form.lng ?? null,
+    };
+
+    if (!payload.name || !payload.phone || !payload.email) {
+      return json({ error: "Missing name/phone/email" }, 400);
+    }
+
     await env.DB.prepare(`
-      INSERT INTO leads (name,phone,email,source,city,street,zip,billing_email,score,date_added,captured_by,synced)
-      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0)
+      INSERT INTO leads (name,phone,email,source,city,street,zip,billing_email,score,date_added,captured_by,service_interested,created_at)
+      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',?10,?11)
     `).bind(
       payload.name, payload.phone, payload.email, payload.source,
       payload.city, payload.street, payload.zip, payload.billing_email,
-      payload.date_added
+      payload.date_added, payload.service_interested, nowSec()
     ).run();
 
     await env.DB.prepare(`
@@ -126,8 +121,28 @@ export async function handlePublic(request, env) {
       VALUES ('public',?1,?2,'[]',0,NULL,'0')
     `).bind(nowSec(), JSON.stringify(payload)).run();
 
-    const ref = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2,6);
+    const ref = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
     return json({ ok: true, ref });
+  }
+
+  // 5) Minimal service worker and manifest for the landing splash
+  if (request.method === "GET" && pathname === "/sw.js") {
+    return new Response(
+      `self.addEventListener("install",e=>self.skipWaiting());self.addEventListener("activate",e=>self.clients.claim());`,
+      { headers: { "content-type": "application/javascript" } }
+    );
+  }
+
+  if (request.method === "GET" && pathname === "/manifest.webmanifest") {
+    return json({
+      name: "Vinet – Get Connected",
+      short_name: "Vinet",
+      start_url: "/",
+      display: "standalone",
+      background_color: "#ffffff",
+      theme_color: "#ED1C24",
+      icons: []
+    });
   }
 
   return null;
