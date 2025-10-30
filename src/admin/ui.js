@@ -1,4 +1,5 @@
-export function adminHTML() {
+// src/admin/ui.js
+export function adminHTML(){
   return `<!doctype html><meta charset="utf-8"/>
 <title>Vinet CRM · Leads Queue</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -116,7 +117,7 @@ async function openEdit(id){
 
 async function submitFlow(){
   const r = await fetch('/api/admin/match',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ payload: state.payload })});
-  const d = await r.json();
+  const d = await r.json(); 
   const m = d.matches||[];
   const el = document.getElementById('matches');
   if(m.length===0){
