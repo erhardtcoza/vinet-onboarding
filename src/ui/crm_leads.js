@@ -1,9 +1,6 @@
 // src/ui/crm_leads.js
-// Renders the Admin "Leads Queue" UI as plain HTML (no JSX)
-
-export function crmLeadsHTML() {
-  return /*html*/ `<!doctype html>
-<meta charset="utf-8"/>
+export function renderCRMHTML() {
+  return /*html*/ `<!doctype html><meta charset="utf-8"/>
 <title>Vinet CRM · Leads Queue</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
