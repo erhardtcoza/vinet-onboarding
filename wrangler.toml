@@ -33,8 +33,6 @@ VERIFY_TOKEN = "vinet-whatsapp"
 BUSINESS_ID = "416413345495591"
 WHATSAPP_TEMPLATE_NAME = "vinetotp"
 WHATSAPP_TEMPLATE_LANG = "en"
-WHATSAPP_TEMPLATE_NAME = "wa_onboarding"
-WHATSAPP_TEMPLATE_LANG = "en"
 WHATSAPP_BUTTON_URL = "https://onboard.vinet.co.za"  # ok to keep the comment
 
 TURNSTILE_SITE_KEY = "0x4AAAAAABxWz1R1NnIj1POM"
