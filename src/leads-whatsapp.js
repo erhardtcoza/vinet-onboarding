@@ -10,7 +10,7 @@ export async function sendOnboardingInvite(env, msisdn, name, url) {
     type: "template",
     template: {
       name: "wa_onboarding",
-      language: { code: "en_US" },
+      language: { code: "en" },
       components: [
         {
           type: "body",
