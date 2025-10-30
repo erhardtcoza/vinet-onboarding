@@ -1,4 +1,3 @@
-// src/db/schema.js
 export async function ensureLeadSchema(env) {
   await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS leads (
@@ -7,6 +6,8 @@ export async function ensureLeadSchema(env) {
       city TEXT, street TEXT, zip TEXT, billing_email TEXT,
       score INTEGER, date_added TEXT, captured_by TEXT,
       synced INTEGER DEFAULT 0,
+      service_interested TEXT,
+      created_at INTEGER,
       lead_id INTEGER, splynx_id INTEGER
     )`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS leads_queue (
@@ -19,7 +20,9 @@ export async function ensureLeadSchema(env) {
   ]);
 
   const tryAlter = async (sql) => { try { await env.DB.prepare(sql).run(); } catch {} };
-  await tryAlter(`ALTER TABLE leads ADD COLUMN name TEXT`);
+
+  await tryAlter(`ALTER TABLE leads ADD COLUMN service_interested TEXT`);
+  await tryAlter(`ALTER TABLE leads ADD COLUMN created_at INTEGER`);
   await tryAlter(`ALTER TABLE leads ADD COLUMN lead_id INTEGER`);
   await tryAlter(`ALTER TABLE leads ADD COLUMN splynx_id INTEGER`);
   await tryAlter(`ALTER TABLE leads_queue ADD COLUMN splynx_id INTEGER`);
