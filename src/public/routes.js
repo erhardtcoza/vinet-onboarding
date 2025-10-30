@@ -2,8 +2,7 @@
 // Splash at "/" (Turnstile) → sets cookie → redirect to /home (landing)
 // Landing + Form require the cookie (else redirect to "/")
 
-import { html, safeStr } from "../utils/http.js";
-import { hasCookie } from "../utils/http.js";
+import { html, safeStr, hasCookie } from "../utils/http.js";
 import { DATE_TODAY, nowSec } from "../utils/misc.js";
 import { ensureLeadSchema } from "../db/schema.js";
 import { renderLandingHTML } from "../ui/landing.js";
@@ -25,8 +24,8 @@ function text(content, status = 200, headers = {}) {
 
 // ---------- PWA ----------
 function manifest(env) {
-  const name = env?.PWA_NAME || "Vinet CRM Suite";
-  const short_name = env?.PWA_SHORT || "VinetCRM";
+  const name = (env && env.PWA_NAME) || "Vinet CRM Suite";
+  const short_name = (env && env.PWA_SHORT) || "VinetCRM";
   const theme_color = "#ED1C24";
   const background_color = "#ffffff";
   return {
@@ -52,23 +51,24 @@ self.addEventListener("fetch",(e)=>{
 // ---------- Routes ----------
 export async function handlePublic(request, env) {
   const url = new URL(request.url);
-  const { pathname } = url;
+  const pathname = url.pathname;
 
   // 1) Splash (Turnstile) at "/"
   if (request.method === "GET" && (pathname === "/" || pathname === "/index" || pathname === "/index.html")) {
-    return html(splashHTML(env.TURNSTILE_SITE_KEY));
+    return html(splashHTML(env && env.TURNSTILE_SITE_KEY));
   }
 
   // 2) Turnstile verify → set cookie
   if (request.method === "POST" && pathname === "/ts-verify") {
     try {
-      const { token } = await request.json().catch(() => ({}));
+      const body = await request.json().catch(() => ({}));
+      const token = body && body.token;
       if (!token) return json({ error: "missing token" }, 400);
 
       const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
         method: "POST",
         body: new URLSearchParams({
-          secret: env.TURNSTILE_SECRET_KEY || "",
+          secret: (env && env.TURNSTILE_SECRET_KEY) || "",
           response: token,
           remoteip: request.headers.get("CF-Connecting-IP") || ""
         }),
@@ -102,18 +102,20 @@ export async function handlePublic(request, env) {
   if (request.method === "GET" && pathname === "/manifest.webmanifest") {
     return json(manifest(env));
   }
-  if (request.method === "GET" && pathname === "/sw.js") {
+  if (request.method === "GET" && pathname === "/sw.js")) {
     return text(SW_JS, 200, { "content-type": "application/javascript; charset=utf-8" });
   }
 
   // 6) Lead submit API (JSON or FormData) — also requires cookie
-  if (request.method === "POST" && pathname === "/api/leads/submit") {
+  if (request.method === "POST" && pathname === "/api/leads/submit")) {
     if (!requireTS(request)) return json({ error: "Session not verified" }, 403);
 
     await ensureLeadSchema(env);
 
     let body = null;
-    try { body = await request.json(); } catch {
+    try {
+      body = await request.json();
+    } catch {
       const form = await request.formData().catch(() => null);
       if (form) body = Object.fromEntries(form.entries());
     }
@@ -137,8 +139,11 @@ export async function handlePublic(request, env) {
       notes: safeStr(body.notes),
     };
 
-    for (const k of ["name","phone","email","city","street","zip"]) {
-      if (!payload[k]) return json({ error: `Missing ${k}` }, 400);
+    // Required fields
+    var required = ["name","phone","email","city","street","zip"];
+    for (var i=0;i<required.length;i++){
+      var k = required[i];
+      if (!payload[k]) return json({ error: "Missing " + k }, 400);
     }
 
     await env.DB.prepare(`
@@ -157,7 +162,8 @@ export async function handlePublic(request, env) {
       VALUES ('public', ?1, ?2, '[]', 0, NULL, '0')
     `).bind(nowSec(), JSON.stringify(payload)).run();
 
-    const ref = \`\${Date.now().toString(36)}-\${Math.random().toString(36).slice(2,6)}\`;
+    // NO backticks: ensure compatibility in any build step
+    const ref = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
     return json({ ok: true, ref, message: "Thanks! We’ve received your details." });
   }
 
