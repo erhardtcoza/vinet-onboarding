@@ -9,7 +9,7 @@ const AUTH_HEADER =
   "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE=";
 
 const WA_TEMPLATE_NAME = "wa_onboarding"; // body: {{text}} name, {{text2}} url
-const WA_TEMPLATE_LANG = "en_US";
+const WA_TEMPLATE_LANG = "en";
 
 /* ------------------ Utils ------------------- */
 const DATE_TODAY = () => new Date().toISOString().slice(0, 10);
