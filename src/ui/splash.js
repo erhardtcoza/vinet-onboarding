@@ -1,97 +1,99 @@
-// Public host (new.*): splash with Turnstile preclear + secure form + submit
+// src/ui/splash.js
+export function splashHTML(siteKey) {
+  return `<!doctype html>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Vinet · Get Connected</title>
+<link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
+<style>
+:root{--brand:#e2001a;--ink:#0b1320;--muted:#6b7280}
+*{box-sizing:border-box} html,body{height:100%}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:#fff;color:var(--ink);display:grid;place-items:center}
+.wrap{width:100%;max-width:720px;padding:24px}
+.card{border:1px solid #e5e7eb;border-radius:16px;box-shadow:0 10px 28px rgba(0,0,0,.08);overflow:hidden}
+.header{padding:20px 20px 0}
+.logo{width:160px;display:block;margin:0 auto}
+.loading{display:flex;align-items:center;gap:12px;justify-content:center;padding:24px 20px 28px}
+.bar{width:160px;height:6px;background:#f3f4f6;border-radius:999px;overflow:hidden}
+.bar::after{content:"";display:block;height:100%;width:0%;background:var(--brand);animation:fill 1.2s ease-in-out infinite}
+@keyframes fill{0%{width:0%}50%{width:60%}100%{width:100%}}
+.h1{font-size:28px;font-weight:800;text-align:center;color:var(--brand);margin:10px 0 20px}
+.muted{color:var(--muted);text-align:center;margin:0 0 16px}
+.cta{display:none;opacity:0;transition:opacity .5s ease}
+.btn{display:block;width:100%;padding:14px 16px;border-radius:12px;border:0;cursor:pointer;font-weight:800}
+.btn-primary{background:var(--brand);color:#fff}
+.btn-ghost{background:#0b1320;color:#fff}
+.stack{display:grid;gap:12px;padding:20px}
+.faded{opacity:.25}
+</style>
 
-import { html, json, safeStr, hasCookie } from "../utils/http.js";
-import { DATE_TODAY, nowSec } from "../utils/misc.js";
-import { ensureLeadSchema } from "../db/schema.js";
-import { splashHTML } from "../ui/splash.js";
-import { publicFormHTML } from "../ui/form.js";
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
+      <div class="h1">Get Connected</div>
+    </div>
+    <div id="loader" class="loading">
+      <div class="bar"></div><div class="muted">Securing session…</div>
+    </div>
 
-export async function handlePublic(request, env) {
-  const url = new URL(request.url);
+    <div id="cta" class="cta">
+      <p class="muted">Choose an option:</p>
+      <div class="stack">
+        <button id="btnNew" class="btn btn-primary">I want to know more (or sign-up)</button>
+        <button id="btnLogin" class="btn btn-ghost">I am already connected (log in)</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-  // Splash (invisible Turnstile)
-  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index" || url.pathname === "/index.html")) {
-    return html(splashHTML(env.TURNSTILE_SITE_KEY || "0x4AAAAAABxWz1R1NnIj1POM"));
-  }
+<!-- Turnstile (invisible) -->
+<div id="ts" class="cf-turnstile"
+     data-sitekey="${siteKey}"
+     data-size="invisible"
+     data-callback="onTsOk"
+     data-action="splash"></div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 
-  // Turnstile verify → mint cookie
-  if (request.method === "POST" && url.pathname === "/ts-verify") {
-    try {
-      const { token } = await request.json().catch(() => ({}));
-      if (!token) return json({ error: "missing token" }, 400);
+<script>
+const loader = document.getElementById('loader');
+const cta = document.getElementById('cta');
 
-      const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-        method: "POST",
-        body: new URLSearchParams({
-          secret: env.TURNSTILE_SECRET_KEY || "0x4AAAAAABxWz9bB2HqidAUtWOweMHAaLxk",
-          response: token,
-          remoteip: request.headers.get("CF-Connecting-IP") || ""
-        })
-      });
-      const result = await vr.json().catch(() => ({ success: false }));
-      if (!result.success) return json({ error: true, detail: "turnstile failed" }, 403);
+function showCTA(){
+  loader.classList.add('faded');
+  setTimeout(()=>{
+    loader.style.display='none';
+    cta.style.display='block';
+    requestAnimationFrame(()=>{ cta.style.opacity = 1; });
+  }, 200);
+}
 
-      // 24h session cookie proving splash preclear
-      const cookie = "ts_ok=1; Max-Age=86400; Path=/; Secure; SameSite=Lax";
-      return json({ ok: true }, 200, { "set-cookie": cookie });
-    } catch {
-      return json({ error: true, detail: "verify exception" }, 500);
-    }
-  }
+async function verifyToken(token){
+  try{
+    const r = await fetch('/ts-verify', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ token })
+    });
+    if(!r.ok){ throw new Error('verify failed '+r.status); }
+    const d = await r.json();
+    if(d && d.ok){ showCTA(); } else { location.reload(); }
+  }catch(e){ location.reload(); }
+}
 
-  // Secure form page (shows “Protected & Secure” banner)
-  if (request.method === "GET" && url.pathname === "/form") {
-    return html(publicFormHTML());
-  }
+// Called by Turnstile after invisible challenge
+window.onTsOk = function(token){ verifyToken(token); };
 
-  // Form submit — require cookie from splash
-  if (url.pathname === "/submit" && request.method === "POST") {
-    if (!hasCookie(request, "ts_ok", "1")) return json({ error: "Session not verified" }, 403);
+// Execute once API is ready
+function whenTSReady(cb){
+  if(window.turnstile && typeof turnstile.execute==='function') return cb();
+  setTimeout(()=>whenTSReady(cb), 30);
+}
+whenTSReady(()=> turnstile.execute('#ts') );
 
-    await ensureLeadSchema(env);
-    const form = await request.formData().catch(() => null);
-    if (!form) return json({ error: "Bad form" }, 400);
-
-    const full_name = safeStr(form.get("full_name") || form.get("name"));
-    const phone     = safeStr(form.get("phone"));
-    const email     = safeStr(form.get("email"));
-    const source    = safeStr(form.get("source") || "web");
-    const city      = safeStr(form.get("city"));
-    const street    = safeStr(form.get("street"));
-    const zip       = safeStr(form.get("zip"));
-    const service   = safeStr(form.get("service") || form.get("service_interested"));
-    const partner   = safeStr(form.get("partner") || "main");
-    const location  = safeStr(form.get("location") || "main");
-    const consent   = !!form.get("consent");
-
-    if (!full_name || !phone || !email || !source || !city || !street || !zip || !service || !consent) {
-      return json({ error: "Missing required fields" }, 400);
-    }
-
-    const payload = {
-      name: full_name,
-      phone, email, source, city, street, zip,
-      billing_email: email, score: 1, date_added: DATE_TODAY(),
-      captured_by: "public", service_interested: service, partner, location
-    };
-
-    await env.DB.prepare(`
-      INSERT INTO leads (name,phone,email,source,city,street,zip,billing_email,score,date_added,captured_by,synced)
-      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0)
-    `).bind(
-      payload.name, payload.phone, payload.email, payload.source,
-      payload.city, payload.street, payload.zip, payload.billing_email,
-      payload.date_added
-    ).run();
-
-    await env.DB.prepare(`
-      INSERT INTO leads_queue (sales_user,created_at,payload,uploaded_files,processed,splynx_id,synced)
-      VALUES ('public',?1,?2,'[]',0,NULL,'0')
-    `).bind(nowSec(), JSON.stringify(payload)).run();
-
-    const ref = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    return json({ ok: true, ref });
-  }
-
-  return null;
+// Wire CTAs
+document.addEventListener('click', (e)=>{
+  if(e.target && e.target.id === 'btnNew'){ location.href = '/form'; }
+  else if(e.target && e.target.id === 'btnLogin'){ location.href = 'https://splynx.vinet.co.za'; }
+});
+</script>`;
 }
