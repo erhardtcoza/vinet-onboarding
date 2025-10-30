@@ -1,29 +1,27 @@
-export function publicHTML(){
-  return `<!DOCTYPE html>
+// src/ui/public_lead.js
+export function renderPublicLeadHTML() {
+  return /*html*/ `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<title>Vinet Lead Capture</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="icon" href="https://static.vinet.co.za/favicon.ico" />
-<style>
-  :root{--brand:#e2001a;--ink:#111;--line:#ddd;--bg:#f7f7fa}
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;
-       background:var(--bg);color:var(--ink);max-width:680px;margin:40px auto;padding:20px;}
-  .card{background:#fff;border:1px solid var(--line);border-radius:14px;
-        box-shadow:0 6px 22px rgba(0,0,0,.06);padding:22px;}
-  .logo{width:160px;height:auto;display:block;margin:0 auto 10px}
-  h1{color:var(--brand);text-align:center;margin:6px 0 20px;font-size:28px}
-  label{display:block;margin:10px 0 6px;font-weight:600}
-  input,select{width:100%;padding:12px;border:1px solid #ccc;border-radius:10px;background:#fff;}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .actions{margin-top:18px}
-  button{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;
-         padding:12px 14px;font-weight:700;cursor:pointer;}
-  small.muted{color:#666}
-  .toast{position:fixed;right:16px;bottom:16px;left:16px;background:#fff;border:1px solid var(--line);
-         border-radius:12px;padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.12);display:none;}
-</style>
+  <meta charset="UTF-8" />
+  <title>Vinet Lead Capture</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="https://static.vinet.co.za/favicon.ico" />
+  <style>
+    :root{--brand:#e2001a;--ink:#111;--line:#ddd;--bg:#f7f7fa}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);max-width:680px;margin:40px auto;padding:20px;}
+    .card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.06);padding:22px;}
+    .logo{width:160px;height:auto;display:block;margin:0 auto 10px}
+    h1{color:var(--brand);text-align:center;margin:6px 0 20px;font-size:28px}
+    label{display:block;margin:10px 0 6px;font-weight:600}
+    input,select,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:10px;background:#fff;}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .actions{margin-top:18px}
+    button{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;padding:12px 14px;font-weight:700;cursor:pointer;}
+    small.muted{color:#666}
+    .toast{position:fixed;inset:auto 16px 16px 16px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.12);display:none;}
+    .center{text-align:center}
+  </style>
 </head>
 <body>
   <div class="card">
@@ -57,9 +55,9 @@ export function publicHTML(){
       </select>
       <input type="hidden" name="partner" value="main" />
       <input type="hidden" name="location" value="main" />
-      <label><input type="checkbox" name="consent" required /> I consent to Vinet contacting me.</label>
+      <label><input type="checkbox" name="consent" required /> I consent to Vinet contacting me regarding this enquiry.</label>
       <div class="actions"><button type="submit">Submit</button></div>
-      <p class="center"><small class="muted">Support: 021 007 0200</small></p>
+      <p class="center"><small class="muted">We’ll reach out within business hours. Support: 021 007 0200</small></p>
     </form>
   </div>
   <div id="toast" class="toast"></div>
@@ -77,5 +75,6 @@ form.addEventListener("submit",async(e)=>{
  else{const msg=(data&&(data.error||data.detail))?String(data.error||data.detail).slice(0,200):"Could not save. Please try again.";showToast("Error: "+msg);}
 });
 </script>
-</body></html>`;
+</body>
+</html>`;
 }
