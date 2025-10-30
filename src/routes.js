@@ -14,6 +14,7 @@ import {
 } from "./splynx.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
+import { renderLandingHTML } from "./ui/landing.js";
 
 /* ------------------------- small helpers ------------------------- */
 const json = (o, s = 200) =>
@@ -112,12 +113,23 @@ export async function route(request, env) {
     "";
   const getUA = () => request.headers.get("user-agent") || "";
 
-  // ----- Admin dashboard -----
-  if (path === "/" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
-    return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
+// Host-based convenience: onboard.<domain>/ → /admin
+const host = new URL(request.url).hostname || "";
+if (host.startsWith("onboard.") && path === "/" && method === "GET") {
+  return Response.redirect(`${url.origin}/admin`, 302);
+}
 
+// ----- Public landing (root) -----
+if (path === "/" && method === "GET") {
+  return new Response(renderLandingHTML(), { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+// ----- Admin dashboard (now on /admin) -----
+if (path === "/admin" && method === "GET") {
+  if (!ipAllowed(request, env)) return restrictedResponse(request, env);
+  return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+  
   // ----- EFT info page -----
   if (path === "/info/eft" && method === "GET") {
     const id = url.searchParams.get("id") || "";
