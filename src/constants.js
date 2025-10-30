@@ -12,7 +12,7 @@ export const AUTH_HEADER =
 
 // WhatsApp template config (adjust if needed)
 export const WA_TEMPLATE_NAME = "wa_onboarding";  // uses {{text}} = name, {{text2}} = onboarding_url
-export const WA_TEMPLATE_LANG  = "en_US";
+export const WA_TEMPLATE_LANG  = "en";
 
 // Brand
 export const VINET_RED = rgb(237/255, 28/255, 36/255);
