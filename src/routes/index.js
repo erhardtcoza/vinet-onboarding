@@ -1,35 +1,42 @@
-// src/routes/index.js
+// /src/routes/index.js
+import { Router } from "../router.js";
+
+// Existing route modules (already in your repo)
 import * as publicRoutes from "./public.js";
-import * as apiTerms from "./api-terms.js";
-import * as apiOtp from "./api-otp.js";
-import * as apiOnboard from "./api-onboard.js";
+import * as adminRoutes from "./admin.js";
+import * as onboardRoutes from "./onboard.js";
+import * as agreementsRoutes from "./agreements.js";
 import * as pdfRoutes from "./pdf.js";
-import * as agreements from "./agreements.js";
-import * as admin from "./admin.js";
-import * as onboard from "./onboard.js";
+import * as apiOTP from "./api-otp.js";
+import * as apiTerms from "./api-terms.js";
 
-export async function route(request, env) {
-  const url = new URL(request.url);
-  const { pathname } = url;
-  const method = request.method;
+// ✅ Newly wired modules (already present in your repo but not mounted)
+import * as publicLeads from "./public_leads.js";
+import * as crmLeads from "./crm_leads.js";
 
-  // The order matters; earlier modules get first dibs.
-  const modules = [
-    publicRoutes,
-    apiTerms,
-    apiOtp,
-    apiOnboard,
-    pdfRoutes,
-    agreements,
-    admin,
-    onboard,
-  ];
+export function mountAll(router /** @type {Router} */) {
+  // --- Order matters: mount more specific paths first where needed ---
 
-  for (const m of modules) {
-    if (m.match && m.handle && m.match(pathname, method)) {
-      return m.handle(request, env);
-    }
-  }
+  // Public self-capture leads UI & API
+  // (/lead, /api/leads/submit, etc.)
+  publicLeads.mount?.(router);
 
-  return new Response("Not found", { status: 404 });
+  // CRM Leads Admin (list, match, sync, export)
+  // (/crm, /api/leads/* for admin)
+  crmLeads.mount?.(router);
+
+  // OTP / Terms / PDFs / Agreements / Onboarding / Admin
+  apiOTP.mount?.(router);
+  apiTerms.mount?.(router);
+  pdfRoutes.mount?.(router);
+  agreementsRoutes.mount?.(router);
+  onboardRoutes.mount?.(router);
+
+  // Public “misc” (EFT info + PWA endpoints + root admin gate as before)
+  publicRoutes.mount?.(router);
+
+  // Fallback 404 (optional)
+  router.add("ALL", "*", (_req) =>
+    new Response("Not found", { status: 404 })
+  );
 }
