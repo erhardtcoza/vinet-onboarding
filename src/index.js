@@ -448,4 +448,294 @@ textarea,input,select{width:100%;padding:10px;border:1px solid #cbd5e1;border-ra
     </div>
     <label>Street<textarea id="f_street" rows="3"></textarea></label>
     <label>Service<select id="f_service">
-      <option value="">
+      <option value="">Select…</option>
+      <option>FTTH (Fibre to the Home)</option>
+      <option>Fixed Wireless / Airfibre</option>
+      <option>VoIP</option>
+      <option>Web Hosting</option>
+    </select></label>
+    <div id="matches" style="margin:10px 0"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="btnCancel" type="button" class="btn-grey">Cancel</button>
+      <button id="btnSave" type="button">Save</button>
+      <button id="btnSubmit" type="button">Submit to Splynx</button>
+      <button id="btnWA" type="button">Send WA Onboarding</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const list=document.getElementById('list');
+const modal=document.getElementById('modal');
+let state={rows:[], row:null, payload:null, splynxId:null};
+
+async function load(){
+  const r=await fetch('/api/admin/queue'); const d=await r.json();
+  state.rows=d.rows||[];
+  const rows=state.rows.map(x=>{
+    const p=x.payload||{};
+    const badge = x.processed?'<span class="badge">synced #'+(x.splynx_id||'-')+'</span>':'<span class="badge" style="background:#fee;border-color:#f99">pending</span>';
+    return '<tr><td>'+x.id+'</td><td>'+ (p.name||'') +'</td><td>'+ (p.phone||'') +'</td><td>'+ (p.email||'') +'</td><td>'+ (p.city||'') +'</td><td>'+ (p.service_interested||'') +'</td><td>'+badge+'</td><td class="row-actions"><button data-id="'+x.id+'" data-act="edit">Open</button></td></tr>';
+  }).join('');
+  list.innerHTML='<table><thead><tr><th>ID</th><th>Name</th><th>Phone</th><th>Email</th><th>City</th><th>Service</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  list.querySelectorAll('button').forEach(b=>{
+    b.onclick=()=>openEdit(Number(b.dataset.id));
+  });
+}
+
+function fillForm(p){
+  document.getElementById('f_name').value=p.name||'';
+  document.getElementById('f_phone').value=p.phone||'';
+  document.getElementById('f_email').value=p.email||'';
+  document.getElementById('f_source').value=p.source||'';
+  document.getElementById('f_city').value=p.city||'';
+  document.getElementById('f_zip').value=p.zip||'';
+  document.getElementById('f_street').value=p.street||'';
+  document.getElementById('f_service').value=p.service_interested||'';
+}
+
+async function openEdit(id){
+  state.row = state.rows.find(x=>x.id===id);
+  state.payload = Object.assign({}, state.row.payload||{});
+  fillForm(state.payload);
+  modal.style.display='flex';
+  document.getElementById('matches').innerHTML='';
+  // wire buttons
+  document.getElementById('btnCancel').onclick=()=>{ modal.style.display='none' };
+  document.getElementById('btnSave').onclick=async()=>{
+    state.payload = {
+      name:document.getElementById('f_name').value.trim(),
+      phone:document.getElementById('f_phone').value.trim(),
+      email:document.getElementById('f_email').value.trim(),
+      source:document.getElementById('f_source').value.trim(),
+      city:document.getElementById('f_city').value.trim(),
+      zip:document.getElementById('f_zip').value.trim(),
+      street:document.getElementById('f_street').value.trim(),
+      service_interested:document.getElementById('f_service').value.trim()
+    };
+    await fetch('/api/admin/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:state.row.id,payload:state.payload})});
+    alert('Saved.');
+  };
+  document.getElementById('btnSubmit').onclick=submitFlow;
+  document.getElementById('btnWA').onclick=sendWA;
+}
+
+async function submitFlow(){
+  // step 1: get matches
+  const r = await fetch('/api/admin/match',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ payload: state.payload })});
+  const d = await r.json(); // {matches:[{id,name,email,phone,type:'lead'|'customer'}]}
+  const m = d.matches||[];
+  const el = document.getElementById('matches');
+  if(m.length===0){
+    el.innerHTML = '<div>No matches. Click "Submit to Splynx" again to create new.</div>';
+    // second click creates new
+    document.getElementById('btnSubmit').onclick = createNew;
+    return;
+  }
+  el.innerHTML = '<div><strong>Possible matches:</strong><ul>'+m.map(x=>'<li>#'+x.id+' · '+x.name+' · '+(x.email||'')+' · '+(x.phone||'')+' ('+x.type+')</li>').join('')+'</ul><button id="overwrite">Overwrite first match</button> <button id="create">Create new</button> <button id="reuse">Use "re-use" lead</button></div>';
+  document.getElementById('overwrite').onclick=()=>overwrite(m[0].id, m[0].type);
+  document.getElementById('create').onclick=createNew;
+  document.getElementById('reuse').onclick=reuseLead;
+}
+
+async function overwrite(id, type){
+  const r = await fetch('/api/admin/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id, mode:'overwrite', targetId:id, targetType:type })});
+  const d = await r.json(); alert(d.ok ? ('Updated #'+d.id) : ('Failed: '+(d.detail||d.error)));
+  modal.style.display='none'; load();
+}
+async function createNew(){
+  const r = await fetch('/api/admin/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id, mode:'create' })});
+  const d = await r.json(); alert(d.ok ? ('Created #'+d.id) : ('Failed: '+(d.detail||d.error)));
+  modal.style.display='none'; load();
+}
+async function reuseLead(){
+  const r = await fetch('/api/admin/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id, mode:'reuse' })});
+  const d = await r.json(); alert(d.ok ? ('Reused #'+d.id) : ('Failed: '+(d.detail||d.error)));
+  modal.style.display='none'; load();
+}
+
+async function sendWA(){
+  const r=await fetch('/api/admin/wa',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id })});
+  const d=await r.json(); alert(d.ok?('WhatsApp sent: '+d.url):('WA failed: '+(d.detail||d.error)));
+}
+load();
+</script>`;
+}
+
+async function handleAdmin(request, env) {
+  if (!isAllowedIP(request)) return html("<h1 style='color:#e2001a'>Access Denied</h1>", 403);
+  const url = new URL(request.url);
+
+  // UI
+  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index")) {
+    return html(adminHTML());
+  }
+
+  await ensureLeadSchema(env);
+
+  // List queue
+  if (url.pathname === "/api/admin/queue" && request.method === "GET") {
+    const rows = await env.DB.prepare(
+      "SELECT id, sales_user, created_at, payload, processed, splynx_id FROM leads_queue ORDER BY created_at DESC LIMIT 500"
+    ).all();
+    const parsed = (rows.results || []).map((r) => ({
+      id: r.id,
+      sales_user: r.sales_user,
+      created_at: r.created_at,
+      processed: r.processed,
+      splynx_id: r.splynx_id,
+      payload: (()=>{
+        try { return JSON.parse(r.payload||"{}"); } catch { return {}; }
+      })()
+    }));
+    return json({ rows: parsed });
+  }
+
+  // Save edits
+  if (url.pathname === "/api/admin/update" && request.method === "POST") {
+    const body = await request.json().catch(() => null);
+    if (!body || !body.id || !body.payload) return json({ error: "Bad request" }, 400);
+    await env.DB.prepare("UPDATE leads_queue SET payload=?1 WHERE id=?2").bind(JSON.stringify(body.payload), body.id).run();
+    return json({ ok: true });
+  }
+
+  // Match candidates in Splynx (customers + leads by email/phone/name)
+  if (url.pathname === "/api/admin/match" && request.method === "POST") {
+    const { payload } = await request.json().catch(() => ({}));
+    const candidates = [];
+
+    // Customers
+    try {
+      const rc = await splynx("GET", "/api/2.0/admin/customers/customer");
+      const customers = await rc.json().catch(() => []);
+      (Array.isArray(customers) ? customers : []).forEach((c) => {
+        if (!c) return;
+        const hit =
+          (payload.email && c.email === payload.email) ||
+          (payload.phone && c.phone === payload.phone) ||
+          (payload.name && (c.name || "").toLowerCase() === payload.name.toLowerCase());
+        if (hit) candidates.push({ id: c.id, name: c.name, email: c.email, phone: c.phone, type: "customer" });
+      });
+    } catch {}
+
+    // Leads
+    try {
+      const rl = await splynx("GET", "/api/2.0/admin/crm/leads");
+      const leads = await rl.json().catch(() => []);
+      (Array.isArray(leads) ? leads : []).forEach((l) => {
+        if (!l) return;
+        const hit =
+          (payload.email && l.email === payload.email) ||
+          (payload.phone && l.phone === payload.phone) ||
+          (payload.name && (l.name || "").toLowerCase() === payload.name.toLowerCase());
+        if (hit) candidates.push({ id: l.id, name: l.name, email: l.email, phone: l.phone, type: "lead" });
+      });
+    } catch {}
+
+    return json({ matches: candidates });
+  }
+
+  // Submit to Splynx (mode: create | overwrite | reuse)
+  if (url.pathname === "/api/admin/submit" && request.method === "POST") {
+    const body = await request.json().catch(() => null);
+    if (!body || !body.id) return json({ error: "Bad request" }, 400);
+
+    const row = await env.DB.prepare("SELECT payload FROM leads_queue WHERE id=?1 LIMIT 1").bind(body.id).first();
+    if (!row) return json({ error: "Not found" }, 404);
+    const p = (()=>{ try { return JSON.parse(row.payload||"{}"); } catch { return {}; } })();
+
+    const leadPayload = {
+      name: p.name,
+      email: p.email,
+      phone: p.phone,
+      city: p.city,
+      street_1: p.street,
+      zip_code: p.zip,
+      source: p.source,
+      billing_email: p.email,
+      score: 1,
+      status: "New enquiry",
+      date_add: DATE_TODAY(),
+      owner: "public"
+    };
+
+    // resolve mode
+    let r, splynxId = null;
+    if (body.mode === "overwrite" && body.targetId && body.targetType) {
+      const path = body.targetType === "customer"
+        ? \`/api/2.0/admin/customers/customer/\${body.targetId}\`
+        : \`/api/2.0/admin/crm/leads/\${body.targetId}\`;
+      r = await splynx("PUT", path, leadPayload);
+      if (!r.ok) return json({ error: true, detail: await r.text().catch(()=>\`Splynx \${r.status}\`) }, 500);
+      splynxId = body.targetId;
+    } else if (body.mode === "reuse") {
+      // find first 're-use' lead
+      const rl = await splynx("GET", "/api/2.0/admin/crm/leads");
+      const leads = await rl.json().catch(() => []);
+      const reuse = (Array.isArray(leads) ? leads : []).find((l) => (l.name || "").toLowerCase() === "re-use");
+      if (!reuse) return json({ error: true, detail: "No 're-use' lead found" }, 500);
+      r = await splynx("PUT", \`/api/2.0/admin/crm/leads/\${reuse.id}\`, leadPayload);
+      if (!r.ok) return json({ error: true, detail: await r.text().catch(()=>\`Splynx \${r.status}\`) }, 500);
+      splynxId = reuse.id;
+    } else {
+      r = await splynx("POST", "/api/2.0/admin/crm/leads", leadPayload);
+      if (!r.ok) return json({ error: true, detail: await r.text().catch(()=>\`Splynx \${r.status}\`) }, 500);
+      const created = await r.json().catch(() => ({}));
+      splynxId = created.id || null;
+    }
+
+    await env.DB.prepare("UPDATE leads_queue SET processed=1, splynx_id=?1, synced='1' WHERE id=?2")
+      .bind(splynxId, body.id).run();
+    if (splynxId) {
+      await env.DB.prepare("UPDATE leads SET splynx_id=?1, synced=1 WHERE email=?2 OR phone=?3")
+        .bind(splynxId, p.email||"", p.phone||"").run();
+    }
+    return json({ ok: true, id: splynxId });
+  }
+
+  // WhatsApp onboarding link
+  if (url.pathname === "/api/admin/wa" && request.method === "POST") {
+    const body = await request.json().catch(() => null);
+    if (!body || !body.id) return json({ error: "Bad request" }, 400);
+
+    const row = await env.DB.prepare("SELECT payload FROM leads_queue WHERE id=?1 LIMIT 1").bind(body.id).first();
+    if (!row) return json({ error: "Not found" }, 404);
+    const p = (()=>{ try { return JSON.parse(row.payload||"{}"); } catch { return {}; } })();
+
+    const name = p.name || "there";
+    const phone = normalizeMsisdn(p.phone || "");
+    const code = \`\${(name.split(' ')[0]||'client').toLowerCase()}_\${Math.random().toString(36).slice(2,8)}\`;
+    const urlText = \`https://onboard.vinet.co.za/onboard/\${code}\`;
+
+    const ok = await sendWATemplate(env, phone, WA_TEMPLATE_NAME, WA_TEMPLATE_LANG, name, urlText);
+    return ok ? json({ ok: true, url: urlText }) : json({ error: true, detail: "WA send failed" }, 500);
+  }
+
+  return null;
+}
+
+/* -------------- Entry (host switch) --------------- */
+export default {
+  async fetch(request, env, ctx) {
+    const host = hostOf(request);
+
+    if (host === "new.vinet.co.za") {
+      const r = await handlePublic(request, env);
+      if (r) return r;
+      return html("<h1>Not found</h1>", 404);
+    }
+
+    if (host === "crm.vinet.co.za") {
+      const r = await handleAdmin(request, env);
+      if (r) return r;
+      return html("<h1>Admin route not handled</h1>", 404);
+    }
+
+    if (host === "onboard.vinet.co.za") {
+      // Delegate entirely to your existing onboarding app router
+      return routeOnboarding(request, env, ctx);
+    }
+
+    return html("<h1>Host not configured</h1>", 400);
+  },
+};
