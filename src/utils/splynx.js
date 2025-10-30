@@ -193,3 +193,80 @@ export async function bulkSanitizeLeads(ids = []) {
   }
   return { ok: true, updated, failed, results };
 }
+/* ───────────────────────────────────────────────────────────
+ * Lead listing (client-side filter/sort), single update, bulk sanitize
+ * ─────────────────────────────────────────────────────────── */
+
+// best-effort extract of "last contacted" for sorting
+function _ts(v) {
+  if (!v) return 0;
+  if (typeof v === "number") return v;
+  const n = Date.parse(String(v));
+  return Number.isFinite(n) ? Math.floor(n / 1000) : 0;
+}
+function _lastContacted(lead) {
+  return _ts(lead.last_contacted || lead.last_contact || lead.last_activity || lead.updated || lead.date_add);
+}
+
+/**
+ * List a page of leads from Splynx. Filters by status (optional),
+ * sorts by "last contacted" desc, then applies offset/limit locally.
+ */
+export async function listLeads(env, { status = "", limit = 50, offset = 0 } = {}) {
+  // NOTE: many Splynx installs ignore query filters on this endpoint; we filter locally.
+  let res = [];
+  try {
+    const r = await splynxGET(env, `/admin/crm/leads`);
+    res = Array.isArray(r?.items) ? r.items : (Array.isArray(r) ? r : []);
+  } catch (_) { res = []; }
+
+  if (status) {
+    const s = String(status).toLowerCase();
+    res = res.filter(x => String(x.status || "").toLowerCase() === s);
+  }
+
+  res.sort((a, b) => _lastContacted(b) - _lastContacted(a));
+
+  if (offset) res = res.slice(offset);
+  return res.slice(0, Math.max(1, Math.min(Number(limit) || 50, 500)));
+}
+
+/** Safely update a single lead with a whitelisted set of fields. */
+export async function updateLeadFields(env, id, fields = {}) {
+  const allowed = [
+    "name", "email", "billing_email",
+    "phone", "phone_mobile",
+    "street_1", "city", "zip_code",
+    "status", "source", "owner"
+  ];
+  const body = {};
+  for (const k of allowed) if (fields[k] !== undefined) body[k] = fields[k];
+  if (!Object.keys(body).length) return { ok: true, skipped: true };
+
+  await splynxPUT(env, `/admin/crm/leads/${id}`, body);
+  return { ok: true };
+}
+
+/**
+ * Bulk sanitize: rename to "re-use", clear PII.
+ * Returns { ok, updated, failed, results[] }.
+ */
+export async function bulkSanitizeLeads(env, ids = []) {
+  const body = {
+    name: "re-use",
+    email: "", billing_email: "",
+    phone: "", phone_mobile: "",
+    street_1: "", city: "", zip_code: ""
+  };
+  let updated = 0, failed = 0;
+  const results = [];
+  for (const id of ids) {
+    try {
+      await splynxPUT(env, `/admin/crm/leads/${id}`, body);
+      updated++; results.push({ id, ok: true });
+    } catch (e) {
+      failed++; results.push({ id, ok: false, error: String(e?.message || e) });
+    }
+  }
+  return { ok: true, updated, failed, results };
+}
