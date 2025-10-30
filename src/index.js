@@ -79,7 +79,6 @@ async function sendWATemplate(env, msisdn, templateName, lang, nameText, urlText
   }
 }
 
-/* ------------------ D1 schema ------------------ */
 async function ensureLeadSchema(env) {
   await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS leads (
@@ -98,7 +97,11 @@ async function ensureLeadSchema(env) {
       splynx_id INTEGER, synced TEXT
     )`)
   ]);
+
   const tryAlter = async (sql) => { try { await env.DB.prepare(sql).run(); } catch {} };
+
+  // ✅ Add any missing columns defensively
+  await tryAlter(`ALTER TABLE leads ADD COLUMN name TEXT`);
   await tryAlter(`ALTER TABLE leads ADD COLUMN lead_id INTEGER`);
   await tryAlter(`ALTER TABLE leads ADD COLUMN splynx_id INTEGER`);
   await tryAlter(`ALTER TABLE leads_queue ADD COLUMN splynx_id INTEGER`);
