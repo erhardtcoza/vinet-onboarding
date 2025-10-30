@@ -1,43 +1,7 @@
 // src/index.js
 
-import { route as routeOnboarding } from "./routes.js"; // keep your existing onboarding router
-import { Router } from "./router.js";
-import { registerAllRoutes } from "./routes.js";
-
-export default {
-  async fetch(request, env, ctx) {
-    const router = new Router();
-    registerAllRoutes(router);
-
-    // Let your routes handle it
-    const handled = await router.handle(request, env, ctx);
-    if (handled) return handled;
-
-    // Optional: simple host hints if nothing matched
-    const host = new URL(request.url).host.toLowerCase();
-    if (host === "onboard.vinet.co.za") {
-      return new Response(
-        "<h1>Onboarding</h1><p>Routes mounted; paste full onboarding flow when ready.</p>",
-        { headers: { "content-type": "text/html" } }
-      );
-    }
-    if (host === "crm.vinet.co.za") {
-      return new Response(
-        "<h1>CRM</h1><p>Admin routes mounted.</p>",
-        { headers: { "content-type": "text/html" } }
-      );
-    }
-    if (host === "new.vinet.co.za") {
-      return new Response(
-        "<h1>Lead capture</h1><p>Public routes mounted.</p>",
-        { headers: { "content-type": "text/html" } }
-      );
-    }
-
-    return new Response("Not found", { status: 404 });
-  }
-};
-
+// Keep your existing onboarding router from the onboarding app
+import { route as routeOnboarding } from "./routes.js";
 
 /* ------------------ Config ------------------ */
 const SPYLNX_URL = "https://splynx.vinet.co.za";
@@ -59,7 +23,8 @@ const hostOf = (req) => new URL(req.url).host.toLowerCase();
 function isAllowedIP(req) {
   const ip = req.headers.get("CF-Connecting-IP") || "";
   const [a, b, c] = ip.split(".").map(Number);
-  return a === 160 && b === 226 && c >= 128 && c <= 143; // 160.226.128.0/20
+  // 160.226.128.0/20
+  return a === 160 && b === 226 && c >= 128 && c <= 143;
 }
 
 function normalizeMsisdn(s) {
@@ -70,6 +35,7 @@ function normalizeMsisdn(s) {
 }
 
 async function splynx(method, path, body) {
+  // path should start with "/api/2.0/..."
   const r = await fetch(`${SPYLNX_URL}${path}`, {
     method,
     headers: { Authorization: AUTH_HEADER, "content-type": "application/json" },
@@ -578,7 +544,6 @@ async function handleAdmin(request, env) {
 export default {
   async fetch(request, env, ctx) {
     const host = hostOf(request);
-    const url = new URL(request.url);
 
     if (host === "new.vinet.co.za") {
       const r = await handlePublic(request, env);
@@ -593,8 +558,8 @@ export default {
     }
 
     if (host === "onboard.vinet.co.za") {
-      // Delegate to your existing onboarding routes
-      return routeOnboarding(request, env);
+      // Delegate entirely to your existing onboarding app router
+      return routeOnboarding(request, env, ctx);
     }
 
     return html("<h1>Host not configured</h1>", 400);
