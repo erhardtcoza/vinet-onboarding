@@ -157,11 +157,20 @@ export function renderCRMHTML() {
     byId('reuse').onclick=reuseLead;
   }
 
+// fetch 50 "lost" leads
+await fetch('/api/admin/splynx/fetch?status=lost&limit=50').then(r=>r.json());
+
+// bulk sanitize selected IDs
+await fetch('/api/admin/splynx/bulk-sanitize', {
+  method:'POST', headers:{'content-type':'application/json'},
+  body: JSON.stringify({ ids: [5105, 5068, 5060] })
+}).then(r=>r.json());
   async function overwrite(id, type){
     const r=await fetch('/api/admin/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id, mode:'overwrite', targetId:id, targetType:type })});
     const d=await r.json(); alert(d.ok ? ('Updated #'+d.id) : ('Failed: '+(d.detail||d.error)));
     modal.style.display='none'; load();
   }
+  
   async function createNew(){
     const r=await fetch('/api/admin/submit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ id: state.row.id, mode:'create' })});
     const d=await r.json(); alert(d.ok ? ('Created #'+d.id) : ('Failed: '+(d.detail||d.error)));
