@@ -21,6 +21,31 @@ import { createOnboardingSession } from "./routes/api-onboard.js"; // reuse your
 import { mountPublicLeads } from "./routes/public_leads.js";
 import { mountCRMLeads }    from "./routes/crm_leads.js";
 
+
+// Register all route groups onto a provided Router instance.
+// IMPORTANT: no global `router` at module scope.
+
+import { registerPublicLeadRoutes } from "./routes/public_leads.js";
+import { registerCRMLeadRoutes } from "./routes/crm_leads.js";
+
+// Keep this import if CRM routes call it (re-export so others can import from routes.js if they want)
+import { createOnboardingSession } from "./routes/api-onboard.js";
+export { createOnboardingSession };
+
+export function registerAllRoutes(router) {
+  // Public lead capture (new.vinet.co.za)
+  if (typeof registerPublicLeadRoutes === "function") {
+    registerPublicLeadRoutes(router);
+  }
+
+  // CRM admin (crm.vinet.co.za)
+  if (typeof registerCRMLeadRoutes === "function") {
+    registerCRMLeadRoutes(router);
+  }
+
+  // If you later add: registerOnboardingRoutes(router) – call it here as well.
+}
+
 // Public route: lead capture
 router.add("GET", "/lead", async (req, env) => {
   return new Response(renderLeadFormHTML(), { headers: { "Content-Type": "text/html" } });
