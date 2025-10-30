@@ -1,3 +1,4 @@
+// src/db/schema.js
 export async function ensureLeadSchema(env) {
   await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS leads (
