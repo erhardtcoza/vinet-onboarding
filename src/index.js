@@ -109,6 +109,65 @@ async function ensureLeadSchema(env) {
 }
 
 /* -------------- Public (new.*) --------------- */
+/** Splash → fade landing with two CTAs */
+function landingHTML() {
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Vinet · Get Connected</title>
+<link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
+<style>
+:root{--brand:#e2001a;--ink:#111;--bg:#fafbfc}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;
+  height:100vh;display:flex;align-items:center;justify-content:center;}
+#stage{position:relative;width:100%;max-width:420px;text-align:center;}
+.logo{width:160px;margin:0 auto 10px;display:block;}
+.progress{width:160px;height:4px;background:#eee;border-radius:4px;margin:12px auto;overflow:hidden}
+.progress span{display:block;height:100%;width:0;background:var(--brand);animation:fill 1.2s forwards}
+@keyframes fill{to{width:100%}}
+.fade{opacity:0;transition:opacity .8s ease}
+.fade.show{opacity:1}
+h1{color:var(--brand);font-size:2rem;margin:0 0 4px}
+p.sub{color:#666;margin:0 0 26px}
+.btn{display:block;width:100%;max-width:260px;margin:8px auto;
+  padding:14px 16px;font-weight:700;border-radius:10px;text-decoration:none;transition:background .2s}
+.btn-red{background:var(--brand);color:#fff;}
+.btn-red:hover{background:#c70012}
+.btn-dark{background:#111;color:#fff;}
+.btn-dark:hover{background:#000}
+</style>
+
+<div id="stage">
+  <div id="splash">
+    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
+    <div class="progress"><span></span></div>
+  </div>
+
+  <div id="main" class="fade" aria-hidden="true">
+    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
+    <h1>Get Connected</h1>
+    <p class="sub">Fast · Reliable · Local Internet</p>
+    <a class="btn btn-red" href="/form">I want to get connected</a>
+    <a class="btn btn-dark" href="https://splynx.vinet.co.za">I'm already connected</a>
+    <p style="margin-top:24px;color:#777;font-size:.9rem;">Support: 021 007 0200</p>
+  </div>
+</div>
+
+<script>
+setTimeout(()=>{
+  document.getElementById("splash").style.display="none";
+  const m=document.getElementById("main");
+  m.classList.add("show");
+  m.setAttribute("aria-hidden","false");
+},1300);
+</script>
+</html>`;
+}
+
+/** Your existing public form page */
 function publicHTML() {
   return `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -180,12 +239,20 @@ f.addEventListener('submit',async(e)=>{
 
 async function handlePublic(request, env) {
   const url = new URL(request.url);
+  const p = url.pathname;
 
-  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index" || url.pathname === "/index.html")) {
+  // Splash + fade landing
+  if (request.method === "GET" && (p === "/" || p === "/index" || p === "/index.html")) {
+    return html(landingHTML());
+  }
+
+  // Existing form on /form (and optional /new alias)
+  if (request.method === "GET" && (p === "/form" || p === "/new")) {
     return html(publicHTML());
   }
 
-  if (url.pathname === "/submit" && request.method === "POST") {
+  // Form submit unchanged
+  if (p === "/submit" && request.method === "POST") {
     await ensureLeadSchema(env);
     const form = await request.formData().catch(() => null);
     if (!form) return json({ error: "Bad form" }, 400);
@@ -500,7 +567,6 @@ async function handleAdmin(request, env) {
       if (!r.ok) return json({ error: true, detail: await r.text().catch(()=>`Splynx ${r.status}`) }, 500);
       splynxId = body.targetId;
     } else if (body.mode === "reuse") {
-      // find first 're-use' lead (like your earlier flow)
       const rl = await splynx("GET", "/api/2.0/admin/crm/leads");
       const leads = await rl.json().catch(() => []);
       const reuse = (Array.isArray(leads) ? leads : []).find((l) => (l.name || "").toLowerCase() === "re-use");
