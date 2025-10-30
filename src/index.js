@@ -14,9 +14,16 @@ const WA_TEMPLATE_LANG = "en";
 /* ------------------ Utils ------------------- */
 const DATE_TODAY = () => new Date().toISOString().slice(0, 10);
 const nowSec = () => Math.floor(Date.now() / 1000);
-const json = (o, s = 200) =>
-  new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
-const html = (h, s = 200) => new Response(h, { status: s, headers: { "content-type": "text/html; charset=utf-8" } });
+const json = (o, s = 200, extraHeaders = {}) =>
+  new Response(JSON.stringify(o), {
+    status: s,
+    headers: { "content-type": "application/json", ...extraHeaders },
+  });
+const html = (h, s = 200, extraHeaders = {}) =>
+  new Response(h, {
+    status: s,
+    headers: { "content-type": "text/html; charset=utf-8", ...extraHeaders },
+  });
 const safeStr = (v) => (v == null ? "" : String(v)).trim();
 const hostOf = (req) => new URL(req.url).host.toLowerCase();
 
@@ -25,6 +32,11 @@ function isAllowedIP(req) {
   const [a, b, c] = ip.split(".").map(Number);
   // 160.226.128.0/20
   return a === 160 && b === 226 && c >= 128 && c <= 143;
+}
+
+function hasTsCookie(req) {
+  const c = req.headers.get("cookie") || "";
+  return /(?:^|;\s*)ts_ok=1(?:;|$)/.test(c);
 }
 
 function normalizeMsisdn(s) {
@@ -108,67 +120,121 @@ async function ensureLeadSchema(env) {
   await tryAlter(`ALTER TABLE leads_queue ADD COLUMN synced TEXT`);
 }
 
-/* -------------- Public (new.*) --------------- */
-/** Splash → fade landing with two CTAs */
-function landingHTML() {
+/* ---------------------------------------------
+   Public (new.*) — Splash + Turnstile preclear
+----------------------------------------------*/
+
+function splashHTML(siteKey) {
+  // Loader → verify Turnstile (invisible) → fade to CTA view
   return `<!doctype html>
-<html lang="en">
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Vinet · Get Connected</title>
 <link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
 <style>
-:root{--brand:#e2001a;--ink:#111;--bg:#fafbfc}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);
-  font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;
-  height:100vh;display:flex;align-items:center;justify-content:center;}
-#stage{position:relative;width:100%;max-width:420px;text-align:center;}
-.logo{width:160px;margin:0 auto 10px;display:block;}
-.progress{width:160px;height:4px;background:#eee;border-radius:4px;margin:12px auto;overflow:hidden}
-.progress span{display:block;height:100%;width:0;background:var(--brand);animation:fill 1.2s forwards}
-@keyframes fill{to{width:100%}}
-.fade{opacity:0;transition:opacity .8s ease}
-.fade.show{opacity:1}
-h1{color:var(--brand);font-size:2rem;margin:0 0 4px}
-p.sub{color:#666;margin:0 0 26px}
-.btn{display:block;width:100%;max-width:260px;margin:8px auto;
-  padding:14px 16px;font-weight:700;border-radius:10px;text-decoration:none;transition:background .2s}
-.btn-red{background:var(--brand);color:#fff;}
-.btn-red:hover{background:#c70012}
-.btn-dark{background:#111;color:#fff;}
-.btn-dark:hover{background:#000}
+:root{--brand:#e2001a;--ink:#0b1320;--muted:#6b7280}
+*{box-sizing:border-box} html,body{height:100%}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:#fff;color:var(--ink);display:grid;place-items:center}
+.wrap{width:100%;max-width:720px;padding:24px}
+.card{border:1px solid #e5e7eb;border-radius:16px;box-shadow:0 10px 28px rgba(0,0,0,.08);overflow:hidden}
+.header{padding:20px 20px 0}
+.logo{width:160px;display:block;margin:0 auto}
+.loading{display:flex;align-items:center;gap:12px;justify-content:center;padding:24px 20px 28px}
+.bar{width:160px;height:6px;background:#f3f4f6;border-radius:999px;overflow:hidden}
+.bar::after{content:"";display:block;height:100%;width:0%;background:var(--brand);animation:fill 1.2s ease-in-out infinite}
+@keyframes fill{0%{width:0%}50%{width:60%}100%{width:100%}}
+.h1{font-size:28px;font-weight:800;text-align:center;color:var(--brand);margin:10px 0 20px}
+.muted{color:var(--muted);text-align:center;margin:0 0 16px}
+.cta{display:none;opacity:0;transition:opacity .5s ease}
+.btn{display:block;width:100%;padding:14px 16px;border-radius:12px;border:0;cursor:pointer;font-weight:800}
+.btn-primary{background:var(--brand);color:#fff}
+.btn-ghost{background:#0b1320;color:#fff}
+.stack{display:grid;gap:12px;padding:20px}
+.faded{opacity:.25}
 </style>
 
-<div id="stage">
-  <div id="splash">
-    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
-    <div class="progress"><span></span></div>
-  </div>
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
+      <div class="h1">Get Connected</div>
+    </div>
+    <div id="loader" class="loading">
+      <div class="bar"></div><div class="muted">Securing session…</div>
+    </div>
 
-  <div id="main" class="fade" aria-hidden="true">
-    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo"/>
-    <h1>Get Connected</h1>
-    <p class="sub">Fast · Reliable · Local Internet</p>
-    <a class="btn btn-red" href="/form">I want to get connected</a>
-    <a class="btn btn-dark" href="https://splynx.vinet.co.za">I'm already connected</a>
-    <p style="margin-top:24px;color:#777;font-size:.9rem;">Support: 021 007 0200</p>
+    <div id="cta" class="cta">
+      <p class="muted">Choose an option:</p>
+      <div class="stack">
+        <button id="btnNew" class="btn btn-primary">I want to know more (or sign-up)</button>
+        <button id="btnLogin" class="btn btn-ghost">I am already connected (log in)</button>
+      </div>
+    </div>
   </div>
 </div>
 
+<!-- Turnstile (invisible) -->
+<div id="ts" class="cf-turnstile"
+     data-sitekey="${siteKey}"
+     data-size="invisible"
+     data-callback="onTsOk"
+     data-action="splash">
+</div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+
 <script>
-setTimeout(()=>{
-  document.getElementById("splash").style.display="none";
-  const m=document.getElementById("main");
-  m.classList.add("show");
-  m.setAttribute("aria-hidden","false");
-},1300);
-</script>
-</html>`;
+const loader = document.getElementById('loader');
+const cta = document.getElementById('cta');
+
+function showCTA(){
+  loader.classList.add('faded');
+  setTimeout(()=>{
+    loader.style.display='none';
+    cta.style.display='block';
+    requestAnimationFrame(()=>{ cta.style.opacity = 1; });
+  }, 200);
 }
 
-/** Your existing public form page */
-function publicHTML() {
+async function verifyToken(token){
+  try{
+    const r = await fetch('/ts-verify', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ token })
+    });
+    if(!r.ok){ throw new Error('verify failed '+r.status); }
+    const d = await r.json();
+    if(d && d.ok){ showCTA(); } else { location.reload(); }
+  }catch(e){
+    // If verification fails, keep user on loader to avoid abuse
+    console.error(e);
+    location.reload();
+  }
+}
+
+// Called by Turnstile after invisible challenge
+window.onTsOk = function(token){
+  verifyToken(token);
+};
+
+// Execute once API is ready
+function whenTSReady(cb){
+  if(window.turnstile && typeof turnstile.execute==='function') return cb();
+  setTimeout(()=>whenTSReady(cb), 30);
+}
+whenTSReady(()=> turnstile.execute('#ts') );
+
+// Wire CTAs
+document.addEventListener('click', (e)=>{
+  if(e.target && e.target.id === 'btnNew'){
+    location.href = '/form';
+  } else if(e.target && e.target.id === 'btnLogin'){
+    location.href = 'https://splynx.vinet.co.za';
+  }
+});
+</script>`;
+}
+
+function publicFormHTML() {
   return `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Vinet Lead Capture</title>
@@ -239,20 +305,52 @@ f.addEventListener('submit',async(e)=>{
 
 async function handlePublic(request, env) {
   const url = new URL(request.url);
-  const p = url.pathname;
 
-  // Splash + fade landing
-  if (request.method === "GET" && (p === "/" || p === "/index" || p === "/index.html")) {
-    return html(landingHTML());
+  // Splash with Turnstile preclearance
+  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index" || url.pathname === "/index.html")) {
+    return html(splashHTML(env.TURNSTILE_SITE_KEY || ""));
   }
 
-  // Existing form on /form (and optional /new alias)
-  if (request.method === "GET" && (p === "/form" || p === "/new")) {
-    return html(publicHTML());
+  // Lead form page
+  if (request.method === "GET" && url.pathname === "/form") {
+    return html(publicFormHTML());
   }
 
-  // Form submit unchanged
-  if (p === "/submit" && request.method === "POST") {
+  // Turnstile verify (server-side)
+  if (request.method === "POST" && url.pathname === "/ts-verify") {
+    try {
+      const { token } = await request.json().catch(()=>({}));
+      if (!token) return json({ error: "missing token" }, 400);
+
+      const ip = request.headers.get("CF-Connecting-IP") || "";
+      const body = new URLSearchParams({
+        secret: env.TURNSTILE_SECRET_KEY || "",
+        response: token,
+        remoteip: ip
+      });
+
+      const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+        method: "POST",
+        body
+      });
+      const result = await vr.json().catch(()=>({ success:false }));
+      if (!result.success) {
+        return json({ error: true, detail: "turnstile failed" }, 403);
+      }
+
+      const cookie = "ts_ok=1; Max-Age=86400; Path=/; Secure; SameSite=Lax";
+      return json({ ok: true }, 200, { "set-cookie": cookie });
+    } catch (e) {
+      return json({ error: true, detail: "verify exception" }, 500);
+    }
+  }
+
+  // Form submit — require Turnstile cookie from splash
+  if (url.pathname === "/submit" && request.method === "POST") {
+    if (!hasTsCookie(request)) {
+      return json({ error: "Session not verified" }, 403);
+    }
+
     await ensureLeadSchema(env);
     const form = await request.formData().catch(() => null);
     if (!form) return json({ error: "Bad form" }, 400);
@@ -284,7 +382,11 @@ async function handlePublic(request, env) {
     await env.DB.prepare(`
       INSERT INTO leads (name,phone,email,source,city,street,zip,billing_email,score,date_added,captured_by,synced)
       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0)
-    `).bind(payload.name, payload.phone, payload.email, payload.source, payload.city, payload.street, payload.zip, payload.billing_email, payload.date_added).run();
+    `).bind(
+      payload.name, payload.phone, payload.email, payload.source,
+      payload.city, payload.street, payload.zip, payload.billing_email,
+      payload.date_added
+    ).run();
 
     // Queue for admin review / Splynx push
     await env.DB.prepare(`
@@ -292,13 +394,14 @@ async function handlePublic(request, env) {
       VALUES ('public',?1,?2,'[]',0,NULL,'0')
     `).bind(nowSec(), JSON.stringify(payload)).run();
 
-    const ref = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const ref = \`\${Date.now().toString(36)}-\${Math.random().toString(36).slice(2, 6)}\`;
     return json({ ok: true, ref });
   }
 
   return null;
 }
 
+/* ----
 /* -------------- Admin (crm.*) --------------- */
 
 function adminHTML() {
