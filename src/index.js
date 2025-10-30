@@ -1,10 +1,9 @@
-// src/index.js
-import { route as routeOnboarding } from "./routes.js"; // your existing onboarding app
-import { handleAdmin } from "./admin/routes.js";
-import { handlePublic } from "./public/routes.js"; // the splash/form + Turnstile module
-import { html } from "./utils/http.js";
+// Entry point: host switch + delegate to modules
 
-const hostOf = (req) => new URL(req.url).host.toLowerCase();
+import { route as routeOnboarding } from "./routes.js"; // your existing onboarding router
+import { handlePublic } from "./public/routes.js";
+import { handleAdmin } from "./admin/routes.js";
+import { hostOf } from "./utils/http.js";
 
 export default {
   async fetch(request, env, ctx) {
@@ -12,20 +11,18 @@ export default {
 
     if (host === "new.vinet.co.za") {
       const r = await handlePublic(request, env, ctx);
-      if (r) return r;
-      return html("<h1>Not found</h1>", 404);
+      return r || new Response("<h1>Not found</h1>", { status: 404, headers: { "content-type": "text/html" } });
     }
 
     if (host === "crm.vinet.co.za") {
       const r = await handleAdmin(request, env, ctx);
-      if (r) return r;
-      return html("<h1>Admin route not handled</h1>", 404);
+      return r || new Response("<h1>Admin route not handled</h1>", { status: 404, headers: { "content-type": "text/html" } });
     }
 
     if (host === "onboard.vinet.co.za") {
       return routeOnboarding(request, env, ctx);
     }
 
-    return html("<h1>Host not configured</h1>", 400);
+    return new Response("<h1>Host not configured</h1>", { status: 400, headers: { "content-type": "text/html" } });
   },
 };
