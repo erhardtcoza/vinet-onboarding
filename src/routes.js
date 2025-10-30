@@ -10,92 +10,17 @@ import {
   fetchCustomerMsisdn,
   splynxPUT,
   detectEntityKind,
-  uploadAllSessionFilesToSplynx,   // ✅ missing import
+  uploadAllSessionFilesToSplynx,
 } from "./splynx.js";
 import { deleteOnboardAll } from "./storage.js";
 import { renderOnboardUI } from "./ui/onboard.js";
-import { ensureLeadsTable, getAllLeads, getLead, insertLead, updateLead, deleteLeads, undoByToken, stageUndo } from "./leads-storage.js";
-import { pushLeadToSplynx } from "./leads-splynx.js";
-import { sendOnboardingInvite } from "./leads-whatsapp.js";
-import { createOnboardingSession } from "./routes/api-onboard.js"; // reuse your existing helper
-import { mountPublicLeads } from "./routes/public_leads.js";
-import { mountCRMLeads }    from "./routes/crm_leads.js";
 
-
-// Register all route groups onto a provided Router instance.
-// IMPORTANT: no global `router` at module scope.
-
-import { registerPublicLeadRoutes } from "./routes/public_leads.js";
-import { registerCRMLeadRoutes } from "./routes/crm_leads.js";
-
-// Keep this import if CRM routes call it (re-export so others can import from routes.js if they want)
-import { createOnboardingSession } from "./routes/api-onboard.js";
-export { createOnboardingSession };
-
-export function registerAllRoutes(router) {
-  // Public lead capture (new.vinet.co.za)
-  if (typeof registerPublicLeadRoutes === "function") {
-    registerPublicLeadRoutes(router);
-  }
-
-  // CRM admin (crm.vinet.co.za)
-  if (typeof registerCRMLeadRoutes === "function") {
-    registerCRMLeadRoutes(router);
-  }
-
-  // If you later add: registerOnboardingRoutes(router) – call it here as well.
-}
-
-// Public route: lead capture
-router.add("GET", "/lead", async (req, env) => {
-  return new Response(renderLeadFormHTML(), { headers: { "Content-Type": "text/html" } });
-});
-
-router.add("POST", "/api/lead/create", async (req, env) => {
-  const form = await req.formData();
-  const data = Object.fromEntries(form);
-  await insertLead(env, data);
-  return Response.json({ ok: true, message: "Lead captured successfully" });
-});
-
-// Admin route: view leads
-router.add("GET", "/admin/leads", guard(async (req, env) => {
-  const leads = await getAllLeads(env);
-  return new Response(renderLeadsDashboard(leads), { headers: { "Content-Type": "text/html" } });
-}));
-
-// Push to Splynx
-router.add("POST", "/api/leads/push-splynx", guard(async (req, env) => {
-  const form = await req.formData();
-  const id = form.get("id");
-  const lead = await getLead(env, id);
-  const res = await pushLeadToSplynx(env, lead);
-  await updateLead(env, id, { splynx_id: res.id });
-  return Response.json(res);
-}));
-
-// Send onboarding link via WhatsApp
-router.add("POST", "/api/leads/send-onboarding", guard(async (req, env) => {
-  const form = await req.formData();
-  const id = form.get("id");
-  const lead = await getLead(env, id);
-  let splynxId = lead.splynx_id;
-  if (!splynxId) {
-    const res = await pushLeadToSplynx(env, lead);
-    splynxId = res.id;
-    await updateLead(env, id, { splynx_id: res.id });
-  }
-  const { url } = await createOnboardingSession(env, splynxId);
-  await sendOnboardingInvite(env, lead.whatsapp || lead.phone, lead.name, url);
-  return Response.json({ ok: true, sent: true, url });
-}));
-
-/* ------------------------- helpers ------------------------- */
+/* ------------------------- small helpers ------------------------- */
 const json = (o, s = 200) =>
   new Response(JSON.stringify(o), { status: s, headers: { "content-type": "application/json" } });
 
 // Branded 403 page + log the blocked IP
-function restrictedResponse(request, env) {
+function restrictedResponse(request, _env) {
   const ip =
     request.headers.get("CF-Connecting-IP") ||
     request.headers.get("x-forwarded-for") ||
@@ -104,7 +29,6 @@ function restrictedResponse(request, env) {
   const ua = request.headers.get("user-agent") || "";
   const path = new URL(request.url).pathname;
 
-  // Will appear in Cloudflare Worker logs
   console.warn("Admin access blocked", { ip, path, ua });
 
   const html = `<!doctype html>
@@ -175,7 +99,7 @@ async function sendWhatsAppTextIfSessionOpen(env, toMsisdn, bodyText) {
   if (!r.ok) throw new Error(`WA text send failed ${r.status} ${await r.text().catch(() => "")}`);
 }
 
-/* ---------------------------- router ---------------------------- */
+/* ---------------------------- main router ---------------------------- */
 export async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -190,7 +114,7 @@ export async function route(request, env) {
 
   // ----- Admin dashboard -----
   if (path === "/" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅ branded 403
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
@@ -248,7 +172,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate onboarding link -----
   if (path === "/api/admin/genlink" && method === "POST") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const { id } = await request.json().catch(() => ({}));
     if (!id) return json({ error: "Missing id" }, 400);
     const token = Math.random().toString(36).slice(2, 10);
@@ -273,7 +197,7 @@ export async function route(request, env) {
 
   // ----- Admin: generate staff OTP -----
   if (path === "/api/staff/gen" && method === "POST") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -285,7 +209,7 @@ export async function route(request, env) {
 
   // ----- Admin: list sessions -----
   if (path === "/api/admin/list" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const mode = url.searchParams.get("mode") || "pending";
     const m = mode === "completed" ? "pending" : mode; // alias
     const list = await env.ONBOARD_KV.list({ prefix: "onboard/", limit: 1000 });
@@ -305,7 +229,7 @@ export async function route(request, env) {
 
   // ----- Admin review -----
   if (path === "/admin/review" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return new Response("Missing linkid", { status: 400 });
 
@@ -330,7 +254,7 @@ export async function route(request, env) {
 
   // ----- Admin: reject -----
   if (path === "/api/admin/reject" && method === "POST") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const { linkid, reason } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -351,7 +275,7 @@ export async function route(request, env) {
 
   // ----- Admin: delete (full cleanup) -----
   if (path === "/api/admin/delete" && method === "POST") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     try {
@@ -364,7 +288,7 @@ export async function route(request, env) {
 
   // ----- Diagnostics -----
   if (path === "/api/admin/session/keys" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const prefixes = ["onboard/", "link:", "session:", "sess:", "inprogress:"];
@@ -381,7 +305,7 @@ export async function route(request, env) {
   }
 
   if (path === "/api/admin/session/get" && method === "GET") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
     const linkid = url.searchParams.get("linkid") || "";
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
     const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
@@ -390,7 +314,7 @@ export async function route(request, env) {
 
   // ----- Admin: approve (push to Splynx + mark approved) -----
   if (path === "/api/admin/approve" && method === "POST") {
-    if (!ipAllowed(request, env)) return restrictedResponse(request, env); // ✅
+    if (!ipAllowed(request, env)) return restrictedResponse(request, env);
 
     const { linkid } = await request.json().catch(() => ({}));
     if (!linkid) return json({ ok: false, error: "Missing linkid" }, 400);
@@ -428,7 +352,6 @@ export async function route(request, env) {
         await splynxPUT(env, endpoint, body);
         attempts.push({ endpoint, ok: true });
       } catch (e) {
-        // Non-fatal; some endpoints may 404 depending on instance
         console.warn(`approve: splynx PUT failed ${endpoint}: ${e && e.message}`);
         attempts.push({ endpoint, ok: false, error: String(e && e.message) });
       }
@@ -679,7 +602,6 @@ export async function route(request, env) {
     return new Response("Unknown agreement type", { status: 400 });
   }
 
-  
   // ----- Splynx profile (for Personal Info step) -----
   if (path === "/api/splynx/profile" && method === "GET") {
     const id = url.searchParams.get("id");
@@ -703,16 +625,15 @@ export async function route(request, env) {
   }
 
   // ----- Onboarding UI -----
-// routes.js
-// ...
-if (path.startsWith("/onboard/") && method === "GET") {
-  const linkid = path.split("/")[2] || "";
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Link expired or invalid", { status: 404 });
-  const siteKey = env.TURNSTILE_SITE_KEY || "";
-  return new Response(renderOnboardUI(linkid, siteKey), {
-    headers: { "content-type": "text/html; charset=utf-8" }
-  });
-}
+  if (path.startsWith("/onboard/") && method === "GET") {
+    const linkid = path.split("/")[2] || "";
+    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
+    if (!sess) return new Response("Link expired or invalid", { status: 404 });
+    const siteKey = env.TURNSTILE_SITE_KEY || "";
+    return new Response(renderOnboardUI(linkid, siteKey), {
+      headers: { "content-type": "text/html; charset=utf-8" }
+    });
+  }
+
   return new Response("Not found", { status: 404 });
 }
