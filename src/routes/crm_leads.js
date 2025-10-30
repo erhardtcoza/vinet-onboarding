@@ -3,6 +3,7 @@ import { ensureLeadSchema, json, safeParseJSON, nowSec, todayISO } from "../util
 import { splynxFetchLeads, splynxFetchCustomers, findCandidates, buildLeadPayload, createLead, updateLead, findReuseLead } from "../utils/splynx.js";
 import { sendOnboardingTemplate } from "../utils/wa.js";
 import { renderCRMHTML } from "../ui/crm_leads.js";
+import { listLeads, updateLeadFields, bulkSanitizeLeads } from "../splynx.js";
 
 function isAllowedIP(request){
   const ip = request.headers.get("CF-Connecting-IP") || "";
@@ -66,6 +67,42 @@ export async function mountCRMLeads(request, env) {
     return json({ leads: leadHits, customers: custHits });
   }
 
+ // Pull a page of leads from Splynx (e.g., status=lost) for cleanup
+if (path === "/api/admin/splynx/fetch" && request.method === "GET") {
+  const status = (url.searchParams.get("status") || "").trim(); // e.g. "lost"
+  const limit  = Number(url.searchParams.get("limit") || "50");
+  const offset = Number(url.searchParams.get("offset") || "0");
+  const rows = await listLeads(env, { status, limit, offset });
+  // project a light row for the UI
+  const light = rows.map(x => ({
+    id: x.id,
+    status: x.status || "",
+    name: x.name || x.full_name || "",
+    email: x.email || x.billing_email || "",
+    phone: x.phone || x.phone_mobile || "",
+    city: x.city || "",
+    last_contacted: x.last_contacted || x.last_activity || x.updated || x.date_add || ""
+  }));
+  return json({ ok: true, rows: light });
+}
+
+// Update one lead quickly (rename, tweak status, etc.)
+if (path === "/api/admin/splynx/update" && request.method === "POST") {
+  const body = await request.json().catch(() => null);
+  if (!body || !body.id || !body.fields) return json({ error: "Bad request" }, 400);
+  const res = await updateLeadFields(env, Number(body.id), body.fields);
+  return json(res);
+}
+
+// Bulk sanitize (rename to "re-use" + wipe PII)
+if (path === "/api/admin/splynx/bulk-sanitize" && request.method === "POST") {
+  const body = await request.json().catch(() => null);
+  const ids = Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : [];
+  if (!ids.length) return json({ error: "No ids" }, 400);
+  const res = await bulkSanitizeLeads(env, ids);
+  return json(res);
+}
+  
   // Create/overwrite in Splynx:
   // - If overwrite_id provided, PUT that ID.
   // - Else: check for existing exact email/phone OR use RE-USE lead. If none, POST new.
