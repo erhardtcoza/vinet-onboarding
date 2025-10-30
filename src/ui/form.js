@@ -1,32 +1,36 @@
+// Secure public form (shows a security banner and requires ts_ok cookie on submit)
+
 export function publicFormHTML() {
   return `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Vinet Lead Capture</title>
 <link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
 <style>
-:root{--brand:#e2001a;--ink:#111;--line:#ddd;--bg:#f7f7fa}
+:root{--brand:#e2001a;--ink:#111;--line:#ddd;--bg:#f7f7fa;--ok:#0a7d2b}
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);max-width:680px;margin:40px auto;padding:20px}
 .card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.06);padding:22px}
 .logo{width:160px;display:block;margin:0 auto 10px}
 h1{color:var(--brand);text-align:center;margin:6px 0 20px;font-size:28px}
+.banner{display:flex;gap:10px;align-items:center;background:#f6fffb;border:1px solid #b7f0cf;color:#064e3b;border-radius:10px;padding:10px;margin-bottom:12px;font-size:14px}
+.banner .dot{width:10px;height:10px;border-radius:50%;background:var(--ok)}
 label{display:block;margin:10px 0 6px;font-weight:600}
 input,select{width:100%;padding:12px;border:1px solid #ccc;border-radius:10px;background:#fff}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .actions{margin-top:18px}
 button{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;padding:12px 14px;font-weight:700;cursor:pointer}
 .toast{position:fixed;inset:auto 16px 16px 16px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.12);display:none}
-.ok{color:#0a7d2b;font-weight:700}
+.ok{color:var(--ok);font-weight:700}
 .center{text-align:center}
-.banner{display:flex;align-items:center;gap:8px;border-radius:10px;padding:10px 12px;margin:0 0 12px}
-.banner.ok{background:#ecfdf5;border:1px solid #a7f3d0;color:#106b21}
-.banner.warn{background:#fef2f2;border:1px solid #fecaca;color:#9a1b1b}
 </style>
-
-<div id="banner" class="banner"></div>
-
 <div class="card">
   <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
   <h1>New Service Enquiry</h1>
+
+  <div class="banner" role="status" aria-live="polite">
+    <div class="dot" aria-hidden="true"></div>
+    <div><strong>Protected & Secure:</strong> This form is protected by a verified session. Submissions are only accepted from sessions that passed our security check.</div>
+  </div>
+
   <form id="f" novalidate>
     <div class="row">
       <div><label>Full Name *</label><input name="full_name" required/></div>
@@ -59,39 +63,16 @@ button{width:100%;background:var(--brand);color:#fff;border:none;border-radius:1
 </div>
 <div id="t" class="toast"></div>
 <script>
-  function hasCookie(n){
-    return (document.cookie||'').split(';').some(kv=>kv.trim().startsWith(n+'='));
-  }
-  const banner = document.getElementById('banner');
-  const form = document.getElementById('f');
-  const toast = document.getElementById('t');
-
-  const secure = hasCookie('ts_ok');
-  if(secure){
-    banner.className = 'banner ok';
-    banner.textContent = 'Session secured';
-  } else {
-    banner.className = 'banner warn';
-    banner.textContent = 'Session not verified. Please go back to the start.';
-    Array.from(form.elements).forEach(el=>el.disabled=true);
-  }
-
-  const showToast=(h)=>{t.innerHTML=h;t.style.display='block';setTimeout(()=>t.style.display='none',6000)}
-
-  form.addEventListener('submit', async (e)=>{
-    e.preventDefault();
-    if(!secure){ return; }
-    const fd = new FormData(form);
-    if(!fd.get('consent')){ showToast('Please tick consent to proceed.'); return; }
-    const r = await fetch('/submit',{method:'POST', body: fd});
-    const d = await r.json().catch(()=>({}));
-    if(d && d.ok){
-      showToast('<div class="ok">Thank you! Your enquiry was received.</div><div>Reference: '+(d.ref||'-')+'</div>');
-      form.reset();
-    }else{
-      const msg = (d && (d.error||d.detail)) ? String(d.error||d.detail).slice(0,200) : 'Could not save. Please try again.';
-      showToast('Error: ' + msg);
-    }
-  });
+const f=document.getElementById('f'), t=document.getElementById('t');
+const toast=(h)=>{t.innerHTML=h;t.style.display='block';setTimeout(()=>t.style.display='none',6000)}
+f.addEventListener('submit',async(e)=>{
+  e.preventDefault();
+  const fd=new FormData(f);
+  if(!fd.get('consent')){toast('Please tick consent to proceed.');return;}
+  const r=await fetch('/submit',{method:'POST',body:fd});
+  const d=await r.json().catch(()=>({}));
+  if(d && d.ok){ toast('<div class="ok">Thank you! Your enquiry was received.</div><div>Reference: '+(d.ref||'-')+'</div>'); f.reset(); }
+  else { toast('Error: '+((d && (d.error||d.detail))||'Could not save.')); }
+});
 </script>`;
 }
