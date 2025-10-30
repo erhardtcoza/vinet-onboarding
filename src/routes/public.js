@@ -1,52 +1,217 @@
-// src/routes/public.js
+// /src/routes/public.js
+import { json } from "../utils/http.js";
 import { ipAllowed } from "../branding.js";
-import { renderAdminPage } from "../ui/admin.js";
+import { splynxGET } from "../utils/splynx.js"; // present in your repo
 
-const LOGO_URL = "https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png";
-
-export function match(path, method) {
-  if (path === "/" && method === "GET") return true;
-  if (path === "/info/eft" && method === "GET") return true;
-  return false;
+function text(content, status = 200, headers = {}) {
+  return new Response(content, {
+    status,
+    headers: { "content-type": "text/plain; charset=utf-8", ...headers },
+  });
 }
 
-export async function handle(request) {
-  const url = new URL(request.url);
-  const path = url.pathname;
+function html(content, status = 200, headers = {}) {
+  return new Response(content, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8", ...headers },
+  });
+}
 
-  // Admin dashboard
-  if (path === "/") {
-    if (!ipAllowed(request)) return new Response("Forbidden", { status: 403 });
-    return new Response(renderAdminPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
+function jsonResp(obj, status = 200, headers = {}) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
+}
 
-  // EFT info page
-  if (path === "/info/eft") {
-    const id = url.searchParams.get("id") || "";
-    const escapeHtml = (s) =>
-      String(s || "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+// Small helper to derive Surname (last token) from full name
+function surnameFrom(fullName) {
+  const s = String(fullName || "").trim();
+  if (!s) return null;
+  const parts = s.split(/\s+/);
+  if (parts.length === 0) return null;
+  return parts[parts.length - 1];
+}
 
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>EFT Payment Details</title>
-<style>body{font-family:Arial,sans-serif;background:#f7f7fa}.container{max-width:900px;margin:40px auto;background:#fff;padding:28px;border-radius:16px;box-shadow:0 4px 18px rgba(0,0,0,.06)}h1{color:#e2001a;font-size:34px;margin:8px 0 18px}.grid{display:grid;gap:12px;grid-template-columns:1fr 1fr}.grid .full{grid-column:1 / -1}label{font-weight:700;color:#333;font-size:14px}input{width:100%;padding:10px 12px;margin-top:6px;border:1px solid #ddd;border-radius:8px;background:#fafafa}button{background:#e2001a;color:#fff;padding:12px 18px;border:none;border-radius:10px;cursor:pointer;width:100%;font-weight:700}.note{font-size:13px;color:#555}.logo{display:block;margin:0 auto 8px;height:68px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body>
-<div class="container">
-  <img src="${LOGO_URL}" class="logo" alt="Vinet">
-  <h1>EFT Payment Details</h1>
-  <div class="grid">
-    <div><label>Bank</label><input readonly value="First National Bank (FNB/RMB)"></div>
-    <div><label>Account Name</label><input readonly value="Vinet Internet Solutions"></div>
-    <div><label>Account Number</label><input readonly value="62757054996"></div>
-    <div><label>Branch Code</label><input readonly value="250655"></div>
-    <div class="full"><label style="font-weight:900">Reference</label><input style="font-weight:900" readonly value="${escapeHtml(
-      id || ""
-    )}"></div>
-  </div>
-  <p class="note" style="margin-top:16px">Please remember that all accounts are payable on or before the 1st of every month.</p>
-  <div style="margin-top:14px"><button onclick="window.print()">Print</button></div>
-</div>
-</body></html>`;
+// Build EFT reference: "ID-SURNAME" if possible, else "ID"
+function composeEFTRef(id, fullname) {
+  const idStr = String(id || "").trim();
+  if (!idStr) return "";
+  const sn = surnameFrom(fullname);
+  return sn ? `${idStr}-${sn}` : idStr;
+}
 
-    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
+// Simple inlined manifest for PWA
+function manifest(env) {
+  const name = env?.PWA_NAME || "Vinet CRM Suite";
+  const short_name = env?.PWA_SHORT || "VinetCRM";
+  const theme_color = "#ED1C24"; // Vinet red
+  const background_color = "#ffffff";
+  return {
+    name,
+    short_name,
+    start_url: "/",
+    display: "standalone",
+    scope: "/",
+    theme_color,
+    background_color,
+    icons: [
+      { src: "/favicon.png", sizes: "192x192", type: "image/png" },
+      { src: "/favicon.png", sizes: "512x512", type: "image/png" },
+    ],
+  };
+}
 
-  return new Response("Not found", { status: 404 });
+// Inlined service worker for basic shell caching
+const SW_JS = `
+// very small SW: cache-first for HTML shell + assets
+self.addEventListener("install", (e) => {
+  e.waitUntil(
+    caches.open("vinet-crm-v1").then((c) =>
+      c.addAll([
+        "/",
+        "/lead",
+        "/crm",
+      ].filter(Boolean))
+    )
+  );
+  self.skipWaiting();
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(self.clients.claim());
+});
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET") return;
+  // simple strategy: try cache, then network
+  e.respondWith(
+    caches.match(e.request).then((res) => res || fetch(e.request))
+  );
+});
+`;
+
+export function mount(router) {
+  // Root is the Admin landing (kept as-is, gated by ASN/IP)
+  router.add("GET", "/", async (req, env) => {
+    if (!ipAllowed(req)) {
+      return html(
+        `<main style="font-family:system-ui;padding:2rem;text-align:center">
+           <h1>Restricted</h1><p>This area is limited to Vinet admin network.</p>
+         </main>`,
+        403
+      );
+    }
+    // Your existing admin index page is served elsewhere (e.g., src/ui/admin.js in admin routes)
+    return new Response(null, { status: 204 }); // pass-through (admin.js handles GET /)
+  });
+
+  // --- PWA endpoints ---
+  router.add("GET", "/manifest.webmanifest", (_req, env) =>
+    jsonResp(manifest(env))
+  );
+
+  router.add("GET", "/sw.js", () =>
+    new Response(SW_JS, { headers: { "content-type": "application/javascript; charset=utf-8" } })
+  );
+
+  // --- EFT info page with updated reference logic ---
+  // Expected query: ?type=customer|lead&id=1234  (we try both if type missing)
+  router.add("GET", "/info/eft", async (req, env) => {
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id");
+    const type = (url.searchParams.get("type") || "").toLowerCase(); // "customer"|"lead"|"" (unknown)
+    if (!id) {
+      return html(`<main style="font-family:system-ui;padding:2rem">
+        <h1>EFT Details</h1>
+        <p>Missing id parameter.</p></main>`, 400);
+    }
+
+    // Try to fetch name (surname) for ID-SURNAME ref
+    let fullName = null;
+
+    try {
+      // Lookup order: explicit type → fallback to customer → lead
+      const tryCustomer = async () => {
+        const r = await splynxGET(env, `/admin/customers/customer/${id}`);
+        if (r && r.name) return r.name;
+        const r2 = await splynxGET(env, `/admin/customers/${id}`);
+        return r2?.name || null;
+      };
+      const tryLead = async () => {
+        const r = await splynxGET(env, `/admin/crm/leads/${id}`);
+        return r?.name || null;
+      };
+
+      if (type === "customer") {
+        fullName = await tryCustomer();
+        if (!fullName) fullName = await tryLead();
+      } else if (type === "lead") {
+        fullName = await tryLead();
+        if (!fullName) fullName = await tryCustomer();
+      } else {
+        // unknown → try both
+        fullName = (await tryCustomer()) || (await tryLead());
+      }
+    } catch (_e) {
+      // Ignore lookup failures → fallback later
+      fullName = null;
+    }
+
+    const eftRef = composeEFTRef(id, fullName);
+
+    const bankName = env?.BANK_NAME || "Vinet Internet Solutions";
+    const accName  = env?.BANK_ACCOUNT_NAME || "Vinet Internet Solutions";
+    const accNo    = env?.BANK_ACCOUNT_NUMBER || "0000000000";
+    const branch   = env?.BANK_BRANCH || "000000";
+    const bank     = env?.BANK || "Your Bank";
+    const logo     = env?.LOGO_URL || "https://static.vinet.co.za/logo.jpeg";
+
+    const page = /*html*/`
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>EFT Details</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#ED1C24"/>
+  <script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js");}</script>
+  <style>
+    :root { --red:#ED1C24; --ink:#0b1320; --muted:#6b7280; --card:#fff; --bg:#f7f7f8; }
+    body{margin:0;background:var(--bg);font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;color:var(--ink)}
+    .card{max-width:720px;margin:2rem auto;background:var(--card);border-radius:16px;box-shadow:0 4px 20px #0001;padding:1.5rem 1.25rem}
+    .head{display:flex;gap:.75rem;align-items:center;margin-bottom:1rem}
+    .head img{width:40px;height:40px;border-radius:8px}
+    h1{margin:.25rem 0 0;font-size:1.25rem}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    .row{display:flex;justify-content:space-between;padding:.75rem;border:1px solid #e5e7eb;border-radius:10px}
+    .k{color:var(--muted)}
+    .ref{font-weight:700;color:var(--red)}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="head">
+      <img src="${logo}" alt="Vinet"/>
+      <div>
+        <h1>EFT Details</h1>
+        <div class="k">Use the reference exactly as shown</div>
+      </div>
+    </div>
+    <section class="grid" style="margin-bottom:1rem">
+      <div class="row"><span class="k">Bank</span><span>${bank}</span></div>
+      <div class="row"><span class="k">Branch</span><span>${branch}</span></div>
+      <div class="row"><span class="k">Account name</span><span>${accName}</span></div>
+      <div class="row"><span class="k">Account number</span><span>${accNo}</span></div>
+      <div class="row" style="grid-column:1 / -1">
+        <span class="k">Payment reference</span>
+        <span class="ref">${eftRef}</span>
+      </div>
+    </section>
+    <div class="k">Beneficiary: ${bankName}</div>
+  </main>
+</body>
+</html>`;
+    return html(page);
+  });
 }
