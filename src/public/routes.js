@@ -102,12 +102,12 @@ export async function handlePublic(request, env) {
   if (request.method === "GET" && pathname === "/manifest.webmanifest") {
     return json(manifest(env));
   }
-  if (request.method === "GET" && pathname === "/sw.js")) {
+  if (request.method === "GET" && pathname === "/sw.js") {
     return text(SW_JS, 200, { "content-type": "application/javascript; charset=utf-8" });
   }
 
   // 6) Lead submit API (JSON or FormData) — also requires cookie
-  if (request.method === "POST" && pathname === "/api/leads/submit")) {
+  if (request.method === "POST" && pathname === "/api/leads/submit") {
     if (!requireTS(request)) return json({ error: "Session not verified" }, 403);
 
     await ensureLeadSchema(env);
@@ -162,7 +162,6 @@ export async function handlePublic(request, env) {
       VALUES ('public', ?1, ?2, '[]', 0, NULL, '0')
     `).bind(nowSec(), JSON.stringify(payload)).run();
 
-    // NO backticks: ensure compatibility in any build step
     const ref = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
     return json({ ok: true, ref, message: "Thanks! We’ve received your details." });
   }
