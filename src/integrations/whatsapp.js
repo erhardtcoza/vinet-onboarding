@@ -9,6 +9,14 @@
  * Usage:
  *   await sendWATemplate(env, "+2772xxxxxxx", "wa_onboarding", "en", name, url);
  */
+
+// src/integrations/whatsapp.js
+// Temp WA template sender (no-op success). Replace with real Cloud API later.
+export async function sendWATemplate(_env, _msisdn, _tplName, _lang, _name, _urlText) {
+  // You can log here if needed.
+  return true; // pretend success for now
+}
+
 export async function sendWATemplate(env, to, templateName, lang = "en_US", ...bodyParams) {
   const token = env?.WHATSAPP_TOKEN || env?.WA_TOKEN || "";
   const phoneNumberId = env?.PHONE_NUMBER_ID || env?.WA_PHONE_NUMBER_ID || "";
