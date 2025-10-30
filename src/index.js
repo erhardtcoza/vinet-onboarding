@@ -1,6 +1,43 @@
 // src/index.js
 
 import { route as routeOnboarding } from "./routes.js"; // keep your existing onboarding router
+import { Router } from "./router.js";
+import { registerAllRoutes } from "./routes.js";
+
+export default {
+  async fetch(request, env, ctx) {
+    const router = new Router();
+    registerAllRoutes(router);
+
+    // Let your routes handle it
+    const handled = await router.handle(request, env, ctx);
+    if (handled) return handled;
+
+    // Optional: simple host hints if nothing matched
+    const host = new URL(request.url).host.toLowerCase();
+    if (host === "onboard.vinet.co.za") {
+      return new Response(
+        "<h1>Onboarding</h1><p>Routes mounted; paste full onboarding flow when ready.</p>",
+        { headers: { "content-type": "text/html" } }
+      );
+    }
+    if (host === "crm.vinet.co.za") {
+      return new Response(
+        "<h1>CRM</h1><p>Admin routes mounted.</p>",
+        { headers: { "content-type": "text/html" } }
+      );
+    }
+    if (host === "new.vinet.co.za") {
+      return new Response(
+        "<h1>Lead capture</h1><p>Public routes mounted.</p>",
+        { headers: { "content-type": "text/html" } }
+      );
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+};
+
 
 /* ------------------ Config ------------------ */
 const SPYLNX_URL = "https://splynx.vinet.co.za";
