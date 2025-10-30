@@ -1,4 +1,3 @@
-// src/utils/misc.js
 export const DATE_TODAY = () => new Date().toISOString().slice(0, 10);
 export const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -14,9 +13,4 @@ export function normalizeMsisdn(s) {
   if (t.startsWith("0")) t = "27" + t.slice(1);
   if (t.startsWith("+")) t = t.slice(1);
   return t.replace(/\D+/g, "");
-}
-
-export function hasTsCookie(req) {
-  const c = req.headers.get("cookie") || "";
-  return /(?:^|;\s*)ts_ok=1(?:;|$)/.test(c);
 }
