@@ -1,80 +1,96 @@
-// src/ui/public_lead.js
+// /src/ui/public_lead.js
+import { LOGO_URL } from "../constants.js";
+
 export function renderPublicLeadHTML() {
-  return /*html*/ `<!DOCTYPE html>
+  return /*html*/`
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Vinet Lead Capture</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="https://static.vinet.co.za/favicon.ico" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>New Service Enquiry</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#ED1C24"/>
+  <script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js");}</script>
   <style>
-    :root{--brand:#e2001a;--ink:#111;--line:#ddd;--bg:#f7f7fa}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);max-width:680px;margin:40px auto;padding:20px;}
-    .card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 6px 22px rgba(0,0,0,.06);padding:22px;}
-    .logo{width:160px;height:auto;display:block;margin:0 auto 10px}
-    h1{color:var(--brand);text-align:center;margin:6px 0 20px;font-size:28px}
-    label{display:block;margin:10px 0 6px;font-weight:600}
-    input,select,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:10px;background:#fff;}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    .actions{margin-top:18px}
-    button{width:100%;background:var(--brand);color:#fff;border:none;border-radius:10px;padding:12px 14px;font-weight:700;cursor:pointer;}
-    small.muted{color:#666}
-    .toast{position:fixed;inset:auto 16px 16px 16px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 10px 28px rgba(0,0,0,.12);display:none;}
-    .center{text-align:center}
+    :root{--red:#ED1C24;--ink:#0b1320;--muted:#6b7280;--bg:#f7f7f8;--card:#fff}
+    body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    .card{max-width:720px;margin:1.5rem auto;background:var(--card);border-radius:16px;box-shadow:0 4px 20px #0001;padding:1.25rem}
+    .logo{display:flex;align-items:center;gap:.6rem;margin-bottom:1rem}
+    .logo img{width:38px;height:38px;border-radius:8px}
+    h1{margin:.25rem 0 0;font-size:1.25rem}
+    form{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    label{display:flex;flex-direction:column;font-size:.9rem;color:var(--muted);gap:.35rem}
+    input,select,textarea{padding:.7rem .75rem;border:1px solid #e5e7eb;border-radius:12px;font:inherit}
+    .span2{grid-column:1 / -1}
+    .actions{display:flex;gap:.75rem;justify-content:flex-end;margin-top:1rem}
+    button{border:0;border-radius:999px;padding:.75rem 1.1rem;background:var(--red);color:#fff;font-weight:600;cursor:pointer}
+    button.secondary{background:#111;color:#fff}
   </style>
 </head>
 <body>
-  <div class="card">
-    <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Internet Solutions" />
-    <h1>New Service Enquiry</h1>
-    <form id="leadForm" novalidate>
-      <div class="row">
-        <div><label>Full Name *</label><input name="full_name" required /></div>
-        <div><label>Phone (WhatsApp) *</label><input name="phone" required /></div>
+  <main class="card">
+    <div class="logo">
+      <img src="${LOGO_URL}" alt="Vinet"/>
+      <div><h1>New Service Enquiry</h1><div style="color:var(--muted)">Tell us where you need internet</div></div>
+    </div>
+    <form id="leadForm">
+      <label class="span2">Full name
+        <input name="name" required/>
+      </label>
+      <label>Phone
+        <input name="phone" required/>
+      </label>
+      <label>Email
+        <input name="email" type="email" required/>
+      </label>
+      <label class="span2">Street address
+        <input name="street"/>
+      </label>
+      <label>City/Town
+        <input name="city"/>
+      </label>
+      <label>ZIP
+        <input name="zip"/>
+      </label>
+      <label class="span2">Notes
+        <textarea name="notes" rows="3"></textarea>
+      </label>
+      <div class="actions span2">
+        <button type="reset" class="secondary">Clear</button>
+        <button type="submit">Submit</button>
       </div>
-      <div class="row">
-        <div><label>Email *</label><input name="email" type="email" required /></div>
-        <div><label>Source *</label>
-          <select name="source" required>
-            <option value="">Select…</option>
-            <option>Website</option><option>Facebook</option>
-            <option>Walk-in</option><option>Referral</option><option>Other</option>
-          </select></div>
-      </div>
-      <div class="row">
-        <div><label>City *</label><input name="city" required /></div>
-        <div><label>ZIP *</label><input name="zip" required /></div>
-      </div>
-      <label>Street Address *</label><input name="street" required />
-      <label>Service Interested In *</label>
-      <select name="service" required>
-        <option value="">Select…</option>
-        <option>FTTH (Fibre to the Home)</option>
-        <option>Fixed Wireless / Airfibre</option>
-        <option>VoIP</option><option>Web Hosting</option>
-      </select>
-      <input type="hidden" name="partner" value="main" />
-      <input type="hidden" name="location" value="main" />
-      <label><input type="checkbox" name="consent" required /> I consent to Vinet contacting me regarding this enquiry.</label>
-      <div class="actions"><button type="submit">Submit</button></div>
-      <p class="center"><small class="muted">We’ll reach out within business hours. Support: 021 007 0200</small></p>
     </form>
-  </div>
-  <div id="toast" class="toast"></div>
-<script>
-const form=document.getElementById("leadForm");
-const toast=document.getElementById("toast");
-function showToast(html){toast.innerHTML=html;toast.style.display="block";setTimeout(()=>{toast.style.display="none"},6000);}
-form.addEventListener("submit",async(e)=>{
- e.preventDefault();
- const fd=new FormData(form);
- if(!fd.get("consent")){showToast("Please tick consent to proceed.");return;}
- const res=await fetch("/submit",{method:"POST",body:fd});
- const data=await res.json().catch(()=>({}));
- if(data&&data.ok){showToast('<div style="color:#0a7d2b;font-weight:700">Thank you! Your enquiry was received.</div><div>Reference: '+(data.ref||"-")+'</div>');form.reset();}
- else{const msg=(data&&(data.error||data.detail))?String(data.error||data.detail).slice(0,200):"Could not save. Please try again.";showToast("Error: "+msg);}
-});
-</script>
+    <div id="msg" class="span2" style="margin-top:1rem"></div>
+  </main>
+  <script type="module">
+    const f = document.getElementById('leadForm');
+    const msg = document.getElementById('msg');
+    function safe(t){return String(t||'').replace(/[&<>"]/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+    f.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      msg.textContent = 'Submitting...';
+      const data = Object.fromEntries(new FormData(f));
+      try{
+        const res = await fetch('/api/leads/submit', {
+          method:'POST',
+          headers:{'content-type':'application/json'},
+          body: JSON.stringify(data)
+        });
+        const j = await res.json();
+        if(!res.ok) throw new Error(j?.error||res.statusText);
+        msg.innerHTML = j?.message 
+          ? safe(j.message)
+          : 'Thanks! We\'ll be in touch shortly.';
+        if (j?.lead_id) {
+          msg.innerHTML += '<br/>Lead ID: ' + safe(j.lead_id);
+        }
+        f.reset();
+      }catch(err){
+        msg.textContent = 'Error: ' + (err?.message||String(err));
+      }
+    });
+  </script>
 </body>
 </html>`;
 }
