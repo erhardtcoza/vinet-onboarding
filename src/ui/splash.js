@@ -1,29 +1,33 @@
-// Splash card with Turnstile + graceful failure
+// Splash with logo zoom + progress + Turnstile (graceful failure)
 export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
-  const msg = failed
-    ? "Could not secure connection. You can continue."
-    : "Just a sec…";
-  return `<!doctype html><html><head>
+  const msg = failed ? "Could not secure connection. You can continue." : "Just a sec…";
+  return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Just a sec…</title>
 <style>
   :root{--red:#ED1C24;--ink:#0b1320;--muted:#6b7280;--bg:#f7f7f8;--card:#fff}
-  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
-    display:grid;place-items:center;min-height:100vh}
-  .card{background:var(--card);width:min(92vw,720px);border-radius:20px;box-shadow:0 6px 28px #0002;padding:28px}
-  h1{margin:.2rem 0 1rem;font-size:2.2rem}
-  .bar{height:6px;background:#eee;border-radius:999px;overflow:hidden;margin:-.3rem 0 1rem}
-  .bar>i{display:block;height:100%;width:100%;background:var(--red)}
-  .muted{color:#6b7280}
-  .row{display:flex;gap:.75rem;margin-top:1rem}
-  button{padding:.7rem 1.1rem;border-radius:999px;border:0;background:#111;color:#fff;font-weight:700;cursor:pointer}
-  button.alt{background:#ED1C24}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;min-height:100vh;display:grid;place-items:center}
+  .card{width:min(92vw,760px);background:var(--card);border-radius:20px;box-shadow:0 10px 36px #0002;padding:24px}
+  .hero{display:flex;flex-direction:column;align-items:center;gap:.75rem}
+  .logo{width:86px;height:86px;border-radius:14px;object-fit:cover;transform:scale(.9);opacity:.9;animation:pop .6s ease forwards}
+  @keyframes pop{to{transform:scale(1);opacity:1}}
+  h1{margin:.25rem 0 0;font-size:2.2rem}
+  .bar{height:6px;background:#eef2f7;border-radius:999px;overflow:hidden;margin:.5rem 0 1rem;width:100%}
+  .bar>i{display:block;height:100%;width:0;background:var(--red);border-radius:999px;transition:width .8s ease}
+  .muted{color:var(--muted);text-align:center}
+  .row{display:flex;gap:.75rem;justify-content:center;margin-top:1rem}
+  button{padding:.75rem 1.1rem;border-radius:999px;border:0;background:#111;color:#fff;font-weight:800;cursor:pointer}
+  button.alt{background:var(--red)}
 </style>
 </head><body>
   <main class="card">
-    <div class="bar"><i></i></div>
-    <h1>Just a sec…</h1>
-    <div class="muted" id="m">${msg}</div>
+    <div class="hero">
+      <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
+      <div class="bar"><i id="bar"></i></div>
+      <h1>Just a sec…</h1>
+      <div class="muted" id="m">${msg}</div>
+    </div>
     <div id="cf" style="margin-top:12px"></div>
     <div class="row">
       <button id="retry">Retry</button>
@@ -31,15 +35,17 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
     </div>
   </main>
 <script>
-(async () => {
+(() => {
   const siteKey = ${JSON.stringify(siteKey)};
-  const mount = document.getElementById('cf');
-  const msg   = document.getElementById('m');
+  const mount   = document.getElementById('cf');
+  const msg     = document.getElementById('m');
+  const bar     = document.getElementById('bar');
+  requestAnimationFrame(()=>{ bar.style.width='85%'; setTimeout(()=>bar.style.width='100%', 600); });
 
-  async function verify(token){
-    const r = await fetch("/ts-verify",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token})});
-    const j = await r.json().catch(()=>({ok:false}));
-    if (j.proceed) location.href = "/landing";
+  async function verify(payload){
+    const r = await fetch("/ts-verify",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
+    const j = await r.json().catch(()=>({}));
+    if (j && j.ok) location.href = "/landing";
   }
 
   async function runTurnstile(){
@@ -53,16 +59,15 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
         s.src="https://challenges.cloudflare.com/turnstile/v0/api.js";
         s.async=true;s.onload=res;s.onerror=rej;document.head.appendChild(s);
       });
-      // invisible widget
       const w = document.createElement("div");
       mount.appendChild(w);
       // @ts-ignore
       turnstile.render(w,{
         sitekey: siteKey,
-        callback: (t)=>verify(t),
+        size: "invisible",
+        callback: (t)=>verify({token:t}),
         "error-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; },
-        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; },
-        size: "invisible"
+        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; }
       });
       // @ts-ignore
       turnstile.execute(w);
@@ -72,8 +77,7 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
   }
 
   document.getElementById('retry').onclick = ()=>runTurnstile();
-  document.getElementById('skip').onclick  = ()=>verify("skip");
-
+  document.getElementById('skip').onclick  = ()=>verify({skip:true});
   runTurnstile();
 })();
 </script>
