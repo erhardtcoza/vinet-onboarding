@@ -1,21 +1,57 @@
-export const json = (o, s = 200, extraHeaders = {}) =>
-  new Response(JSON.stringify(o), {
-    status: s,
-    headers: { "content-type": "application/json", ...extraHeaders },
-  });
-
-export const html = (h, s = 200, extraHeaders = {}) =>
-  new Response(h, {
-    status: s,
-    headers: { "content-type": "text/html; charset=utf-8", ...extraHeaders },
-  });
-
-export const safeStr = (v) => (v == null ? "" : String(v)).trim();
-
-export const hostOf = (req) => new URL(req.url).host.toLowerCase();
-
-export const hasCookie = (req, name, val) => {
-  const c = req.headers.get("cookie") || "";
-  const re = new RegExp(`(?:^|;\\s*)${name}=${val}(?:;|$)`);
-  return re.test(c);
+// src/utils/http.js
+const TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".htm":  "text/html; charset=utf-8",
+  ".js":   "application/javascript; charset=utf-8",
+  ".mjs":  "application/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg":  "image/svg+xml",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico":  "image/x-icon",
+  ".pdf":  "application/pdf"
 };
+
+function extOf(pathname="") {
+  const i = pathname.lastIndexOf(".");
+  return i >= 0 ? pathname.slice(i).toLowerCase() : "";
+}
+
+export function html(body, init={}) {
+  const h = new Headers(init.headers || {});
+  h.set("content-type", TYPES[".html"]);
+  h.delete("content-disposition");
+  return new Response(body, { ...init, headers: h });
+}
+
+export function js(body, init={}) {
+  const h = new Headers(init.headers || {});
+  h.set("content-type", TYPES[".js"]);
+  h.delete("content-disposition");
+  return new Response(body, { ...init, headers: h });
+}
+
+export function css(body, init={}) {
+  const h = new Headers(init.headers || {});
+  h.set("content-type", TYPES[".css"]);
+  h.delete("content-disposition");
+  return new Response(body, { ...init, headers: h });
+}
+
+export function json(data, init={}) {
+  const h = new Headers(init.headers || {});
+  h.set("content-type", TYPES[".json"]);
+  h.delete("content-disposition");
+  return new Response(JSON.stringify(data), { ...init, headers: h });
+}
+
+export function file(body, pathname, init={}) {
+  const h = new Headers(init.headers || {});
+  h.set("content-type", TYPES[extOf(pathname)] || "application/octet-stream");
+  // only set attachment yourself if you *really* want downloads:
+  // h.set("content-disposition", `inline; filename="${pathname.split('/').pop()}"`);
+  return new Response(body, { ...init, headers: h });
+}
