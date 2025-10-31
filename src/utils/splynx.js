@@ -1,39 +1,49 @@
 // src/utils/splynx.js
 import { SPYLNX_URL, AUTH_HEADER } from "../constants.js";
 
-/* ---------------- Core HTTP helpers ---------------- */
-async function splynxGET(path) {
-  const r = await fetch(`${SPYLNX_URL}${path}`, { headers: { Authorization: AUTH_HEADER } });
-  if (!r.ok) throw new Error(`Splynx GET ${path} -> ${r.status}`);
-  // Some Splynx endpoints return arrays, others {items:[...]}
-  return r.json().catch(() => ({}));
+/* ---------------- Path + HTTP helpers (compatible signatures) ---------------- */
+function normalizePath(p) {
+  const s = String(p || "");
+  if (s.startsWith("/api/")) return s;                 // already absolute API path
+  if (s.startsWith("/admin/") || s.startsWith("/crm/")) return `/api/2.0${s}`;
+  // allow callers to pass either style:
+  return s.startsWith("/") ? `/api/2.0${s}` : `/api/2.0/${s}`;
 }
-async function splynxPOST(path, body) {
-  const r = await fetch(`${SPYLNX_URL}${path}`, {
-    method: "POST",
-    headers: { Authorization: AUTH_HEADER, "content-type": "application/json" },
-    body: JSON.stringify(body || {})
-  });
-  if (!r.ok) throw new Error(`Splynx POST ${path} -> ${r.status} ${await r.text().catch(()=>"")}`);
-  return r.json().catch(() => ({}));
-}
-async function splynxPUT(path, body) {
-  const r = await fetch(`${SPYLNX_URL}${path}`, {
-    method: "PUT",
-    headers: { Authorization: AUTH_HEADER, "content-type": "application/json" },
-    body: JSON.stringify(body || {})
-  });
-  if (!r.ok) throw new Error(`Splynx PUT ${path} -> ${r.status} ${await r.text().catch(()=>"")}`);
-  return r.json().catch(() => ({}));
-}
-
-/* ---------------- Small utils ---------------- */
-const arrFrom = (res) => (Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : []));
-const pick = (o, keys) => {
+function pick(o, keys) {
   const out = {};
   for (const k of keys) if (o[k] !== undefined) out[k] = o[k];
   return out;
-};
+}
+const arrFrom = (res) =>
+  Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : []);
+
+async function _do(method, path, body) {
+  const url = `${SPYLNX_URL}${normalizePath(path)}`;
+  const r = await fetch(url, {
+    method,
+    headers: {
+      Authorization: AUTH_HEADER,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`Splynx ${method} ${path} -> ${r.status} ${t}`);
+  }
+  return r.json().catch(() => ({}));
+}
+
+// Accept (path) or (env, path)
+function unpackArgs(a1, a2) {
+  return typeof a2 === "string" ? a2 : a1;
+}
+
+export async function splynxGET(a1, a2)  { return _do("GET",  unpackArgs(a1, a2)); }
+export async function splynxPOST(a1, a2, a3) { return _do("POST", unpackArgs(a1, a2), a3 ?? (typeof a2 === "object" ? a2 : undefined)); }
+export async function splynxPUT(a1, a2, a3)  { return _do("PUT",  unpackArgs(a1, a2), a3 ?? (typeof a2 === "object" ? a2 : undefined)); }
+
+/* ---------------- Small utils ---------------- */
 const getField = (o, names, d = null) => {
   for (const n of names) {
     if (o && o[n] !== undefined && o[n] !== "") return o[n];
@@ -49,7 +59,6 @@ const parseTs = (v) => {
 
 // Best-effort “last contacted”
 export function extractLastContacted(lead) {
-  // common fields we’ve seen on Splynx
   const lc = getField(lead, ["last_contacted", "last_contact", "last_contact_date"]);
   if (lc) return parseTs(lc);
   const la = getField(lead, ["last_activity", "updated"]);
@@ -66,24 +75,24 @@ export function toLeadRow(x = {}) {
     email: getField(x, ["email", "billing_email"], "") || "",
     phone: getField(x, ["phone", "phone_mobile", "msisdn"], "") || "",
     city: x.city || "",
-    last_contacted: extractLastContacted(x)
+    last_contacted: extractLastContacted(x),
   };
 }
 
-/* ---------------- Basic fetchers (existing) ---------------- */
+/* ---------------- Basic fetchers (backwards compatible) ---------------- */
 export async function splynxFetchLeads({ email, phone, name }) {
   const qs = new URLSearchParams();
   if (email) qs.set("email", email);
   if (phone) qs.set("phone", phone);
   if (name)  qs.set("name", name);
-  return splynxGET(`/api/2.0/admin/crm/leads?${qs.toString()}`);
+  return splynxGET(`/admin/crm/leads?${qs.toString()}`);
 }
 export async function splynxFetchCustomers({ email, phone, name }) {
   const qs = new URLSearchParams();
   if (email) qs.set("email", email);
   if (phone) qs.set("phone", phone);
   if (name)  qs.set("name", name);
-  return splynxGET(`/api/2.0/admin/customers/customer?${qs.toString()}`);
+  return splynxGET(`/admin/customers/customer?${qs.toString()}`);
 }
 
 export function findCandidates(leadsRes = {}, custRes = {}) {
@@ -93,7 +102,7 @@ export function findCandidates(leadsRes = {}, custRes = {}) {
   return out;
 }
 
-/* ---------------- Lead payload builders (existing) ---------------- */
+/* ---------------- Lead payload builders ---------------- */
 export function buildLeadPayload(p) {
   return {
     name: p.name,
@@ -107,67 +116,65 @@ export function buildLeadPayload(p) {
     score: 1,
     status: "New enquiry",
     date_add: new Date().toISOString().slice(0, 10),
-    owner: "public"
+    owner: "public",
   };
 }
 
 export async function createLead(payload) {
-  return splynxPOST(`/api/2.0/admin/crm/leads`, payload);
+  return splynxPOST(`/admin/crm/leads`, payload);
 }
 export async function updateLead(targetType, targetId, payload) {
   if (targetType === "lead") {
-    return splynxPUT(`/api/2.0/admin/crm/leads/${targetId}`, payload);
+    return splynxPUT(`/admin/crm/leads/${targetId}`, payload);
   } else if (targetType === "customer") {
-    // safer: create a new lead rather than mutating the customer record directly
+    // safer: create a new lead rather than mutating customer directly
     return createLead(payload);
   }
   throw new Error("Unknown targetType");
 }
 
 export async function findReuseLead() {
-  const res = await splynxGET(`/api/2.0/admin/crm/leads?name=re-use`);
+  const res = await splynxGET(`/admin/crm/leads?name=re-use`);
   const arr = arrFrom(res);
-  return arr.find(x => (x.name || "").toLowerCase() === "re-use") || null;
+  return arr.find((x) => (x.name || "").toLowerCase() === "re-use") || null;
 }
 
-/* ---------------- New: list + update + bulk sanitize ---------------- */
+/* ---------------- List + update + bulk sanitize (single set) ---------------- */
 
 /**
  * List a page of leads with optional status filter.
- * Splynx’s API varies; we filter & sort client-side for consistency.
+ * We filter/sort client-side to handle Splynx variance.
  */
 export async function listLeads({ status = "", limit = 50, offset = 0 } = {}) {
   let raw;
   try {
-    // Try passing status to Splynx if it supports it (harmless if ignored)
-    const qs = new URLSearchParams();
-    if (status) qs.set("status", status);
-    raw = await splynxGET(`/api/2.0/admin/crm/leads${qs.toString() ? `?${qs}` : ""}`);
+    raw = await splynxGET(`/admin/crm/leads`);
   } catch {
     raw = [];
   }
   let rows = arrFrom(raw).map(toLeadRow);
 
-  if (status) rows = rows.filter(x => (x.status || "").toLowerCase() === status.toLowerCase());
+  if (status) {
+    const s = status.toLowerCase();
+    rows = rows.filter((x) => (x.status || "").toLowerCase() === s);
+  }
   rows.sort((a, b) => (b.last_contacted || 0) - (a.last_contacted || 0));
 
   if (offset) rows = rows.slice(offset);
   return rows.slice(0, Math.max(1, Math.min(limit, 500)));
 }
 
-/**
- * Update a single lead with a safe subset of fields.
- */
+/** Safely update a single lead with a whitelisted set of fields. */
 export async function updateLeadFields(id, fields = {}) {
   const allowed = [
     "name", "email", "billing_email",
     "phone", "phone_mobile",
     "street_1", "city", "zip_code",
-    "status", "source"
+    "status", "source", "owner",
   ];
   const payload = pick(fields, allowed);
   if (!Object.keys(payload).length) return { ok: true, skipped: true };
-  await splynxPUT(`/api/2.0/admin/crm/leads/${id}`, payload);
+  await splynxPUT(`/admin/crm/leads/${id}`, payload);
   return { ok: true };
 }
 
@@ -179,90 +186,13 @@ export async function bulkSanitizeLeads(ids = []) {
     name: "re-use",
     email: "", billing_email: "",
     phone: "", phone_mobile: "",
-    street_1: "", city: "", zip_code: ""
+    street_1: "", city: "", zip_code: "",
   };
   let updated = 0, failed = 0;
   const results = [];
   for (const id of ids) {
     try {
-      await splynxPUT(`/api/2.0/admin/crm/leads/${id}`, payload);
-      updated++; results.push({ id, ok: true });
-    } catch (e) {
-      failed++; results.push({ id, ok: false, error: String(e?.message || e) });
-    }
-  }
-  return { ok: true, updated, failed, results };
-}
-/* ───────────────────────────────────────────────────────────
- * Lead listing (client-side filter/sort), single update, bulk sanitize
- * ─────────────────────────────────────────────────────────── */
-
-// best-effort extract of "last contacted" for sorting
-function _ts(v) {
-  if (!v) return 0;
-  if (typeof v === "number") return v;
-  const n = Date.parse(String(v));
-  return Number.isFinite(n) ? Math.floor(n / 1000) : 0;
-}
-function _lastContacted(lead) {
-  return _ts(lead.last_contacted || lead.last_contact || lead.last_activity || lead.updated || lead.date_add);
-}
-
-/**
- * List a page of leads from Splynx. Filters by status (optional),
- * sorts by "last contacted" desc, then applies offset/limit locally.
- */
-export async function listLeads(env, { status = "", limit = 50, offset = 0 } = {}) {
-  // NOTE: many Splynx installs ignore query filters on this endpoint; we filter locally.
-  let res = [];
-  try {
-    const r = await splynxGET(env, `/admin/crm/leads`);
-    res = Array.isArray(r?.items) ? r.items : (Array.isArray(r) ? r : []);
-  } catch (_) { res = []; }
-
-  if (status) {
-    const s = String(status).toLowerCase();
-    res = res.filter(x => String(x.status || "").toLowerCase() === s);
-  }
-
-  res.sort((a, b) => _lastContacted(b) - _lastContacted(a));
-
-  if (offset) res = res.slice(offset);
-  return res.slice(0, Math.max(1, Math.min(Number(limit) || 50, 500)));
-}
-
-/** Safely update a single lead with a whitelisted set of fields. */
-export async function updateLeadFields(env, id, fields = {}) {
-  const allowed = [
-    "name", "email", "billing_email",
-    "phone", "phone_mobile",
-    "street_1", "city", "zip_code",
-    "status", "source", "owner"
-  ];
-  const body = {};
-  for (const k of allowed) if (fields[k] !== undefined) body[k] = fields[k];
-  if (!Object.keys(body).length) return { ok: true, skipped: true };
-
-  await splynxPUT(env, `/admin/crm/leads/${id}`, body);
-  return { ok: true };
-}
-
-/**
- * Bulk sanitize: rename to "re-use", clear PII.
- * Returns { ok, updated, failed, results[] }.
- */
-export async function bulkSanitizeLeads(env, ids = []) {
-  const body = {
-    name: "re-use",
-    email: "", billing_email: "",
-    phone: "", phone_mobile: "",
-    street_1: "", city: "", zip_code: ""
-  };
-  let updated = 0, failed = 0;
-  const results = [];
-  for (const id of ids) {
-    try {
-      await splynxPUT(env, `/admin/crm/leads/${id}`, body);
+      await splynxPUT(`/admin/crm/leads/${id}`, payload);
       updated++; results.push({ id, ok: true });
     } catch (e) {
       failed++; results.push({ id, ok: false, error: String(e?.message || e) });
