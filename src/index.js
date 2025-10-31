@@ -1,23 +1,23 @@
 // src/index.js
-import { handlePublic } from "./public/routes.js";
-import { handleAdmin } from "./admin/routes.js";
+import { Router } from "./router.js";
+import { mountAll } from "./routes/index.js";
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1) Public routes (landing + lead form + submit + PWA)
-    const pub = await handlePublic(request, env);
-    if (pub) return pub;
+    // Mount once
+    const router = new Router();
+    mountAll(router);
 
-    // 2) Admin routes
-    const adm = await handleAdmin(request, env);
-    if (adm) return adm;
-
-    // 3) Fallback
+    // Favicon/ico shortcuts
     if (url.pathname === "/favicon.png" || url.pathname === "/favicon.ico") {
       return new Response(null, { status: 204 });
     }
+
+    // Route
+    const res = await router.handle(request, env, ctx);
+    if (res) return res;
 
     return new Response("Not found", { status: 404 });
   },
