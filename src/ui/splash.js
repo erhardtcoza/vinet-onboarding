@@ -1,6 +1,8 @@
-// Splash with logo zoom + progress + Turnstile (graceful failure)
+// src/ui/splash.js
 export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
-  const msg = failed ? "Could not secure connection. You can continue." : "Just a sec…";
+  const msg = failed
+    ? "Security check unavailable right now — you can continue."
+    : "Just a sec…";
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Just a sec…</title>
@@ -12,7 +14,7 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
   .hero{display:flex;flex-direction:column;align-items:center;gap:.75rem}
   .logo{width:86px;height:86px;border-radius:14px;object-fit:cover;transform:scale(.9);opacity:.9;animation:pop .6s ease forwards}
   @keyframes pop{to{transform:scale(1);opacity:1}}
-  h1{margin:.25rem 0 0;font-size:2.2rem}
+  h1{margin:.25rem 0 0;font-size:2.0rem}
   .bar{height:6px;background:#eef2f7;border-radius:999px;overflow:hidden;margin:.5rem 0 1rem;width:100%}
   .bar>i{display:block;height:100%;width:0;background:var(--red);border-radius:999px;transition:width .8s ease}
   .muted{color:var(--muted);text-align:center}
@@ -43,15 +45,17 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
   requestAnimationFrame(()=>{ bar.style.width='85%'; setTimeout(()=>bar.style.width='100%', 600); });
 
   async function verify(payload){
-    const r = await fetch("/ts-verify",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
-    const j = await r.json().catch(()=>({}));
-    if (j && j.ok) location.href = "/landing";
+    try{
+      const r = await fetch("/ts-verify",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
+      await r.json().catch(()=>({}));
+    }catch{}
+    location.href = "/landing";
   }
 
   async function runTurnstile(){
     try{
       if(!siteKey){
-        msg.textContent = "Could not secure connection. You can continue.";
+        msg.textContent = "Security check unavailable right now — you can continue.";
         return;
       }
       await new Promise((res,rej)=>{
@@ -63,11 +67,10 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
       mount.appendChild(w);
       // @ts-ignore
       turnstile.render(w,{
-        sitekey: siteKey,
-        size: "invisible",
+        sitekey: siteKey, size: "invisible",
         callback: (t)=>verify({token:t}),
-        "error-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; },
-        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; }
+        "error-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); },
+        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); }
       });
       // @ts-ignore
       turnstile.execute(w);
