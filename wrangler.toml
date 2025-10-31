@@ -22,6 +22,9 @@ id = "fc2d1cfd11a84226b9de86f8957be5d3"
 binding = "R2_UPLOADS"
 bucket_name = "vinet-onboarding-uploads"
 
+[placement]
+mode = "smart"
+
 [vars]
 SPLYNX_API = "https://splynx.vinet.co.za/api/2.0"
 SPLYNX_AUTH = "NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
