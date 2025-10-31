@@ -1,11 +1,11 @@
 // src/integrations/splynx.js
 // Uses constants to match your existing code (no need to pass env from callers)
-const SPYLNX_URL = "https://splynx.vinet.co.za";
+const SPLYNX_URL = "https://splynx.vinet.co.za";
 const AUTH_HEADER =
   "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE=";
 
 export async function splynx(method, path, body) {
-  const r = await fetch(`${SPYLNX_URL}${path}`, {
+  const r = await fetch(`${SPLYNX_URL}${path}`, {
     method,
     headers: { Authorization: AUTH_HEADER, "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
