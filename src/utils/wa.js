@@ -2,7 +2,7 @@
 import { WA_TEMPLATE_NAME, WA_TEMPLATE_LANG } from "../constants.js";
 
 export async function sendOnboardingTemplate(env, msisdn, name, onboardingUrl) {
-  // normalise msisdn
+  // normalize msisdn
   let t = String(msisdn || "").trim();
   if (t.startsWith("0")) t = "27" + t.slice(1);
   if (t.startsWith("+")) t = t.slice(1);
@@ -29,6 +29,6 @@ export async function sendOnboardingTemplate(env, msisdn, name, onboardingUrl) {
     headers: { "Authorization": `Bearer ${env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-  if (!r.ok) throw new Error(`WA ${r.status}: ${await r.text().catch(()=> "")}`);
+  if (!r.ok) throw new Error(`WA ${r.status}: ${await r.text().catch(() => "")}`);
   return true;
 }
