@@ -5,8 +5,8 @@ export const DEFAULT_MSA_TERMS_URL = "https://onboarding-uploads.vinethosting.or
 export const DEFAULT_DEBIT_TERMS_URL = "https://onboarding-uploads.vinethosting.org/vinet-debitorder-terms.txt";
 export const PDF_CACHE_TTL = 60 * 60 * 24 * 7; // 7 days
 
-// src/constants.js
-export const SPYLNX_URL = "https://splynx.vinet.co.za";
+// Splynx
+export const SPLYNX_URL = "https://splynx.vinet.co.za";
 export const AUTH_HEADER =
   "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE=";
 
@@ -15,8 +15,8 @@ export const WA_TEMPLATE_NAME = "wa_onboarding";  // uses {{text}} = name, {{tex
 export const WA_TEMPLATE_LANG  = "en";
 
 // Brand
-export const VINET_RED = rgb(237/255, 28/255, 36/255);
-export const VINET_BLACK = rgb(3/255, 3/255, 3/255);
+export const VINET_RED = rgb(237 / 255, 28 / 255, 36 / 255);
+export const VINET_BLACK = rgb(3 / 255, 3 / 255, 3 / 255);
 
 // Header defaults
 export const HEADER_WEBSITE_DEFAULT = "www.vinet.co.za";
