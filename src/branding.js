@@ -84,7 +84,7 @@ function ipInCidrAny(ip, parsed) {
 }
 
 /**
- * Allowlist by IP/CIDR (IPv4 + IPv6), with optional Cloudflare WARP allow.
+ * Allow-list by IP/CIDR (IPv4 + IPv6), with optional Cloudflare WARP allow.
  *
  * Defaults:
  *   - Always allow 127.0.0.1 and ::1
