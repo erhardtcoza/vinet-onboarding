@@ -1,5 +1,5 @@
 // src/utils/splynx.js
-import { SPYLNX_URL, AUTH_HEADER } from "../constants.js";
+import { SPLYNX_URL, AUTH_HEADER } from "../constants.js";
 
 /* ---------------- Path + HTTP helpers (compatible signatures) ---------------- */
 function normalizePath(p) {
@@ -18,7 +18,7 @@ const arrFrom = (res) =>
   Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : []);
 
 async function _do(method, path, body) {
-  const url = `${SPYLNX_URL}${normalizePath(path)}`;
+  const url = `${SPLYNX_URL}${normalizePath(path)}`;
   const r = await fetch(url, {
     method,
     headers: {
@@ -127,7 +127,7 @@ export async function updateLead(targetType, targetId, payload) {
   if (targetType === "lead") {
     return splynxPUT(`/admin/crm/leads/${targetId}`, payload);
   } else if (targetType === "customer") {
-    // safer: create a new lead rather than mutating customer directly
+    // Safer: create a new lead rather than mutating customer directly
     return createLead(payload);
   }
   throw new Error("Unknown targetType");
