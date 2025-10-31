@@ -220,7 +220,7 @@ export function renderPublicLeadHTML() {
       alert("Error: " + (j?.error || res.statusText));
     }
   });
-
+  
   document.getElementById('home').onclick  = ()=>location.href="/";
   document.getElementById('close').onclick = ()=>{ md.style.display = "none"; };
 </script>
