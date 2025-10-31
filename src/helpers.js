@@ -1,33 +1,35 @@
-import { PDFDocument, rgb } from "pdf-lib";
+import { rgb } from "pdf-lib";
 import { LOGO_URL, PDF_CACHE_TTL, VINET_BLACK } from "./constants.js";
+
 export const escapeHtml = (s) =>
   String(s || "").replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
-export { VINET_BLACK } from "./constants.js";
-export function localDateZAISO(ts=Date.now()) {
+
+export function localDateZAISO(ts = Date.now()) {
   // YYYY-MM-DD in Africa/Johannesburg
-  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year:"numeric", month:"2-digit", day:"2-digit" });
-  const [{value:y},{value:_},{value:m},{value:_2},{value:d}] = fmt.formatToParts(ts);
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit" });
+  const [{ value: y }, { value: _ }, { value: m }, { value: _2 }, { value: d }] = fmt.formatToParts(ts);
   return `${y}-${m}-${d}`;
 }
-export function localDateTimePrettyZA(ts=Date.now()) {
+export function localDateTimePrettyZA(ts = Date.now()) {
   return new Intl.DateTimeFormat("en-ZA", {
-    timeZone:"Africa/Johannesburg",
-    year:"numeric", month:"short", day:"2-digit",
-    hour:"2-digit", minute:"2-digit", second:"2-digit"
+    timeZone: "Africa/Johannesburg",
+    year: "numeric", month: "short", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
   }).format(ts);
 }
 
 export function djb2(str) {
-  let h=5381; for (let i=0;i<str.length;i++) h=((h<<5)+h)^str.charCodeAt(i);
-  return (h>>>0).toString(36);
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
+  return (h >>> 0).toString(36);
 }
 
-export async function fetchTextCached(url, env, cachePrefix="terms") {
-  const key = `${cachePrefix}:${btoa(url).slice(0,40)}`;
+export async function fetchTextCached(url, env, cachePrefix = "terms") {
+  const key = `${cachePrefix}:${btoa(url).slice(0, 40)}`;
   const cached = await env.ONBOARD_KV.get(key);
   if (cached) return cached;
   try {
-    const r = await fetch(url, { cf:{ cacheEverything:true, cacheTtl:600 } });
+    const r = await fetch(url, { cf: { cacheEverything: true, cacheTtl: 600 } });
     if (!r.ok) return "";
     const t = await r.text();
     await env.ONBOARD_KV.put(key, t, { expirationTtl: PDF_CACHE_TTL });
@@ -39,7 +41,7 @@ export async function getCachedJson(env, key) {
   const t = await env.ONBOARD_KV.get(key);
   return t ? JSON.parse(t) : null;
 }
-export async function setCachedJson(env, key, obj, ttl=PDF_CACHE_TTL) {
+export async function setCachedJson(env, key, obj, ttl = PDF_CACHE_TTL) {
   await env.ONBOARD_KV.put(key, JSON.stringify(obj), { expirationTtl: ttl });
 }
 
@@ -47,7 +49,7 @@ export async function getLogoBytes(env) {
   const kvKey = "asset:logoBytes:v3";
   const hit = await env.ONBOARD_KV.get(kvKey, "arrayBuffer");
   if (hit) return hit;
-  const r = await fetch(LOGO_URL, { cf:{ cacheEverything:true, cacheTtl:3600 } });
+  const r = await fetch(LOGO_URL, { cf: { cacheEverything: true, cacheTtl: 3600 } });
   if (!r.ok) return null;
   const bytes = await r.arrayBuffer();
   await env.ONBOARD_KV.put(kvKey, bytes, { expirationTtl: PDF_CACHE_TTL });
@@ -60,19 +62,21 @@ export async function embedLogo(pdf, env) {
 }
 
 export function wrapToLines(text, font, size, maxWidth) {
-  const words = String(text||"").replace(/\s+/g," ").trim().split(" ");
-  const lines=[]; let line="";
+  const words = String(text || "").replace(/\s+/g, " ").trim().split(" ");
+  const lines = []; let line = "";
   for (const w of words) {
-    const test = line ? line+" "+w : w;
+    const test = line ? line + " " + w : w;
     if (font.widthOfTextAtSize(test, size) > maxWidth) {
       if (line) lines.push(line);
       if (font.widthOfTextAtSize(w, size) > maxWidth) {
-        let buf=""; for (const ch of w) {
-          const t2 = buf+ch;
-          if (font.widthOfTextAtSize(t2, size) > maxWidth) { if (buf) lines.push(buf); buf=ch; } else buf=t2;
-        } line=buf;
-      } else line=w;
-    } else line=test;
+        let buf = "";
+        for (const ch of w) {
+          const t2 = buf + ch;
+          if (font.widthOfTextAtSize(t2, size) > maxWidth) { if (buf) lines.push(buf); buf = ch; } else buf = t2;
+        }
+        line = buf;
+      } else line = w;
+    } else line = test;
   }
   if (line) lines.push(line);
   return lines;
@@ -94,15 +98,15 @@ export async function fetchR2Bytes(env, key) {
   } catch { return null; }
 }
 
-export function drawDashedLine(page, x1, y, x2, opts={}) {
+export function drawDashedLine(page, x1, y, x2, opts = {}) {
   const dash = opts.dash ?? 12;
   const gap = opts.gap ?? 7;
   const color = opts.color ?? VINET_BLACK;
-  let x=x1; const dir = x2 >= x1 ? 1 : -1;
-  while ((dir>0 && x < x2) || (dir<0 && x > x2)) {
-    const xEnd = Math.min(x + dash*dir, x2);
-    page.drawLine({ start:{x,y}, end:{x:xEnd,y}, thickness:1, color });
-    x = xEnd + gap*dir;
+  let x = x1; const dir = x2 >= x1 ? 1 : -1;
+  while ((dir > 0 && x < x2) || (dir < 0 && x > x2)) {
+    const xEnd = Math.min(x + dash * dir, x2);
+    page.drawLine({ start: { x, y }, end: { x: xEnd, y }, thickness: 1, color });
+    x = xEnd + gap * dir;
   }
 }
 
@@ -121,7 +125,7 @@ export function getClientMeta(request) {
     at: Date.now(),
   };
 }
-// src/helpers.js
+
 export function cryptoRandomUUID() {
   try { return crypto.randomUUID(); } catch { /* CF always has crypto */ }
   // Fallback (very low chance used)
