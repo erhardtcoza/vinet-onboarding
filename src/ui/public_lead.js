@@ -1,4 +1,6 @@
-// Public self-signup with: address auto-split, geolocation fill, contact picker, success modal
+// src/ui/public_lead.js
+// Public self-signup with: address auto-split, geolocation fill, contact picker,
+// success modal, and smart autofill (URL params + last submit memory)
 import { LOGO_URL } from "../constants.js";
 
 export function renderPublicLeadHTML() {
@@ -10,8 +12,9 @@ export function renderPublicLeadHTML() {
 <script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js");}</script>
 <style>
   :root{--red:#ED1C24;--ink:#0b1320;--muted:#6b7280;--bg:#f7f7f8;--card:#fff}
-  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-  .card{max-width:720px;margin:1.5rem auto;background:var(--card);border-radius:16px;box-shadow:0 4px 20px #0001;padding:1.25rem}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:var(--ink)}
+  .card{max-width:720px;margin:1.6rem auto;background:var(--card);border-radius:16px;box-shadow:0 4px 20px #0001;padding:1.25rem}
   .logo{display:flex;align-items:center;gap:.6rem;margin-bottom:1rem}
   .logo img{width:38px;height:38px;border-radius:8px}
   h1{margin:.25rem 0 0;font-size:1.25rem}
@@ -21,7 +24,7 @@ export function renderPublicLeadHTML() {
   .hint{color:var(--muted);font-size:.85rem}
   .span2{grid-column:1 / -1}
   .actions{display:flex;gap:.75rem;justify-content:space-between;margin-top:.5rem}
-  .left{display:flex;gap:.5rem}
+  .left{display:flex;gap:.5rem;flex-wrap:wrap}
   button{border:0;border-radius:999px;padding:.75rem 1.1rem;background:#111;color:#fff;font-weight:700;cursor:pointer}
   button.primary{background:var(--red)}
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;padding:16px}
@@ -35,31 +38,32 @@ export function renderPublicLeadHTML() {
       <img src="${LOGO_URL}" alt="Vinet"/>
       <div><h1>New Service Enquiry</h1><div style="color:var(--muted)">Tell us where you need internet</div></div>
     </div>
-    <form id="leadForm">
+
+    <form id="leadForm" autocomplete="on">
       <label class="span2">Full name
-        <input name="name" autocomplete="name" required/>
+        <input name="name" autocomplete="name" autocapitalize="words" spellcheck="false" required/>
       </label>
       <label>Phone
-        <input name="phone" autocomplete="tel" required/>
+        <input name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern="^[0-9+()\\s-]{6,}$" required/>
       </label>
       <label>Email
-        <input name="email" type="email" autocomplete="email" required/>
+        <input name="email" type="email" autocomplete="email" inputmode="email" required/>
       </label>
 
       <label class="span2">Street address (full line)
-        <input name="full_line" placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848"/>
+        <input name="full_line" autocomplete="street-address" placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848"/>
         <div class="hint">We’ll split this into Street / City / ZIP for you.</div>
       </label>
 
       <label>City/Town
-        <input name="city"/>
+        <input name="city" autocomplete="address-level2"/>
       </label>
       <label>ZIP
-        <input name="zip"/>
+        <input name="zip" autocomplete="postal-code" inputmode="numeric" pattern="\\d{3,6}"/>
       </label>
 
       <label class="span2">Notes
-        <textarea name="notes" rows="3"></textarea>
+        <textarea name="notes" rows="3" autocomplete="off"></textarea>
       </label>
 
       <div class="actions span2">
@@ -109,6 +113,36 @@ export function renderPublicLeadHTML() {
     return out;
   }
 
+  // ---------- SMART AUTOFILL ----------
+  function tryURLPrefill(){
+    const u = new URL(location.href);
+    const q = (k)=>u.searchParams.get(k) || "";
+    if(q("name"))  f.name.value  = q("name");
+    if(q("phone")) f.phone.value = q("phone");
+    if(q("email")) f.email.value = q("email");
+    if(q("addr"))  f.full_line.value = q("addr");
+    if(!f.city.value || !f.zip.value){
+      const s = splitAddress(f.full_line.value);
+      if(s.city && !f.city.value) f.city.value = s.city;
+      if(s.zip  && !f.zip.value)  f.zip.value  = s.zip;
+    }
+  }
+  function tryMemoryPrefill(){
+    try{
+      const raw = localStorage.getItem("vinet_last_lead");
+      if(!raw) return;
+      const v = JSON.parse(raw);
+      if(v.name && !f.name.value)   f.name.value = v.name;
+      if(v.phone && !f.phone.value) f.phone.value = v.phone;
+      if(v.email && !f.email.value) f.email.value = v.email;
+      if(v.full_line && !f.full_line.value) f.full_line.value = v.full_line;
+      if(v.city && !f.city.value) f.city.value = v.city;
+      if(v.zip  && !f.zip.value)  f.zip.value  = v.zip;
+    }catch{}
+  }
+  tryURLPrefill();
+  tryMemoryPrefill();
+
   // Auto-split when user leaves the full-line field
   const fullInput = f.querySelector('input[name="full_line"]');
   fullInput.addEventListener('blur', ()=>{
@@ -120,12 +154,15 @@ export function renderPublicLeadHTML() {
   // Geolocation -> reverse geocode (Nominatim)
   geo.onclick = async ()=>{
     try{
+      if (navigator.permissions && navigator.permissions.query) {
+        await navigator.permissions.query({name:"geolocation"});
+      }
       const pos = await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:8000}));
       const { latitude:lat, longitude:lon } = pos.coords;
       const r = await fetch(\`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=\${lat}&lon=\${lon}\`, {headers:{'Accept':'application/json'}});
       const j = await r.json();
       const line = j?.display_name || "";
-      fullInput.value = line;
+      f.full_line.value = line;
       const s = splitAddress(line);
       if (s.city) f.city.value = s.city;
       if (s.zip)  f.zip.value  = s.zip;
@@ -153,14 +190,12 @@ export function renderPublicLeadHTML() {
   f.addEventListener('submit', async (e)=>{
     e.preventDefault();
     const data = Object.fromEntries(new FormData(f));
-    // merge split fields
     const s = splitAddress(data.full_line);
     data.street = s.street || data.street || data.full_line || "";
     data.city   = data.city || s.city || "";
     data.zip    = data.zip  || s.zip  || "";
     data.source = data.source || "web";
 
-    // POST JSON (new API)
     const res = await fetch('/api/leads/submit', {
       method:'POST',
       headers:{'content-type':'application/json'},
@@ -172,6 +207,12 @@ export function renderPublicLeadHTML() {
     });
     const j = await res.json().catch(()=>null);
     if(res.ok && j?.ok){
+      try{
+        localStorage.setItem("vinet_last_lead", JSON.stringify({
+          name:data.name, phone:data.phone, email:data.email,
+          full_line:data.full_line, city:data.city, zip:data.zip
+        }));
+      }catch{}
       refline.textContent = "Reference: " + (j.ref || "-");
       md.style.display = "flex";
       f.reset();
