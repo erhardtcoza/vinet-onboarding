@@ -1,37 +1,37 @@
-// /src/routes/index.js
-import { Router } from "../router.js";
+// src/routes/index.js
+import * as selfSignup from "./self-signup.js";
+import * as crm from "./crm_leads.js";
+import * as onboard from "./onboard.js";
 
-// Existing route modules
-import * as publicRoutes from "./public.js";
-import * as adminRoutes from "./admin.js";
-import * as onboardRoutes from "./onboard.js";
-import * as agreementsRoutes from "./agreements.js";
-import * as pdfRoutes from "./pdf.js";
+// Optional APIs (provide no-op mounts to avoid build warnings if missing)
 import * as apiOTP from "./api-otp.js";
 import * as apiTerms from "./api-terms.js";
+import * as pdfRoutes from "./pdf.js";
+import * as agreementsRoutes from "./agreements.js";
 
-// Newly wired modules
-import * as publicLeads from "./public_leads.js";
-import * as crmLeads from "./crm_leads.js";
+export function mountAll(router) {
+  router.add("ALL", "*", async (req, env, ctx, next) => {
+    const host = new URL(req.url).hostname;
 
-export function mountAll(router /** @type {Router} */) {
-  // Public self-capture leads UI & API
-  publicLeads.mount?.(router);
+    if (host === "new.vinet.co.za") {
+      selfSignup.mount?.(router);
+    } else if (host === "crm.vinet.co.za") {
+      crm.mount?.(router);
+    } else if (host === "onboard.vinet.co.za") {
+      onboard.mount?.(router);
+    } else {
+      // default: still mount common APIs so deep links work in all hosts
+      selfSignup.mount?.(router);
+      crm.mount?.(router);
+      onboard.mount?.(router);
+    }
 
-  // CRM Leads Admin
-  crmLeads.mount?.(router);
+    // Common APIs available on all hosts
+    apiOTP.mount?.(router);
+    apiTerms.mount?.(router);
+    pdfRoutes.mount?.(router);
+    agreementsRoutes.mount?.(router);
 
-  // OTP / Terms / PDFs / Agreements / Onboarding / Admin
-  apiOTP.mount?.(router);
-  apiTerms.mount?.(router);
-  pdfRoutes.mount?.(router);
-  agreementsRoutes.mount?.(router);
-  onboardRoutes.mount?.(router);
-  adminRoutes.mount?.(router);
-
-  // Public (landing + splash + PWA + EFT)
-  publicRoutes.mount?.(router);
-
-  // Fallback 404
-  router.add("ALL", "*", () => new Response("Not found", { status: 404 }));
+    return next();
+  });
 }
