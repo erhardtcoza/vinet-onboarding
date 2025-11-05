@@ -9,9 +9,26 @@ const text = (s, c = 200, h = {}) =>
 const html = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
 
-function hasCookie(req, name) {
-  const c = req.headers.get("cookie") || "";
-  return c.split(/;\s*/).some(p => p.toLowerCase().startsWith(`${name.toLowerCase()}=`));
+function parseCookies(req) {
+  const src = req.headers.get("cookie") || "";
+  const out = Object.create(null);
+  for (const part of src.split(/;\s*/)) {
+    if (!part) continue;
+    const idx = part.indexOf("=");
+    const k = (idx >= 0 ? part.slice(0, idx) : part).trim();
+    const v = idx >= 0 ? decodeURIComponent(part.slice(idx + 1)) : "";
+    if (k) out[k] = v;
+  }
+  return out;
+}
+function hasCookie(req, key, val) {
+  const c = parseCookies(req);
+  if (!(key in c)) return false;
+  return val === undefined ? true : c[key] === String(val);
+}
+function getCookie(req, key, fallback = "") {
+  const c = parseCookies(req);
+  return key in c ? c[key] : fallback;
 }
 function hostnameOnly(v = "") {
   try {
@@ -19,6 +36,7 @@ function hostnameOnly(v = "") {
     return s ? (s.includes("://") ? new URL(s).host.toLowerCase() : s.toLowerCase()) : "";
   } catch { return String(v || "").toLowerCase(); }
 }
+function shortId() { return Math.random().toString(36).slice(2, 8); }
 
 /* ---------------- PWA bits ---------------- */
 function manifest(env) {
@@ -114,16 +132,28 @@ export function mount(router) {
     });
   });
 
-  // Landing page after splash
+  // Landing page after splash (adds short session id cookie)
   router.add("GET", "/landing", (req) => {
-    const secured = hasCookie(req, "ts_ok=1");
+    const secured = hasCookie(req, "ts_ok", "1");
     const seen = hasCookie(req, "ts_ok");
-    return html(renderLandingHTML({ secured, seen }));
+    let sid = getCookie(req, "ts_sid", "");
+    const headers = {};
+    if (!sid) {
+      sid = shortId();
+      headers["set-cookie"] = `ts_sid=${sid}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
+    }
+    return html(renderLandingHTML({ secured, seen, sessionId: sid }), 200, headers);
   });
 
-  // Public lead form
+  // Public lead form (ensures session id exists too)
   router.add("GET", "/lead", (req) => {
-    const secured = hasCookie(req, "ts_ok=1");
-    return html(renderPublicLeadHTML({ secured }));
+    const secured = hasCookie(req, "ts_ok", "1");
+    let sid = getCookie(req, "ts_sid", "");
+    const headers = {};
+    if (!sid) {
+      sid = shortId();
+      headers["set-cookie"] = `ts_sid=${sid}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
+    }
+    return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, headers);
   });
 }
