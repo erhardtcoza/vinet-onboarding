@@ -1,8 +1,6 @@
 // /src/routes/admin.js
-import { json } from "../utils/http.js";
 import { ensureLeadSchema } from "../utils/db.js";
-import { ipAllowed as isAllowedIP } from "../branding.js";
-import { handle } from "./crm_leads.js"; // reuse all existing /api/admin/* handlers
+import { handle } from "./crm_leads.js"; // reuse all /api/admin/*
 
 const html = (s, c = 200) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8" } });
@@ -28,27 +26,25 @@ function adminHomeHTML() {
 }
 
 export function mount(router) {
-  // Root for crm.vinet.co.za (serve HTML, never a 204)
-  router.add("GET", "/", (req) => {
-    const host = new URL(req.url).host.toLowerCase();
-    if (host !== "crm.vinet.co.za") return null; // let others handle
-    if (!isAllowedIP(req)) {
-      return html("<h1 style='color:#e2001a;font-family:system-ui'>Access Denied</h1>", 403);
-    }
+  // Serve an HTML home (avoid 1101 even if host isn’t exactly crm.*)
+  router.add("GET", "/", async (_req, env) => {
+    await ensureLeadSchema(env).catch(() => {});
     return html(adminHomeHTML());
   });
 
-  // Lightweight alias so you have a linkable path
-  router.add("GET", "/admin/queue", async (req, env) => {
-    if (!isAllowedIP(req)) return html("<h1 style='color:#e2001a;font-family:system-ui'>Access Denied</h1>", 403);
-    await ensureLeadSchema(env);
-    // Deliver your React/vanilla app shell or a simple placeholder
-    return html(`<meta charset="utf-8"><title>Queue</title>
-<style>body{font-family:system-ui;margin:24px}</style>
-<h2>Leads Queue</h2>
-<p>Use your existing JS app to call <code>/api/admin/*</code> endpoints.</p>`);
+  router.add("GET", "/admin", async (_req, env) => {
+    await ensureLeadSchema(env).catch(() => {});
+    return html(adminHomeHTML());
   });
 
-  // Reuse crm_leads API handlers (so we don’t duplicate)
+  router.add("GET", "/admin/queue", async (_req, env) => {
+    await ensureLeadSchema(env);
+    return html(`<!doctype html><meta charset="utf-8"/><title>Queue</title>
+<style>body{font-family:system-ui;margin:24px}</style>
+<h2>Leads Queue</h2>
+<p>Use your dashboard app to call <code>/api/admin/*</code> endpoints.</p>`);
+  });
+
+  // Reuse crm_leads API handlers
   router.add("ALL", "/api/admin/*", (req, env, ctx) => handle(req, env, ctx));
 }
