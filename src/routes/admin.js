@@ -1,7 +1,7 @@
 // /src/routes/admin.js
 import { json } from "../utils/http.js";
 import { ensureLeadSchema } from "../utils/db.js";
-import { isAllowedIP } from "../branding.js";
+import { ipAllowed as isAllowedIP } from "../branding.js";
 import { handle } from "./crm_leads.js"; // reuse all existing /api/admin/* handlers
 
 const html = (s, c = 200) =>
