@@ -60,7 +60,7 @@ DEBIT_TEMPLATE_URL   = "https://onboarding-uploads.vinethosting.org/templates/VI
 MAIL_FROM    = "Vinet Onboarding <no-reply@vinet.co.za>"
 MAIL_SUBJECT = "Your signed Vinet onboarding documents"
 
-PUBLIC_HOST = "https://new.vinet.co.za"
+PUBLIC_HOST = "new.vinet.co.za"
 
 [observability]
 enabled = true
