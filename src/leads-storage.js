@@ -1,118 +1,99 @@
 // /src/leads-storage.js
 
-/* ---------- small utils ---------- */
-function todayISO() {
-  try {
-    return new Date().toISOString().split("T")[0];
-  } catch { return null; }
-}
-function toNullSafe(v) {
-  if (v === undefined) return null;
-  if (v === "") return "";
-  return v ?? null;
-}
+/* ---------- tiny utils ---------- */
+function nowSec() { return Math.floor(Date.now() / 1000); }
+function todayISO() { try { return new Date().toISOString().split("T")[0]; } catch { return null; } }
+function toNullSafe(v) { return v === undefined ? null : (v ?? null); }
 function trimAll(obj = {}) {
   const out = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v == null) { out[k] = null; continue; }
-    out[k] = typeof v === "string" ? v.trim() : v;
-  }
+  for (const [k, v] of Object.entries(obj)) out[k] = (typeof v === "string") ? v.trim() : (v ?? null);
   return out;
 }
 
-/* ---------- schema helpers ---------- */
+/* ---------- make sure table exists (safe if it already does) ---------- */
 export async function ensureLeadsTable(env) {
-  // A generous superset – harmless if table already exists with a subset
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      phone TEXT,
-      whatsapp TEXT,
-      email TEXT,
-      source TEXT,
-      city TEXT,
-      street TEXT,
-      zip TEXT,
-      service TEXT,
-      message TEXT,
-      partner TEXT,
-      location TEXT,
-      billing_type TEXT,
-      billing_email TEXT,
-      score INTEGER,
-      date_added TEXT,
-      captured_by TEXT,
-      splynx_id INTEGER,
-      synced INTEGER DEFAULT 0
+      splynx_id TEXT, full_name TEXT, email TEXT, phone TEXT,
+      street TEXT, city TEXT, zip TEXT, passport TEXT,
+      created_at INTEGER,
+      lead_id INTEGER, name TEXT, whatsapp TEXT, message TEXT,
+      partner TEXT, location TEXT, billing_type TEXT
     )
   `).run();
 }
 
+/* discover existing columns to avoid “no column named …” */
 async function getLeadColumns(env) {
-  // Returns a Set of existing column names (lowercased)
   const info = await env.DB.prepare(`PRAGMA table_info(leads)`).all().catch(() => ({ results: [] }));
   const cols = new Set();
   for (const r of (info?.results ?? [])) {
-    const name = (r.name || r.cid || "").toString().toLowerCase();
-    if (name) cols.add(name);
+    const n = String(r.name || "").toLowerCase();
+    if (n) cols.add(n);
   }
   return cols;
 }
 
-/* ---------- main insert that adapts to actual DB columns ---------- */
+/* ---------- INSERT that auto-adapts to your schema ---------- */
 export async function insertLead(env, raw) {
   await ensureLeadsTable(env);
 
-  // Normalise & defaults
+  // Normalised payload. We fill BOTH name + full_name because your table has both.
   const data = trimAll({
-    name: raw?.name,
-    phone: raw?.phone,
-    whatsapp: raw?.whatsapp,                   // optional; will be dropped if no col
-    email: raw?.email,
-    source: raw?.source ?? "website",
-    city: raw?.city,
-    street: raw?.street,
-    zip: raw?.zip,
-    service: raw?.service ?? "unknown",
-    message: raw?.message,                     // optional; will be dropped if no col
-    partner: raw?.partner ?? "Main",           // optional; will be dropped if no col
-    location: raw?.location ?? "Main",         // optional; will be dropped if no col
-    billing_type: raw?.billing_type ?? "recurring", // optional; will be dropped if no col
-    billing_email: raw?.billing_email ?? raw?.email ?? null,
-    score: raw?.score != null ? Number(raw.score) : 1,
-    date_added: todayISO(),
-    captured_by: raw?.captured_by ?? "public",
+    // ids and timing
     splynx_id: raw?.splynx_id ?? null,
-    synced: raw?.synced != null ? Number(raw.synced) : 0,
+    lead_id:   raw?.lead_id   ?? null,
+    created_at: nowSec(),
+
+    // person + contact
+    full_name: raw?.full_name ?? raw?.name ?? null,
+    name:      raw?.name      ?? raw?.full_name ?? null,
+    email:     raw?.email ?? null,
+    phone:     raw?.phone ?? null,
+    whatsapp:  raw?.whatsapp ?? null,
+    passport:  raw?.passport ?? null,
+
+    // address
+    street: raw?.street ?? null,
+    city:   raw?.city ?? null,
+    zip:    raw?.zip ?? null,
+
+    // extras that exist in your schema
+    message:     raw?.message ?? null,
+    partner:     (raw?.partner ?? "Main"),
+    location:    (raw?.location ?? "Main"),
+    billing_type:(raw?.billing_type ?? "recurring")
   });
 
-  // Intersect payload with real columns in whichever DB we're bound to
   const cols = await getLeadColumns(env);
-  if (!cols.size) throw new Error("leads table appears empty or unreadable");
+  if (!cols.size) throw new Error("leads table unreadable");
 
   const names = [];
   const values = [];
-
   for (const [k, v] of Object.entries(data)) {
-    if (cols.has(k.toLowerCase())) {
-      names.push(k);
-      values.push(toNullSafe(v));
-    }
+    if (cols.has(k.toLowerCase())) { names.push(k); values.push(toNullSafe(v)); }
   }
-
-  if (!names.length) throw new Error("No matching columns in leads for payload");
+  if (!names.length) throw new Error("No matching columns for payload");
 
   const placeholders = names.map(() => "?").join(", ");
-  const sql = `INSERT INTO leads (${names.join(", ")}) VALUES (${placeholders})`;
 
-  await env.DB.prepare(sql).bind(...values).run();
+  // Prefer RETURNING id (works on D1); fallback to MAX(id)
+  try {
+    const sql = `INSERT INTO leads (${names.join(", ")}) VALUES (${placeholders}) RETURNING id`;
+    const row = await env.DB.prepare(sql).bind(...values).first();
+    return { id: row?.id ?? null };
+  } catch {
+    await env.DB.prepare(`INSERT INTO leads (${names.join(", ")}) VALUES (${placeholders})`).bind(...values).run();
+    const row = await env.DB.prepare(`SELECT MAX(id) AS id FROM leads`).first().catch(() => null);
+    return { id: row?.id ?? null };
+  }
 }
 
-/* ---------- reads & misc ---------- */
+/* ---------- reads & updates ---------- */
 export async function getAllLeads(env) {
   await ensureLeadsTable(env);
-  const res = await env.DB.prepare(`SELECT * FROM leads ORDER BY date_added DESC, id DESC`).all();
+  const res = await env.DB.prepare(`SELECT * FROM leads ORDER BY created_at DESC, id DESC`).all();
   return res.results || [];
 }
 
@@ -121,67 +102,11 @@ export async function getLead(env, id) {
 }
 
 export async function updateLead(env, id, data) {
-  // Only update columns that exist
   const cols = await getLeadColumns(env);
-  const pairs = [];
-  const vals = [];
+  const pairs = []; const vals = [];
   for (const [k, v] of Object.entries(data || {})) {
-    if (cols.has(k.toLowerCase())) {
-      pairs.push(`${k}=?`);
-      vals.push(toNullSafe(v));
-    }
+    if (cols.has(k.toLowerCase())) { pairs.push(`${k}=?`); vals.push(toNullSafe(v)); }
   }
   if (!pairs.length) return;
   await env.DB.prepare(`UPDATE leads SET ${pairs.join(", ")} WHERE id=?`).bind(...vals, id).run();
-}
-
-export async function deleteLeads(env, ids = []) {
-  if (!ids.length) return;
-  const placeholders = ids.map(() => "?").join(",");
-  await env.DB.prepare(`DELETE FROM leads WHERE id IN (${placeholders})`).bind(...ids).run();
-}
-
-export function nowSec() { return Math.floor(Date.now() / 1000); }
-
-/* simple undo buffer (unchanged) */
-export async function ensureUndoTable(env) {
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS undo_buffer (
-      token TEXT PRIMARY KEY,
-      rows_json TEXT NOT NULL,
-      expires_at INTEGER NOT NULL
-    )
-  `).run();
-}
-
-export async function stageUndo(env, rows, ttl = 10) {
-  await ensureUndoTable(env);
-  const token = Math.random().toString(36).slice(2);
-  const expires = nowSec() + ttl;
-  await env.DB.prepare(
-    `INSERT OR REPLACE INTO undo_buffer (token, rows_json, expires_at) VALUES (?, ?, ?)`
-  ).bind(token, JSON.stringify(rows), expires).run();
-  return { token, ttl };
-}
-
-export async function undoByToken(env, token) {
-  await ensureUndoTable(env);
-  const rec = await env.DB.prepare(`SELECT * FROM undo_buffer WHERE token=?`).bind(token).first();
-  if (!rec) return false;
-  if (rec.expires_at < nowSec()) {
-    await env.DB.prepare(`DELETE FROM undo_buffer WHERE token=?`).bind(token).run();
-    return false;
-  }
-  const rows = JSON.parse(rec.rows_json || "[]");
-  for (const r of rows) {
-    const cols = Object.keys(r);
-    const placeholders = cols.map(() => "?").join(",");
-    const updateCols = cols.map(c => `${c}=excluded.${c}`).join(",");
-    await env.DB.prepare(`
-      INSERT INTO leads (${cols.join(",")}) VALUES (${placeholders})
-      ON CONFLICT(id) DO UPDATE SET ${updateCols}
-    `).bind(...cols.map(c => r[c])).run();
-  }
-  await env.DB.prepare(`DELETE FROM undo_buffer WHERE token=?`).bind(token).run();
-  return true;
 }
