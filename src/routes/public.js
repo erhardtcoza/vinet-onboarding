@@ -107,19 +107,19 @@ export function mount(router) {
         return null;
       };
 
-      const payload = sanitize({
-        name:        get("full_name", "name"),
-        phone:       get("phone", "whatsapp", "phone_number"),
-        email:       get("email"),
-        source:      get("source") || "website",
-        city:        get("city", "town"),
-        street:      get("street", "street_1", "street1", "street_address"),
-        zip:         get("zip", "zip_code", "postal", "postal_code"),
-        service:     get("service") || "unknown",
-        message:     get("message", "msg", "notes") || "",
-        captured_by: "public",
-      });
-
+const payloadRaw = {
+  name:        get("full_name", "name"),
+  phone:       get("phone", "whatsapp", "phone_number"),
+  whatsapp:    get("whatsapp", "phone"),          // <-- add this line
+  email:       get("email"),
+  source:      get("source") || "website",
+  city:        get("city", "town"),
+  street:      get("street", "street_1", "street1", "street_address"),
+  zip:         get("zip", "zip_code", "postal", "postal_code"),
+  service:     get("service") || "unknown",
+  message:     get("message", "msg", "notes") || "",
+  captured_by: "public",
+};
       for (const k of ["name", "phone", "email", "city", "street", "zip"]) {
         if (!payload[k]) return json({ ok:false, error:`Missing ${k}` }, 400);
       }
