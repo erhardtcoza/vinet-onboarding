@@ -13,30 +13,37 @@ const html = (s, c = 200, h = {}) =>
 
 function hasCookie(req, needle) {
   const c = req.headers.get("cookie") || "";
-  return c.split(/;\s*/).some(p => p.toLowerCase().startsWith(needle.toLowerCase()));
+  return c.split(/;\s*/).some((p) => p.toLowerCase().startsWith(needle.toLowerCase()));
 }
 function hostnameOnly(v = "") {
   try {
     const s = String(v || "").trim();
     return s ? (s.includes("://") ? new URL(s).host.toLowerCase() : s.toLowerCase()) : "";
-  } catch { return String(v || "").toLowerCase(); }
+  } catch {
+    return String(v || "").toLowerCase();
+  }
 }
+const shortId = () => Math.random().toString(36).slice(2, 8);
 
 /* ---------------- PWA bits ---------------- */
 function manifest(env) {
   const name = env?.PWA_NAME || "Vinet CRM Suite";
   const short_name = env?.PWA_SHORT || "VinetCRM";
   return {
-    name, short_name, start_url: "/", display: "standalone", scope: "/",
-    theme_color: "#ED1C24", background_color: "#ffffff",
+    name,
+    short_name,
+    start_url: "/",
+    display: "standalone",
+    scope: "/",
+    theme_color: "#ED1C24",
+    background_color: "#ffffff",
     icons: [
       { src: "/favicon.png", sizes: "192x192", type: "image/png" },
       { src: "/favicon.png", sizes: "512x512", type: "image/png" },
     ],
   };
 }
-const SW_JS =
-`self.addEventListener("install",e=>self.skipWaiting());
+const SW_JS = `self.addEventListener("install",e=>self.skipWaiting());
 self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch",e=>{
   if(e.request.method!=="GET") return;
@@ -45,17 +52,17 @@ self.addEventListener("fetch",e=>{
 
 /* ---------------- router mount ---------------- */
 export function mount(router) {
-  // PWA endpoints
+  // PWA
   router.add("GET", "/manifest.webmanifest", (_req, env) =>
     new Response(JSON.stringify(manifest(env)), {
       headers: { "content-type": "application/manifest+json; charset=utf-8" },
-    })
+    }),
   );
   router.add("GET", "/sw.js", () =>
     text(SW_JS, 200, {
       "content-type": "application/javascript; charset=utf-8",
       "cache-control": "no-store",
-    })
+    }),
   );
 
   // Root: host-aware behaviour
@@ -63,9 +70,10 @@ export function mount(router) {
     const host = new URL(req.url).host.toLowerCase();
     const publicHost = hostnameOnly(env.PUBLIC_HOST || "new.vinet.co.za");
 
-    if (host.startsWith("crm."))     return Response.redirect("/admin", 302);
+    if (host.startsWith("crm.")) return Response.redirect("/admin", 302);
     if (host.startsWith("onboard.")) return Response.redirect("/onboard", 302);
 
+    // Only the public host shows splash/turnstile
     if (publicHost && host !== publicHost) {
       return html(`<!doctype html><meta charset="utf-8"/>
 <title>Vinet Onboarding</title>
@@ -83,106 +91,99 @@ export function mount(router) {
 </div>`);
     }
 
-    const siteKey = env.TURNSTILE_SITE_KEY || "";
-    return html(splashHTML({ failed: !siteKey, siteKey }));
-  });
-
-  // Turnstile verify (soft gate — always allows proceed)
-  router.add("POST", "/ts-verify", async (req, env) => {
-    const body = await req.json().catch(() => ({}));
-    const { token, skip } = body || {};
-    let ok = 0;
-
-    if (!skip && token) {
-      try {
-        const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-          method: "POST",
-          body: new URLSearchParams({
-            secret: env.TURNSTILE_SECRET_KEY || "",
-            response: token,
-            remoteip: req.headers.get("CF-Connecting-IP") || "",
-          }),
-        });
-        const r = await vr.json().catch(() => ({ success: false }));
-        ok = r.success ? 1 : 0;
-      } catch { ok = 0; }
+    const siteKey = env?.TURNSTILE_SITE_KEY || "";
+    const already = hasCookie(req, "vsplashed=");
+    if (!already && siteKey) {
+      return html(splashHTML({ siteKey }), 200, {
+        "cache-control": "no-store",
+        "set-cookie": `splashid=${shortId()}; Path=/; HttpOnly; SameSite=Lax`,
+      });
     }
-
-    const cookie = `ts_ok=${skip ? "0" : String(ok)}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
-    return json({ ok: true, proceed: true }, 200, { "set-cookie": cookie });
+    return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
   });
 
-  // Landing page after splash
-  router.add("GET", "/landing", (req) => {
-    const secured = hasCookie(req, "ts_ok=1");
-    const seen = hasCookie(req, "ts_ok");
-    return html(renderLandingHTML({ secured, seen }));
-  });
-
-  // Public lead form
-  router.add("GET", "/lead", (req) => {
-    const secured = hasCookie(req, "ts_ok=1");
-    return html(renderPublicLeadHTML({ secured }));
-  });
-
-  // Public lead submit
-  router.add("POST", "/lead/submit", async (req, env) => {
-    if (!hasCookie(req, "ts_ok=1")) {
-      return text("Turnstile required", 403);
-    }
-    const ip = req.headers.get("CF-Connecting-IP") || "";
-    const ua = req.headers.get("User-Agent") || "";
-    const body = await req.json().catch(()=>null);
-    if (!body) return text("Bad JSON", 400);
-
-    // basic requireds
-    const need = ["name","phone","email","source","city","zip","street","service"];
-    for (const k of need) if (!String(body[k]||"").trim()) return text("Missing: "+k, 400);
-
-    const now = Date.now();
-    const idKey = `lead:${now}:${Math.random().toString(36).slice(2,8)}`;
-
-    // 1) Save to KV if available (best-effort)
+  /* ---------------- splash verify ---------------- */
+  router.add("POST", "/splash/verify", async (req, env) => {
     try {
-      if (env.LEAD_KV) {
-        await env.LEAD_KV.put(idKey, JSON.stringify({
-          ...body, ip, ua, created_at: now
-        }), { expirationTtl: 60 * 60 * 24 * 30 }); // 30 days
+      const siteKey = env?.TURNSTILE_SITE_KEY || "";
+      const secret = env?.TURNSTILE_SECRET || "";
+      if (!siteKey || !secret) {
+        // If Turnstile not configured, just set the cookie and proceed.
+        return text("ok", 200, { "set-cookie": `vsplashed=1; Path=/; Max-Age=86400; SameSite=Lax` });
       }
-    } catch (e) { /* ignore */ }
 
-    // 2) Ensure table + insert into D1
-    let rowId = null;
-    try {
-      if (env.DB) {
-        await env.DB.batch([
-          env.DB.prepare(`CREATE TABLE IF NOT EXISTS public_leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT, phone TEXT, email TEXT,
-            source TEXT, city TEXT, zip TEXT,
-            street TEXT, service TEXT, consent INTEGER,
-            session_id TEXT, ip TEXT, ua TEXT, ts INTEGER
-          )`),
-        ]);
-        const ins = await env.DB.prepare(
-          `INSERT INTO public_leads
-           (name,phone,email,source,city,zip,street,service,consent,session_id,ip,ua,ts)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        ).bind(
-          body.name, body.phone, body.email,
-          body.source, body.city, body.zip,
-          body.street, body.service, body.consent ? 1 : 0,
-          body.session_id || null, ip, ua, now
-        ).run();
+      const body = await req.json().catch(() => ({}));
+      const token = body?.token || "";
+      if (!token) return json({ ok: false, error: "missing_token" }, 400);
 
-        // D1 returns lastRowId on .run()
-        rowId = ins.lastRowId ?? null;
-      }
+      const ip = req.headers.get("CF-Connecting-IP") || "";
+      const form = new FormData();
+      form.append("secret", secret);
+      form.append("response", token);
+      if (ip) form.append("remoteip", ip);
+
+      const r = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
+      const v = await r.json().catch(() => ({}));
+      if (!v?.success) return json({ ok: false, error: "verify_failed" }, 403);
+
+      return json({ ok: true }, 200, { "set-cookie": `vsplashed=1; Path=/; Max-Age=86400; SameSite=Lax` });
     } catch (e) {
-      // still return ok if KV saved, but indicate DB issue
-      return json({ ok: false, error: "db_insert_failed" }, 500);
+      return json({ ok: false, error: String(e?.message || e) }, 500);
     }
-
-    return json({ ok: true, id: rowId });
   });
+
+  /* ---------------- public lead form ---------------- */
+  router.add("GET", "/lead", (_req, _env) => {
+    return html(renderPublicLeadHTML(), 200, { "cache-control": "no-store" });
+  });
+
+  /* ---------------- ensure table helper ---------------- */
+  async function ensureLeadQueue(env) {
+    await env.DB.exec?.(`CREATE TABLE IF NOT EXISTS leads_queue(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      status TEXT DEFAULT 'pending'
+    );`);
+  }
+
+  /* ---------------- submit lead -> leads_queue ---------------- */
+  router.add("POST", "/lead/submit", async (req, env) => {
+    try {
+      await ensureLeadQueue(env);
+
+      const ct = (req.headers.get("content-type") || "").toLowerCase();
+      const body = ct.includes("application/json") ? await req.json() : Object.fromEntries(await req.formData());
+      const now = Date.now();
+
+      // Minimal validation
+      const name = String(body?.name ?? "").trim();
+      const phone = String(body?.phone ?? "").trim();
+      const email = String(body?.email ?? "").trim();
+      if (!name && !phone && !email) return json({ ok: false, error: "missing_contact" }, 400);
+
+      const meta = {
+        id: shortId(),
+        ip: req.headers.get("CF-Connecting-IP") || undefined,
+        ua: req.headers.get("user-agent") || undefined,
+        host: new URL(req.url).host,
+        ts: now,
+      };
+
+      const payload = { ...body, _meta: meta };
+      const insert = await env.DB
+        .prepare(`INSERT INTO leads_queue (created_at, payload, status) VALUES (?1, ?2, 'pending')`)
+        .bind(now, JSON.stringify(payload))
+        .run();
+
+      return json({ ok: true, queue_id: insert.lastRowId ?? null, meta }, 201, {
+        "cache-control": "no-store",
+      });
+    } catch (e) {
+      return json({ ok: false, error: String(e?.message || e) }, 500);
+    }
+  });
+
+  /* ---------------- misc ---------------- */
+  router.add("GET", "/health", () => json({ ok: true, ts: Date.now() }));
 }
