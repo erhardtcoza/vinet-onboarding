@@ -1,10 +1,14 @@
-// /src/routes/public_leads.js
+// src/routes/public_leads.js
 import { ensureLeadSchema, nowSec, todayISO, safeStr, json } from "../utils/db.js";
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
 
+/**
+ * Insert payload into D1 leads + queue (synced=0) and return { ok, ref }
+ */
 async function insertLead(env, payload) {
   await ensureLeadSchema(env);
 
+  // Basic required check
   for (const k of ["name","phone","email","source","city","street","zip","service_interested"]) {
     if (!payload[k]) return { ok:false, error:`Missing ${k}` };
   }
@@ -15,11 +19,20 @@ async function insertLead(env, payload) {
       score, date_added, captured_by, synced, service_interested, created_at
     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0,?10,?11)
   `).bind(
-    payload.name, payload.phone, payload.email, payload.source,
-    payload.city, payload.street, payload.zip, payload.billing_email,
-    payload.date_added, payload.service_interested, nowSec()
+    payload.name,
+    payload.phone,
+    payload.email,
+    payload.source,
+    payload.city,
+    payload.street,
+    payload.zip,
+    payload.billing_email,
+    payload.date_added,
+    payload.service_interested,
+    nowSec()
   ).run();
 
+  // Queue for admin review/push
   await env.DB.prepare(`
     INSERT INTO leads_queue (sales_user, created_at, payload, uploaded_files, processed, splynx_id, synced)
     VALUES ('public', ?1, ?2, '[]', 0, NULL, '0')
@@ -30,22 +43,33 @@ async function insertLead(env, payload) {
 }
 
 export function mount(router) {
-  // UI (also available at /lead for compatibility)
-  router.add("GET", "/lead", () =>
+  /* ----------------------- UI routes ----------------------- */
+  // Serve the public self-signup page at /lead
+  router.add("GET", "/lead", (_req) =>
+    new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
+  );
+  router.add("GET", "/lead/", (_req) =>
     new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
   );
 
-  // JSON API (preferred)
+  // Optional: keep /index.html showing the same form
+  router.add("GET", "/index.html", (_req) =>
+    new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
+  );
+
+  /* ---------------------- API routes ----------------------- */
   router.add("POST", "/api/leads/submit", async (req, env) => {
-    let body = await req.json().catch(() => null);
-    if (!body) {
+    let body = null;
+    try {
+      body = await req.json();
+    } catch {
       const form = await req.formData().catch(() => null);
       if (form) {
         body = {
           name: safeStr(form.get("name") || form.get("full_name")),
           phone: safeStr(form.get("phone")),
           email: safeStr(form.get("email")),
-          source: safeStr(form.get("source") || "web"),
+          source: safeStr(form.get("source")),
           city: safeStr(form.get("city")),
           street: safeStr(form.get("street")),
           zip: safeStr(form.get("zip")),
@@ -59,11 +83,20 @@ export function mount(router) {
     if (!body) return json({ error: "Bad request" }, 400);
 
     const payload = {
-      name: safeStr(body.name), phone: safeStr(body.phone), email: safeStr(body.email),
-      source: safeStr(body.source || "web"), city: safeStr(body.city), street: safeStr(body.street), zip: safeStr(body.zip),
-      billing_email: safeStr(body.email), score: 1, date_added: todayISO(),
-      captured_by: "public", service_interested: safeStr(body.service_interested || body.service),
-      partner: safeStr(body.partner || "main"), location: safeStr(body.location || "main"),
+      name: safeStr(body.name),
+      phone: safeStr(body.phone),
+      email: safeStr(body.email),
+      source: safeStr(body.source || "web"),
+      city: safeStr(body.city),
+      street: safeStr(body.street),
+      zip: safeStr(body.zip),
+      billing_email: safeStr(body.email),
+      score: 1,
+      date_added: todayISO(),
+      captured_by: "public",
+      service_interested: safeStr(body.service_interested || body.service),
+      partner: safeStr(body.partner || "main"),
+      location: safeStr(body.location || "main"),
       notes: safeStr(body.notes),
       location_meta: body.location && typeof body.location === "object" ? body.location : undefined,
     };
