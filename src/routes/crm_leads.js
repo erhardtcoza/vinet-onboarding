@@ -1,84 +1,147 @@
-// src/routes/crm_leads.js
-import { listLeads, updateLeadFields, bulkSanitizeLeads } from "../splynx.js";
+// /src/routes/crm_leads.js
+import { ensureLeadSchema, json, safeParseJSON, nowSec, todayISO } from "../utils/db.js";
+import {
+  splynxFetchLeads, splynxFetchCustomers, findCandidates,
+  buildLeadPayload, createLead, updateLead, findReuseLead,
+  listLeads, updateLeadFields, bulkSanitizeLeads
+} from "../utils/splynx.js";
+import { sendOnboardingTemplate } from "../utils/wa.js";
+import { renderCRMHTML } from "../ui/crm_leads.js";
+
+const J = (o, s=200) => new Response(JSON.stringify(o), { status:s, headers:{ "content-type":"application/json" } });
+const isAllowed = (req) => {
+  const ip = req.headers.get("CF-Connecting-IP") || "";
+  const [a,b,c] = ip.split(".").map(Number);
+  return a===160 && b===226 && c>=128 && c<=143;
+};
 
 export function mount(router) {
-  // UI
-  router.add("GET", "/", async () => {
-    const html = `<!doctype html><meta charset="utf-8"/>
-<title>Vinet CRM Intake</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>
-  body{margin:0;padding:24px;background:#f7f7f8;font:15px/1.5 ui-sans-serif,system-ui}
-  table{border-collapse:collapse;width:100%;background:#fff;border-radius:12px;overflow:hidden}
-  th,td{padding:10px 12px;border-bottom:1px solid #eee}
-  th{background:#fafafa;text-align:left}
-  .row{display:flex;gap:10px;margin:0 0 16px}
-  input,select,button{padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px}
-  button.primary{background:#e10600;color:#fff;border:0}
-</style>
-<h2>CRM Intake</h2>
-<div class="row">
-  <label>Status <select id="status"><option value="">(any)</option><option>New enquiry</option><option>Open</option><option>Closed</option></select></label>
-  <label>Limit <input id="limit" type="number" value="50" min="1" max="500"/></label>
-  <button class="primary" id="load">Load</button>
-</div>
-<table id="t"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Last</th><th>Actions</th></tr></thead><tbody></tbody></table>
-<script>
-const $ = (s)=>document.querySelector(s);
-$("#load").onclick = async ()=>{
-  const p = new URLSearchParams({ status: $("#status").value, limit: $("#limit").value });
-  const r = await fetch('/api/crm/leads/list?'+p);
-  const j = await r.json();
-  const tb = $("#t tbody"); tb.innerHTML='';
-  (j.rows||[]).forEach(x=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = \`<td>\${x.id}</td><td>\${x.name||''}</td><td>\${x.email||''}</td>
-    <td>\${x.phone||''}</td><td>\${x.status||''}</td><td>\${x.last_contacted||0}</td>
-    <td>
-      <button data-id="\${x.id}" class="u">Mark used</button>
-      <button data-id="\${x.id}" class="s">Sanitize</button>
-    </td>\`;
-    tb.appendChild(tr);
-  });
-};
-document.addEventListener('click', async (e)=>{
-  if (e.target.classList.contains('u')) {
-    const id=e.target.dataset.id;
-    await fetch('/api/crm/leads/update?id='+id, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ status:'Closed' }) });
-    $("#load").click();
-  }
-  if (e.target.classList.contains('s')) {
-    const id=e.target.dataset.id;
-    await fetch('/api/crm/leads/sanitize', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ids:[Number(id)] }) });
-    $("#load").click();
-  }
-});
-$("#load").click();
-</script>`;
-    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  // UI shell
+  router.add("GET", "/crm", (req) => isAllowed(req) ? new Response(renderCRMHTML(), { headers:{ "content-type":"text/html" } }) : new Response("<h1 style='color:#e2001a'>Access Denied</h1>", { status:403, headers:{ "content-type":"text/html" } }));
+
+  // Queue list
+  router.add("GET", "/api/admin/queue", async (req, env) => {
+    if (!isAllowed(req)) return J({ error:"forbidden" }, 403);
+    await ensureLeadSchema(env);
+    const rows = await env.DB.prepare(
+      "SELECT id, sales_user, created_at, payload, processed, splynx_id FROM leads_queue ORDER BY created_at DESC LIMIT 500"
+    ).all();
+    const res = (rows.results||[]).map(r => ({
+      id: r.id, sales_user: r.sales_user, created_at: r.created_at, processed: r.processed,
+      splynx_id: r.splynx_id, payload: safeParseJSON(r.payload)
+    }));
+    return J({ rows: res });
   });
 
-  // APIs
-  router.add("GET", "/api/crm/leads/list", async (req) => {
-    const url = new URL(req.url);
-    const status = url.searchParams.get("status") || "";
-    const limit = Number(url.searchParams.get("limit") || 50);
-    const offset = Number(url.searchParams.get("offset") || 0);
+  router.add("GET", "/api/admin/get", async (req, env) => {
+    if (!isAllowed(req)) return J({ error:"forbidden" }, 403);
+    const id = Number(new URL(req.url).searchParams.get("id")||"0");
+    if (!id) return J({ error:"Bad id" }, 400);
+    const row = await env.DB.prepare("SELECT id, payload, processed, splynx_id FROM leads_queue WHERE id=?1").bind(id).first();
+    if (!row) return J({ error:"Not found" }, 404);
+    return J({ id: row.id, payload: safeParseJSON(row.payload), processed: row.processed, splynx_id: row.splynx_id });
+  });
+
+  router.add("POST", "/api/admin/update", async (req, env) => {
+    if (!isAllowed(req)) return J({ error:"forbidden" }, 403);
+    const body = await req.json().catch(()=>null);
+    if (!body?.id || !body?.payload) return J({ error:"Bad request" }, 400);
+    await env.DB.prepare("UPDATE leads_queue SET payload=?1 WHERE id=?2").bind(JSON.stringify(body.payload), body.id).run();
+    return J({ ok:true });
+  });
+
+  // Match against Splynx
+  router.add("POST", "/api/admin/match", async (req) => {
+    const body = await req.json().catch(()=>null);
+    if (!body?.payload) return J({ error:"Bad request" }, 400);
+    const [leads, customers] = await Promise.all([
+      splynxFetchLeads(body.payload),
+      splynxFetchCustomers(body.payload),
+    ]);
+    const { leadHits, custHits } = findCandidates(body.payload, leads, customers);
+    return J({ leads: leadHits, customers: custHits });
+  });
+
+  // Pull a page of leads (for cleanup)
+  router.add("GET", "/api/admin/splynx/fetch", async (req) => {
+    const u = new URL(req.url);
+    const status = (u.searchParams.get("status") || "").trim();
+    const limit  = Number(u.searchParams.get("limit") || "50");
+    const offset = Number(u.searchParams.get("offset") || "0");
     const rows = await listLeads({ status, limit, offset });
-    return Response.json({ ok: true, rows });
+    return J({ ok: true, rows });
   });
 
-  router.add("POST", "/api/crm/leads/update", async (req) => {
-    const url = new URL(req.url);
-    const id = url.searchParams.get("id");
-    const fields = await req.json().catch(()=> ({}));
-    const r = await updateLeadFields(Number(id), fields);
-    return Response.json(r);
+  // Update one lead quickly
+  router.add("POST", "/api/admin/splynx/update", async (req) => {
+    const body = await req.json().catch(() => null);
+    if (!body?.id || !body?.fields) return J({ error:"Bad request" }, 400);
+    const res = await updateLeadFields(Number(body.id), body.fields);
+    return J(res);
   });
 
-  router.add("POST", "/api/crm/leads/sanitize", async (req) => {
-    const { ids } = await req.json().catch(()=> ({ ids: [] }));
-    const r = await bulkSanitizeLeads(ids);
-    return Response.json(r);
+  // Bulk sanitize
+  router.add("POST", "/api/admin/splynx/bulk-sanitize", async (req) => {
+    const body = await req.json().catch(() => null);
+    const ids = Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : [];
+    if (!ids.length) return J({ error:"No ids" }, 400);
+    const res = await bulkSanitizeLeads(ids);
+    return J(res);
+  });
+
+  // Submit to Splynx (overwrite/exact/re-use/new)
+  router.add("POST", "/api/admin/submit", async (req, env) => {
+    const body = await req.json().catch(()=>null);
+    if (!body?.id) return J({ error:"Bad request" }, 400);
+
+    const row = await env.DB.prepare("SELECT payload FROM leads_queue WHERE id=?1").bind(body.id).first();
+    if (!row) return J({ error:"Not found" }, 404);
+    const p = safeParseJSON(row.payload);
+    const payload = buildLeadPayload(p);
+
+    const allLeads = await splynxFetchLeads({});
+    let splynxId = null;
+
+    if (body.overwrite_id) {
+      await updateLead("lead", Number(body.overwrite_id), payload);
+      splynxId = Number(body.overwrite_id);
+    } else {
+      const exact = (Array.isArray(allLeads)?allLeads:[]).find(l =>
+        (String(l.email||"").toLowerCase() === String(p.email||"").toLowerCase()) ||
+        (String(l.phone||"") === String(p.phone||""))
+      );
+      if (exact) {
+        await updateLead("lead", exact.id, payload);
+        splynxId = exact.id;
+      } else {
+        const reuse = await findReuseLead();
+        if (reuse) {
+          await updateLead("lead", reuse.id, payload);
+          splynxId = reuse.id;
+        } else {
+          const created = await createLead(payload);
+          splynxId = created?.id || null;
+        }
+      }
+    }
+
+    await env.DB.prepare("UPDATE leads_queue SET processed=1, splynx_id=?1, synced='1' WHERE id=?2").bind(splynxId, body.id).run();
+    if (splynxId) {
+      await env.DB.prepare("UPDATE leads SET splynx_id=?1, synced=1 WHERE email=?2 OR phone=?3").bind(splynxId, p.email||"", p.phone||"").run();
+    }
+    return J({ ok:true, id: splynxId });
+  });
+
+  // Send WA onboarding
+  router.add("POST", "/api/admin/wa", async (req, env) => {
+    const body = await req.json().catch(()=>null);
+    if (!body?.id) return J({ error:"Bad request" }, 400);
+    const row = await env.DB.prepare("SELECT payload, splynx_id FROM leads_queue WHERE id=?1").bind(body.id).first();
+    if (!row) return J({ error:"Not found" }, 404);
+    const p = safeParseJSON(row.payload);
+    const code = `${(p.name||'client').split(' ')[0].toLowerCase()}_${Math.random().toString(36).slice(2,8)}`;
+    const url = `https://onboard.vinet.co.za/onboard/${code}`;
+    await sendOnboardingTemplate(env, p.phone, p.name || "there", url, "en_US");
+    return J({ ok:true, url });
   });
 }
