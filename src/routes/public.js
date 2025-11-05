@@ -22,6 +22,18 @@ function getCookie(req, name) {
 const setCookie = (k, v, opts = "") => `${k}=${encodeURIComponent(v)}; Path=/; ${opts}`;
 const shortId = () => Math.random().toString(36).slice(2, 8);
 
+/* Convert every undefined to null, trim strings, keep numbers/booleans */
+function sanitize(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v === undefined) { out[k] = null; continue; }
+    if (v === null) { out[k] = null; continue; }
+    if (typeof v === "string") { out[k] = v.trim(); continue; }
+    out[k] = v;
+  }
+  return out;
+}
+
 /* ---------------- mount ---------------- */
 export function mount(router) {
   // Root: Splash (if Turnstile enabled and cookie not present) → Landing
@@ -29,22 +41,18 @@ export function mount(router) {
     const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
     const ok = getCookie(req, "ts_ok") === "1";
 
-    // If Turnstile is enabled and not yet passed, show splash
     if (turnstileOn && !ok) {
       const sid = shortId();
       return html(splashHTML({ siteKey: env.TURNSTILE_SITE_KEY, sid }), 200, {
         "cache-control": "no-store",
-        "set-cookie": [
-          setCookie("vsplashed", sid, "Max-Age=86400; SameSite=Lax; Secure"),
-        ].join(", "),
+        "set-cookie": setCookie("vsplashed", sid, "Max-Age=86400; SameSite=Lax; Secure"),
       });
     }
 
-    // Landing
     return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
   });
 
-  // POST /splash/verify – verify token (if configured) and set ts_ok=1 (soft gate)
+  // POST /splash/verify – soft gate
   router.add("POST", "/splash/verify", async (req, env) => {
     try {
       const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
@@ -64,34 +72,24 @@ export function mount(router) {
         }
       }
 
-      // Set cookie either way (lets users proceed even if you disable Turnstile)
-      const cookies = [
-        setCookie("ts_ok", ok ? "1" : "0", "Max-Age=86400; SameSite=Lax; Secure"),
-      ].join(", ");
-
-      return json({ ok }, 200, { "set-cookie": cookies });
+      return json({ ok }, 200, { "set-cookie": setCookie("ts_ok", ok ? "1" : "0", "Max-Age=86400; SameSite=Lax; Secure") });
     } catch {
       return json({ ok: false }, 200, { "set-cookie": setCookie("ts_ok", "0", "Max-Age=86400; SameSite=Lax; Secure") });
     }
   });
 
-  // GET /lead – show form (self-heal cookie if someone bypassed splash)
+  // GET /lead – show form (self-heal cookie)
   router.add("GET", "/lead", (req, _env) => {
     const secured = getCookie(req, "ts_ok") === "1";
     const sid = shortId();
-
-    const headers = {
-      // If there is no cookie yet, set a permissive one so the green banner disappears next navigate
-      "set-cookie": [
-        !secured ? setCookie("ts_ok", "1", "Max-Age=86400; SameSite=Lax; Secure") : null,
-        setCookie("ts_sid", sid, "Max-Age=86400; SameSite=Lax; Secure"),
-      ].filter(Boolean).join(", "),
-    };
-
-    return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, headers);
+    const cookies = [
+      !secured ? setCookie("ts_ok", "1", "Max-Age=86400; SameSite=Lax; Secure") : null,
+      setCookie("ts_sid", sid, "Max-Age=86400; SameSite=Lax; Secure"),
+    ].filter(Boolean).join(", ");
+    return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, { "set-cookie": cookies });
   });
 
-  // POST /lead/submit – now accepts JSON, form-urlencoded, or multipart
+  // POST /lead/submit – accepts JSON, urlencoded, or multipart; never binds undefined to D1
   router.add("POST", "/lead/submit", async (req, env) => {
     const parseBody = async () => {
       const ct = (req.headers.get("content-type") || "").toLowerCase();
@@ -113,47 +111,45 @@ export function mount(router) {
       const body = await parseBody();
       if (!body) {
         return json(
-          {
-            ok: false,
-            error:
-              "Unsupported Content-Type. Send application/json, application/x-www-form-urlencoded, or multipart/form-data.",
-          },
+          { ok: false, error: "Unsupported Content-Type. Use JSON, x-www-form-urlencoded, or multipart/form-data." },
           415
         );
       }
 
-      // Normalize fields (works with your UI & API)
       const get = (...keys) => {
         for (const k of keys) {
           const v = body[k];
           if (v != null && String(v).trim() !== "") return String(v).trim();
         }
-        return "";
+        return null;
       };
 
-      const payload = {
-        name:    get("full_name", "name"),
-        phone:   get("phone", "whatsapp", "phone_number"),
-        email:   get("email"),
-        source:  get("source"),
-        city:    get("city", "town"),
-        street:  get("street", "street_1", "street1", "street_address"),
-        zip:     get("zip", "zip_code", "postal", "postal_code"),
-        service: get("service"),
-        message: get("message", "msg", "notes"),
+      // Build payload; optional fields default to sensible values (not undefined)
+      const payloadRaw = {
+        name:        get("full_name", "name"),
+        phone:       get("phone", "whatsapp", "phone_number"),
+        email:       get("email"),
+        source:      get("source") || "website",
+        city:        get("city", "town"),
+        street:      get("street", "street_1", "street1", "street_address"),
+        zip:         get("zip", "zip_code", "postal", "postal_code"),
+        service:     get("service") || "unknown",
+        message:     get("message", "msg", "notes") || "",
         captured_by: "public",
       };
 
-      // Basic validation
+      // Validate requireds
       for (const k of ["name", "phone", "email", "city", "street", "zip"]) {
-        if (!payload[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
+        if (!payloadRaw[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
       }
 
-      // Save
+      const payload = sanitize(payloadRaw);
+
+      // Save via your util (it must handle nulls/strings only; never undefined)
       const { insertLead } = await import("../leads-storage.js");
       await insertLead(env, payload);
 
-      const row = await env.DB.prepare("SELECT last_insert_rowid() AS id").first();
+      const row = await env.DB.prepare("SELECT last_insert_rowid() AS id").first().catch(() => null);
       return json({ ok: true, ref: row?.id ?? null });
     } catch (e) {
       return json({ ok: false, error: (e && e.message) || "Failed to save" }, 500);
