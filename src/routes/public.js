@@ -3,6 +3,30 @@ import { renderLandingHTML } from "../ui/landing.js";
 import { renderSplashHTML as splashHTML } from "../ui/splash.js";
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
 
+
+// inside POST /lead/submit (after you’ve built & validated body)
+import { savePublicLead } from "../leads-storage.js";
+
+const payload = sanitize({
+  name:        get("full_name","name"),
+  phone:       get("phone","whatsapp","phone_number"),
+  email:       get("email"),
+  source:      get("source") || "website",
+  city:        get("city","town"),
+  street:      get("street","street_1","street1","street_address"),
+  zip:         get("zip","zip_code","postal","postal_code"),
+  service:     get("service") || "unknown",
+  message:     get("message","notes","msg") || ""
+});
+
+// required
+for (const k of ["name","phone","email","city","street","zip"]) {
+  if (!payload[k]) return json({ ok:false, error:`Missing ${k}` }, 400);
+}
+
+const { queueId } = await savePublicLead(env, payload);
+return json({ ok:true, ref: queueId });
+
 /* ---------------- helpers ---------------- */
 const text = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
