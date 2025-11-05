@@ -50,6 +50,32 @@ self.addEventListener("fetch",e=>{
   e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)));
 });`;
 
+/* ----------- simple inline landing fallback (buttons) ----------- */
+function fallbackLanding() {
+  return `<!doctype html><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Vinet · Welcome</title>
+<style>
+:root{--red:#ED1C24;--ink:#0b1320}
+body{margin:0;font-family:system-ui;background:#f7f7f8;color:var(--ink)}
+.card{max-width:960px;margin:4rem auto;background:#fff;border-radius:18px;box-shadow:0 12px 40px #0002;padding:24px}
+h1{margin:0 0 12px}
+.btn{display:inline-block;padding:14px 18px;border-radius:12px;text-decoration:none;font-weight:600}
+.btn.red{background:var(--red);color:#fff}
+.btn.ghost{border:2px solid #0003;color:var(--ink)}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.logo{height:46px;border-radius:10px}
+</style>
+<main class="card">
+  <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
+  <h1>Fast, Reliable Internet</h1>
+  <p>Welcome to Vinet. Choose an option below:</p>
+  <div class="row">
+    <a class="btn red" href="/lead">I am Interested</a>
+    <a class="btn ghost" href="https://splynx.vinet.co.za" target="_blank" rel="noopener">Already connected</a>
+  </div>
+</main>`;
+}
+
 /* ---------------- router mount ---------------- */
 export function mount(router) {
   // PWA
@@ -65,15 +91,12 @@ export function mount(router) {
     }),
   );
 
-  // Root: host-aware behaviour
+  // Root: host-aware behaviour + Turnstile splash
   router.add("GET", "/", (req, env) => {
     const host = new URL(req.url).host.toLowerCase();
     const publicHost = hostnameOnly(env.PUBLIC_HOST || "new.vinet.co.za");
 
-    if (host.startsWith("crm.")) return Response.redirect("/admin", 302);
-    if (host.startsWith("onboard.")) return Response.redirect("/onboard", 302);
-
-    // Only the public host shows splash/turnstile
+    // Friendly pointers for other hosts
     if (publicHost && host !== publicHost) {
       return html(`<!doctype html><meta charset="utf-8"/>
 <title>Vinet Onboarding</title>
@@ -91,6 +114,7 @@ export function mount(router) {
 </div>`);
     }
 
+    // Turnstile splash (if configured)
     const siteKey = env?.TURNSTILE_SITE_KEY || "";
     const already = hasCookie(req, "vsplashed=");
     if (!already && siteKey) {
@@ -99,7 +123,10 @@ export function mount(router) {
         "set-cookie": `splashid=${shortId()}; Path=/; HttpOnly; SameSite=Lax`,
       });
     }
-    return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
+
+    // Landing screen (prefer your UI module; fallback included)
+    const landing = typeof renderLandingHTML === "function" ? renderLandingHTML() : fallbackLanding();
+    return html(landing, 200, { "cache-control": "no-store" });
   });
 
   /* ---------------- splash verify ---------------- */
@@ -108,10 +135,8 @@ export function mount(router) {
       const siteKey = env?.TURNSTILE_SITE_KEY || "";
       const secret = env?.TURNSTILE_SECRET || "";
       if (!siteKey || !secret) {
-        // If Turnstile not configured, just set the cookie and proceed.
         return text("ok", 200, { "set-cookie": `vsplashed=1; Path=/; Max-Age=86400; SameSite=Lax` });
       }
-
       const body = await req.json().catch(() => ({}));
       const token = body?.token || "";
       if (!token) return json({ ok: false, error: "missing_token" }, 400);
@@ -134,6 +159,7 @@ export function mount(router) {
 
   /* ---------------- public lead form ---------------- */
   router.add("GET", "/lead", (_req, _env) => {
+    // Your UI should include the Splynx-like fields (as per screenshot).
     return html(renderPublicLeadHTML(), 200, { "cache-control": "no-store" });
   });
 
@@ -143,7 +169,9 @@ export function mount(router) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at INTEGER NOT NULL,
       payload TEXT NOT NULL,
-      status TEXT DEFAULT 'pending'
+      status TEXT DEFAULT 'pending',
+      processed INTEGER DEFAULT 0,
+      splynx_id INTEGER
     );`);
   }
 
@@ -153,12 +181,15 @@ export function mount(router) {
       await ensureLeadQueue(env);
 
       const ct = (req.headers.get("content-type") || "").toLowerCase();
-      const body = ct.includes("application/json") ? await req.json() : Object.fromEntries(await req.formData());
+      const body = ct.includes("application/json")
+        ? await req.json()
+        : Object.fromEntries(await req.formData());
+
       const now = Date.now();
 
-      // Minimal validation
-      const name = String(body?.name ?? "").trim();
-      const phone = String(body?.phone ?? "").trim();
+      // Minimal validation (allow partial – admin will reconcile)
+      const name = String(body?.name ?? body?.full_name ?? "").trim();
+      const phone = String(body?.phone ?? body?.phone_number ?? "").trim();
       const email = String(body?.email ?? "").trim();
       if (!name && !phone && !email) return json({ ok: false, error: "missing_contact" }, 400);
 
@@ -170,20 +201,24 @@ export function mount(router) {
         ts: now,
       };
 
+      // Pass-through all fields; admin sync will map to Splynx
       const payload = { ...body, _meta: meta };
+
       const insert = await env.DB
         .prepare(`INSERT INTO leads_queue (created_at, payload, status) VALUES (?1, ?2, 'pending')`)
         .bind(now, JSON.stringify(payload))
         .run();
 
-      return json({ ok: true, queue_id: insert.lastRowId ?? null, meta }, 201, {
-        "cache-control": "no-store",
-      });
+      return json(
+        { ok: true, queue_id: insert.lastRowId ?? null, meta },
+        201,
+        { "cache-control": "no-store" }
+      );
     } catch (e) {
       return json({ ok: false, error: String(e?.message || e) }, 500);
     }
   });
-  
+
   /* ---------------- misc ---------------- */
   router.add("GET", "/health", () => json({ ok: true, ts: Date.now() }));
 }
