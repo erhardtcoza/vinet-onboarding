@@ -1,61 +1,12 @@
-// src/routes/onboard.js
+// /src/routes/onboard.js
+import { renderOnboardUI } from "../ui/onboard.js";
+
 export function mount(router) {
-  // Simple admin UI
-  router.add("GET", "/", async () => {
-    const html = `<!doctype html><meta charset="utf-8"/>
-<title>Vinet Onboarding Admin</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>
-  body{margin:0;padding:24px;background:#f7f7f8;font:15px/1.5 ui-sans-serif,system-ui}
-  table{border-collapse:collapse;width:100%;background:#fff;border-radius:12px;overflow:hidden}
-  th,td{padding:10px 12px;border-bottom:1px solid #eee}
-  th{background:#fafafa;text-align:left}
-</style>
-<h2>Onboarding Links</h2>
-<table id="t"><thead><tr><th>Link ID</th><th>Customer/Lead</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
-<script>
-(async ()=>{
-  const r = await fetch('/api/onboard/list');
-  const j = await r.json();
-  const tb = document.querySelector('#t tbody'); tb.innerHTML='';
-  (j.items||[]).forEach(x=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = \`<td>\${x.id}</td><td>\${x.for||''}</td><td>\${new Date(x.at||0).toLocaleString()}</td>
-      <td>\${x.status||''}</td>
-      <td><a href="/api/onboard/sync?id=\${encodeURIComponent(x.id)}">Sync to Splynx</a></td>\`;
-    tb.appendChild(tr);
+  // Onboarding link
+  router.add("GET", "/onboard/:code", async (req, env) => {
+    const code = req.params.code;
+    const sess = await env.ONBOARD_KV.get(`onboard/${code}`, "json");
+    if (!sess) return new Response("Link expired or invalid", { status: 404 });
+    return new Response(renderOnboardUI(code), { headers: { "content-type": "text/html; charset=utf-8" } });
   });
-})();
-</script>`;
-    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-  });
-
-  // Placeholder APIs (wire to your real KV keys)
-  router.add("GET", "/api/onboard/list", async (_req, env) => {
-    // Expect items under ONBOARD_KV with prefix "onboard/"
-    const items = []; // keep it simple (fill from your existing keys later)
-    return Response.json({ ok: true, items });
-  });
-
-  router.add("GET", "/api/onboard/sync", async (req) => {
-    const url = new URL(req.url);
-    const id = url.searchParams.get("id");
-    // call your existing sync logic here
-    return Response.json({ ok: true, id });
-  });
-}
-
-// Keep your existing code, then add:
-export function mount(router) {
-  // Admin list (your UI page)
-  router.add("GET", "/", async (req, env, ctx) => {
-    // If this file already renders an admin UI on GET '/', keep it here.
-    // Otherwise remove this line and only mount the deep routes below.
-    return new Response(renderOnboardUI ? renderOnboardUI(""), {
-      headers: { "content-type": "text/html; charset=utf-8" }
-    });
-  });
-
-  // The actual onboarding link (deep) – e.g. /onboard/<code>
-  router.add("GET", "/onboard/*", (req, env, ctx) => handle(req, env, ctx));
 }
