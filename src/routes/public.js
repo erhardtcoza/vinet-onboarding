@@ -183,7 +183,7 @@ export function mount(router) {
       return json({ ok: false, error: String(e?.message || e) }, 500);
     }
   });
-
+  
   /* ---------------- misc ---------------- */
   router.add("GET", "/health", () => json({ ok: true, ts: Date.now() }));
 }
