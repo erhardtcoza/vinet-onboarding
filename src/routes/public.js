@@ -22,19 +22,21 @@ function getCookie(req, name) {
 const setCookie = (k, v, opts = "") => `${k}=${encodeURIComponent(v)}; Path=/; ${opts}`;
 const shortId = () => Math.random().toString(36).slice(2, 8);
 
-/* Convert every undefined to null, trim strings */
+/* normalize: no undefined to D1 */
 function sanitize(obj) {
   const out = {};
   for (const [k, v] of Object.entries(obj || {})) {
-    if (v === undefined || v === null) { out[k] = null; continue; }
-    out[k] = typeof v === "string" ? v.trim() : v;
+    if (v === undefined) { out[k] = null; continue; }
+    if (v === null)      { out[k] = null; continue; }
+    if (typeof v === "string") { out[k] = v.trim(); continue; }
+    out[k] = v;
   }
   return out;
 }
 
 /* ---------------- mount ---------------- */
 export function mount(router) {
-  // Root: Splash (if Turnstile enabled and cookie not present) → Landing
+  // Root (no caching to avoid sticky content)
   router.add("GET", "/", (req, env) => {
     const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
     const ok = getCookie(req, "ts_ok") === "1";
@@ -50,7 +52,7 @@ export function mount(router) {
     return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
   });
 
-  // POST /splash/verify – soft gate
+  // Turnstile verify (soft gate)
   router.add("POST", "/splash/verify", async (req, env) => {
     try {
       const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
@@ -76,7 +78,7 @@ export function mount(router) {
     }
   });
 
-  // GET /lead – show form (self-heal cookie)
+  // Lead form (make sure it never comes from bfcache)
   router.add("GET", "/lead", (req, _env) => {
     const secured = getCookie(req, "ts_ok") === "1";
     const sid = shortId();
@@ -84,30 +86,35 @@ export function mount(router) {
       !secured ? setCookie("ts_ok", "1", "Max-Age=86400; SameSite=Lax; Secure") : null,
       setCookie("ts_sid", sid, "Max-Age=86400; SameSite=Lax; Secure"),
     ].filter(Boolean).join(", ");
-    return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, { "set-cookie": cookies });
+    return html(
+      renderPublicLeadHTML({ secured, sessionId: sid }),
+      200,
+      { "set-cookie": cookies, "cache-control": "no-store, no-cache, max-age=0, must-revalidate" }
+    );
   });
 
-  // POST /lead/submit – accepts JSON, urlencoded, or multipart
-  router.add("POST", "/lead/submit", async (req, env) => {
-    const parseBody = async () => {
-      const ct = (req.headers.get("content-type") || "").toLowerCase();
-      if (ct.includes("application/json")) {
-        return await req.json().catch(() => null);
-      } else if (ct.includes("application/x-www-form-urlencoded")) {
-        const t = await req.text().catch(() => "");
-        return Object.fromEntries(new URLSearchParams(t));
-      } else if (ct.includes("multipart/form-data")) {
-        const fd = await req.formData();
-        return Object.fromEntries(
-          [...fd.entries()].map(([k, v]) => [k, typeof v === "string" ? v : (v?.name || "")])
-        );
-      }
-      return null;
-    };
+  // Parse JSON/x-www-form-urlencoded/multipart safely
+  const parseBody = async (req) => {
+    const ct = (req.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("application/json")) {
+      return await req.json();
+    } else if (ct.includes("application/x-www-form-urlencoded")) {
+      const t = await req.text();
+      return Object.fromEntries(new URLSearchParams(t));
+    } else if (ct.includes("multipart/form-data")) {
+      const fd = await req.formData();
+      return Object.fromEntries(
+        [...fd.entries()].map(([k, v]) => [k, typeof v === "string" ? v : (v?.name || "")])
+      );
+    }
+    return null;
+  };
 
+  // Submit (returns a real numeric ref or null — never blank spaces)
+  router.add("POST", "/lead/submit", async (req, env) => {
     try {
-      const raw = await parseBody();
-      if (!raw) {
+      const body = await parseBody(req);
+      if (!body) {
         return json(
           { ok: false, error: "Unsupported Content-Type. Use JSON, x-www-form-urlencoded, or multipart/form-data." },
           415
@@ -116,7 +123,7 @@ export function mount(router) {
 
       const get = (...keys) => {
         for (const k of keys) {
-          const v = raw[k];
+          const v = body[k];
           if (v != null && String(v).trim() !== "") return String(v).trim();
         }
         return null;
@@ -125,7 +132,6 @@ export function mount(router) {
       const payloadRaw = {
         name:        get("full_name", "name"),
         phone:       get("phone", "whatsapp", "phone_number"),
-        whatsapp:    get("whatsapp", "phone"),
         email:       get("email"),
         source:      get("source") || "website",
         city:        get("city", "town"),
@@ -135,31 +141,18 @@ export function mount(router) {
         captured_by: "public",
       };
 
-      // Required fields
       for (const k of ["name", "phone", "email", "city", "street", "zip"]) {
-        if (!payloadRaw[k]) {
-          if (env?.DEBUG_LEADS) {
-            return json({ ok:false, error:`Missing ${k}`, debug:{raw, payloadRaw} }, 400);
-          }
-          return json({ ok:false, error:`Missing ${k}` }, 400);
-        }
+        if (!payloadRaw[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
       }
 
       const payload = sanitize(payloadRaw);
 
-      // Save
       const { insertLead } = await import("../leads-storage.js");
-      await insertLead(env, payload);
+      const insertedId = await insertLead(env, payload); // uses meta.last_row_id
 
-      // Reference id
-      const row = await env.DB.prepare("SELECT last_insert_rowid() AS id").first().catch(() => null);
-      return json({ ok: true, ref: row?.id ?? null });
-
+      return json({ ok: true, ref: insertedId ?? null }, 200, { "cache-control": "no-store" });
     } catch (e) {
-      if (env?.DEBUG_LEADS) {
-        return json({ ok:false, error: String(e && e.message || e), stack: (e && e.stack) || "" }, 500);
-      }
-      return json({ ok:false, error:(e && e.message) || "Failed to save" }, 500);
+      return json({ ok: false, error: (e && e.message) || "Failed to save" }, 500);
     }
   });
 }
