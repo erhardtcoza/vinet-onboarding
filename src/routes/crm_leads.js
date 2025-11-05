@@ -1,176 +1,84 @@
 // src/routes/crm_leads.js
-import { ensureLeadSchema, json, safeParseJSON, nowSec, todayISO } from "../utils/db.js";
-import { splynxFetchLeads, splynxFetchCustomers, findCandidates, buildLeadPayload, createLead, updateLead, findReuseLead } from "../utils/splynx.js";
-import { sendOnboardingTemplate } from "../utils/wa.js";
-import { renderCRMHTML } from "../ui/crm_leads.js";
 import { listLeads, updateLeadFields, bulkSanitizeLeads } from "../splynx.js";
 
-function isAllowedIP(request){
-  const ip = request.headers.get("CF-Connecting-IP") || "";
-  const [a,b,c] = ip.split(".").map(Number);
-  return a===160 && b===226 && c>=128 && c<=143;
-}
-
-export async function mountCRMLeads(request, env) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  if (!isAllowedIP(request)) {
-    return new Response("<h1 style='color:#e2001a;font-family:sans-serif'>Access Denied</h1>", { status:403, headers:{ "content-type":"text/html" }});
+export function mount(router) {
+  // UI
+  router.add("GET", "/", async () => {
+    const html = `<!doctype html><meta charset="utf-8"/>
+<title>Vinet CRM Intake</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  body{margin:0;padding:24px;background:#f7f7f8;font:15px/1.5 ui-sans-serif,system-ui}
+  table{border-collapse:collapse;width:100%;background:#fff;border-radius:12px;overflow:hidden}
+  th,td{padding:10px 12px;border-bottom:1px solid #eee}
+  th{background:#fafafa;text-align:left}
+  .row{display:flex;gap:10px;margin:0 0 16px}
+  input,select,button{padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px}
+  button.primary{background:#e10600;color:#fff;border:0}
+</style>
+<h2>CRM Intake</h2>
+<div class="row">
+  <label>Status <select id="status"><option value="">(any)</option><option>New enquiry</option><option>Open</option><option>Closed</option></select></label>
+  <label>Limit <input id="limit" type="number" value="50" min="1" max="500"/></label>
+  <button class="primary" id="load">Load</button>
+</div>
+<table id="t"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th>Last</th><th>Actions</th></tr></thead><tbody></tbody></table>
+<script>
+const $ = (s)=>document.querySelector(s);
+$("#load").onclick = async ()=>{
+  const p = new URLSearchParams({ status: $("#status").value, limit: $("#limit").value });
+  const r = await fetch('/api/crm/leads/list?'+p);
+  const j = await r.json();
+  const tb = $("#t tbody"); tb.innerHTML='';
+  (j.rows||[]).forEach(x=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = \`<td>\${x.id}</td><td>\${x.name||''}</td><td>\${x.email||''}</td>
+    <td>\${x.phone||''}</td><td>\${x.status||''}</td><td>\${x.last_contacted||0}</td>
+    <td>
+      <button data-id="\${x.id}" class="u">Mark used</button>
+      <button data-id="\${x.id}" class="s">Sanitize</button>
+    </td>\`;
+    tb.appendChild(tr);
+  });
+};
+document.addEventListener('click', async (e)=>{
+  if (e.target.classList.contains('u')) {
+    const id=e.target.dataset.id;
+    await fetch('/api/crm/leads/update?id='+id, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ status:'Closed' }) });
+    $("#load").click();
   }
-
-  if (request.method === "GET" && (path === "/" || path === "/index")) {
-    return new Response(renderCRMHTML(), { headers: { "content-type":"text/html" } });
+  if (e.target.classList.contains('s')) {
+    const id=e.target.dataset.id;
+    await fetch('/api/crm/leads/sanitize', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ids:[Number(id)] }) });
+    $("#load").click();
   }
+});
+$("#load").click();
+</script>`;
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  });
 
-  if (path === "/api/admin/queue" && request.method === "GET") {
-    await ensureLeadSchema(env);
-    const rows = await env.DB.prepare(
-      "SELECT id, sales_user, created_at, payload, processed, splynx_id FROM leads_queue ORDER BY created_at DESC LIMIT 500"
-    ).all();
-    const res = (rows.results||[]).map(r => ({
-      id: r.id,
-      sales_user: r.sales_user,
-      created_at: r.created_at,
-      processed: r.processed,
-      splynx_id: r.splynx_id,
-      payload: safeParseJSON(r.payload)
-    }));
-    return json({ rows: res });
-  }
+  // APIs
+  router.add("GET", "/api/crm/leads/list", async (req) => {
+    const url = new URL(req.url);
+    const status = url.searchParams.get("status") || "";
+    const limit = Number(url.searchParams.get("limit") || 50);
+    const offset = Number(url.searchParams.get("offset") || 0);
+    const rows = await listLeads({ status, limit, offset });
+    return Response.json({ ok: true, rows });
+  });
 
-  if (path === "/api/admin/get" && request.method === "GET") {
-    const id = Number(url.searchParams.get("id")||"0");
-    if (!id) return json({ error:"Bad id" }, 400);
-    const row = await env.DB.prepare("SELECT id, payload, processed, splynx_id FROM leads_queue WHERE id=?1").bind(id).first();
-    if (!row) return json({ error:"Not found" }, 404);
-    return json({ id: row.id, payload: safeParseJSON(row.payload), processed: row.processed, splynx_id: row.splynx_id });
-  }
+  router.add("POST", "/api/crm/leads/update", async (req) => {
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id");
+    const fields = await req.json().catch(()=> ({}));
+    const r = await updateLeadFields(Number(id), fields);
+    return Response.json(r);
+  });
 
-  if (path === "/api/admin/update" && request.method === "POST") {
-    const body = await request.json().catch(()=>null);
-    if (!body || !body.id || !body.payload) return json({ error:"Bad request" }, 400);
-    await env.DB.prepare("UPDATE leads_queue SET payload=?1 WHERE id=?2").bind(JSON.stringify(body.payload), body.id).run();
-    return json({ ok:true });
-  }
-
-  // Check matches across Splynx Leads & Customers
-  if (path === "/api/admin/match" && request.method === "POST") {
-    const body = await request.json().catch(()=>null);
-    if (!body || !body.id) return json({ error:"Bad request" }, 400);
-    const r = await env.DB.prepare("SELECT payload FROM leads_queue WHERE id=?1").bind(body.id).first();
-    if (!r) return json({ error:"Not found" }, 404);
-    const p = safeParseJSON(r.payload);
-
-    const [leads, customers] = await Promise.all([splynxFetchLeads(), splynxFetchCustomers()]);
-    const { leadHits, custHits } = findCandidates({ name:p.name, email:p.email, phone:p.phone }, leads, customers);
-    return json({ leads: leadHits, customers: custHits });
-  }
-
- // Pull a page of leads from Splynx (e.g., status=lost) for cleanup
-if (path === "/api/admin/splynx/fetch" && request.method === "GET") {
-  const status = (url.searchParams.get("status") || "").trim(); // e.g. "lost"
-  const limit  = Number(url.searchParams.get("limit") || "50");
-  const offset = Number(url.searchParams.get("offset") || "0");
-  const rows = await listLeads(env, { status, limit, offset });
-  // project a light row for the UI
-  const light = rows.map(x => ({
-    id: x.id,
-    status: x.status || "",
-    name: x.name || x.full_name || "",
-    email: x.email || x.billing_email || "",
-    phone: x.phone || x.phone_mobile || "",
-    city: x.city || "",
-    last_contacted: x.last_contacted || x.last_activity || x.updated || x.date_add || ""
-  }));
-  return json({ ok: true, rows: light });
-}
-
-// Update one lead quickly (rename, tweak status, etc.)
-if (path === "/api/admin/splynx/update" && request.method === "POST") {
-  const body = await request.json().catch(() => null);
-  if (!body || !body.id || !body.fields) return json({ error: "Bad request" }, 400);
-  const res = await updateLeadFields(env, Number(body.id), body.fields);
-  return json(res);
-}
-
-// Bulk sanitize (rename to "re-use" + wipe PII)
-if (path === "/api/admin/splynx/bulk-sanitize" && request.method === "POST") {
-  const body = await request.json().catch(() => null);
-  const ids = Array.isArray(body?.ids) ? body.ids.map(Number).filter(Boolean) : [];
-  if (!ids.length) return json({ error: "No ids" }, 400);
-  const res = await bulkSanitizeLeads(env, ids);
-  return json(res);
-}
-  
-  // Create/overwrite in Splynx:
-  // - If overwrite_id provided, PUT that ID.
-  // - Else: check for existing exact email/phone OR use RE-USE lead. If none, POST new.
-  if (path === "/api/admin/submit" && request.method === "POST") {
-    const body = await request.json().catch(()=>null);
-    if (!body || !body.id) return json({ error:"Bad request" }, 400);
-
-    const row = await env.DB.prepare("SELECT payload FROM leads_queue WHERE id=?1").bind(body.id).first();
-    if (!row) return json({ error:"Not found" }, 404);
-    const p = safeParseJSON(row.payload);
-    const payload = buildLeadPayload(p, "public");
-
-    const allLeads = await splynxFetchLeads();
-
-    let splynxId = null;
-    if (body.overwrite_id) {
-      await updateLead(Number(body.overwrite_id), payload);
-      splynxId = Number(body.overwrite_id);
-    } else {
-      // try exact hit
-      const exact = (allLeads||[]).find(l =>
-        (String(l.email||"").toLowerCase() === String(p.email||"").toLowerCase()) ||
-        (String(l.phone||"") === String(p.phone||""))
-      );
-      if (exact) {
-        await updateLead(exact.id, payload);
-        splynxId = exact.id;
-      } else {
-        // Try RE-USE lead
-        const reuse = await findReuseLead(allLeads);
-        if (reuse) {
-          await updateLead(reuse.id, payload);
-          splynxId = reuse.id;
-        } else {
-          // Create new
-          const created = await createLead(payload);
-          splynxId = created?.id || null;
-        }
-      }
-    }
-
-    await env.DB.prepare("UPDATE leads_queue SET processed=1, splynx_id=?1, synced='1' WHERE id=?2").bind(splynxId, body.id).run();
-    // Mirror to leads table too
-    if (splynxId) {
-      await env.DB.prepare("UPDATE leads SET splynx_id=?1, synced=1 WHERE email=?2 OR phone=?3").bind(splynxId, p.email||"", p.phone||"").run();
-    }
-    return json({ ok:true, id: splynxId });
-  }
-
-  // Send WA onboarding (uses 2 placeholders: name, onboarding_url)
-  if (path === "/api/admin/wa" && request.method === "POST") {
-    const body = await request.json().catch(()=>null);
-    if (!body || !body.id) return json({ error:"Bad request" }, 400);
-    const row = await env.DB.prepare("SELECT payload, splynx_id FROM leads_queue WHERE id=?1").bind(body.id).first();
-    if (!row) return json({ error:"Not found" }, 404);
-    const p = safeParseJSON(row.payload);
-
-    // Build onboarding URL: keep your existing onboarding logic – here a simple code:
-    const code = `${(p.name||'client').split(' ')[0].toLowerCase()}_${Math.random().toString(36).slice(2,8)}`;
-    const onboardingUrl = `https://onboard.vinet.co.za/onboard/${code}`;
-
-    try {
-      await sendOnboardingTemplate(env, p.phone, p.name, onboardingUrl, "en_US");
-      return json({ ok:true, url: onboardingUrl });
-    } catch (e) {
-      return json({ error:true, detail:String(e) }, 500);
-    }
-  }
-
-  return null;
+  router.add("POST", "/api/crm/leads/sanitize", async (req) => {
+    const { ids } = await req.json().catch(()=> ({ ids: [] }));
+    const r = await bulkSanitizeLeads(ids);
+    return Response.json(r);
+  });
 }
