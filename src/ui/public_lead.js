@@ -1,228 +1,149 @@
-// src/ui/public_lead.js
-// Public self-signup with: address auto-split, geolocation fill, contact picker,
-// success modal, and smart autofill (URL params + last submit memory)
-import { LOGO_URL } from "../constants.js";
-
-export function renderPublicLeadHTML() {
-  return /*html*/`<!doctype html>
-<html lang="en"><head>
+// src/ui/form.js
+// Public self-signup form (mobile-first, sticky submit on small screens)
+export function publicFormHTML() {
+  return `<!doctype html>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>New Service Enquiry</title>
-<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#ED1C24"/>
-<script>if("serviceWorker" in navigator){navigator.serviceWorker.register("/sw.js");}</script>
+<title>New Service Enquiry · Vinet</title>
+<link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
 <style>
-  :root{--red:#ED1C24;--ink:#0b1320;--muted:#6b7280;--bg:#f7f7f8;--card:#fff}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:var(--ink)}
-  .card{max-width:720px;margin:1.6rem auto;background:var(--card);border-radius:16px;box-shadow:0 4px 20px #0001;padding:1.25rem}
-  .logo{display:flex;align-items:center;gap:.6rem;margin-bottom:1rem}
-  .logo img{width:38px;height:38px;border-radius:8px}
-  h1{margin:.25rem 0 0;font-size:1.25rem}
-  form{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
-  label{display:flex;flex-direction:column;font-size:.9rem;color:var(--muted);gap:.35rem}
-  input,select,textarea{padding:.7rem .75rem;border:1px solid #e5e7eb;border-radius:12px;font:inherit}
-  .hint{color:var(--muted);font-size:.85rem}
-  .span2{grid-column:1 / -1}
-  .actions{display:flex;gap:.75rem;justify-content:space-between;margin-top:.5rem}
-  .left{display:flex;gap:.5rem;flex-wrap:wrap}
-  button{border:0;border-radius:999px;padding:.75rem 1.1rem;background:#111;color:#fff;font-weight:700;cursor:pointer}
-  button.primary{background:var(--red)}
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;padding:16px}
-  .sheet{background:#fff;max-width:560px;width:100%;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:20px}
-  .sheet h2{margin:.25rem 0 .25rem;font-size:1.6rem}
-  .rowbtns{display:flex;gap:.5rem;justify-content:flex-start;margin-top:.75rem}
+:root{
+  --brand:#e2001a; --ink:#111; --muted:#6b7280; --line:#e6e7eb; --bg:#f7f7fa; --ok:#0a7d2b;
+  --card:#fff;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0}
+.wrap{max-width:940px;margin:18px auto 80px;padding:0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,.06);padding:18px}
+.header{display:flex;align-items:center;gap:10px;margin:2px 2px 10px}
+.logo-box{width:120px;max-width:32vw;aspect-ratio:16/9;display:grid;place-items:center}
+.logo-box img{max-width:100%;max-height:100%;object-fit:contain}
+h1{margin:.1rem 0 0;font-size:1.65rem;line-height:1.2}
+.sub{color:var(--muted);margin:2px 0 6px}
+
+.banner{display:flex;gap:10px;align-items:center;background:#f6fffb;border:1px solid #b7f0cf;color:#064e3b;border-radius:12px;padding:10px;margin:10px 0 14px;font-size:14px}
+.banner .dot{width:10px;height:10px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px #e6f8ef inset}
+
+label{display:block;margin:12px 0 6px;font-weight:650}
+input,select,textarea{
+  width:100%;padding:14px;border:1px solid #d7d9de;border-radius:12px;background:#fff;font-size:16px;
+}
+textarea{min-height:90px;resize:vertical}
+
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:760px){ .row{grid-template-columns:1fr} .wrap{margin:8px auto 86px} h1{font-size:1.45rem} }
+
+.help{color:var(--muted);font-size:.85rem;margin-top:4px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;background:var(--brand);color:#fff;border:none;border-radius:14px;
+     padding:14px 16px;font-weight:800;cursor:pointer;width:100%;font-size:1rem}
+.actions{margin-top:16px}
+.small-actions{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.chip{background:#111;color:#fff;border:none;border-radius:999px;padding:.6rem 1rem;font-weight:800;cursor:pointer}
+
+.toast{position:fixed;left:16px;right:16px;bottom:16px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;
+       box-shadow:0 12px 36px rgba(0,0,0,.16);display:none;z-index:20}
+.ok{color:var(--ok);font-weight:700}
+
+/* sticky submit for mobile */
+.sticky{position:fixed;left:0;right:0;bottom:0;padding:10px;background:linear-gradient(#0000,#0001),var(--bg);z-index:15}
+@media (min-width:761px){ .sticky{display:none} }
+.desktop-submit{display:none}
+@media (min-width:761px){ .desktop-submit{display:block} }
 </style>
-</head><body>
-  <main class="card">
-    <div class="logo">
-      <img src="${LOGO_URL}" alt="Vinet"/>
-      <div><h1>New Service Enquiry</h1><div style="color:var(--muted)">Tell us where you need internet</div></div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="header">
+      <div class="logo-box">
+        <img src="https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png" alt="Vinet"/>
+      </div>
+      <div>
+        <h1>New Service Enquiry</h1>
+        <div class="sub">Tell us where you need internet</div>
+      </div>
     </div>
 
-    <form id="leadForm" autocomplete="on">
-      <label class="span2">Full name
-        <input name="name" autocomplete="name" autocapitalize="words" spellcheck="false" required/>
-      </label>
-      <label>Phone
-        <input name="phone" type="tel" autocomplete="tel" inputmode="tel" pattern="^[0-9+()\\s-]{6,}$" required/>
-      </label>
-      <label>Email
-        <input name="email" type="email" autocomplete="email" inputmode="email" required/>
-      </label>
+    <div class="banner" role="status" aria-live="polite">
+      <div class="dot" aria-hidden="true"></div>
+      <div><strong>Protected & Secure:</strong> Submissions are only accepted from sessions that passed our security check.</div>
+    </div>
 
-      <label class="span2">Street address (full line)
-        <input name="full_line" autocomplete="street-address" placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848"/>
-        <div class="hint">We’ll split this into Street / City / ZIP for you.</div>
-      </label>
-
-      <label>City/Town
-        <input name="city" autocomplete="address-level2"/>
-      </label>
-      <label>ZIP
-        <input name="zip" autocomplete="postal-code" inputmode="numeric" pattern="\\d{3,6}"/>
-      </label>
-
-      <label class="span2">Notes
-        <textarea name="notes" rows="3" autocomplete="off"></textarea>
-      </label>
-
-      <div class="actions span2">
-        <div class="left">
-          <button type="button" id="geo">Use my location</button>
-          <button type="button" id="pick">Pick from contacts</button>
-          <button type="button" id="back">Back</button>
-          <button type="reset">Clear</button>
-        </div>
+    <form id="f" novalidate>
+      <div class="row">
+        <div><label>Full name *</label><input name="full_name" autocomplete="name" required/></div>
+        <div><label>Phone (WhatsApp) *</label><input name="phone" inputmode="tel" autocomplete="tel" required/></div>
+      </div>
+      <div class="row">
+        <div><label>Email *</label><input name="email" type="email" autocomplete="email" required/></div>
         <div>
-          <button type="submit" class="primary">Submit</button>
+          <label>Service interested in *</label>
+          <select name="service" required>
+            <option value="">Select…</option>
+            <option>FTTH (Fibre to the Home)</option>
+            <option>Fixed Wireless / Airfibre</option>
+            <option>VoIP</option>
+            <option>Web Hosting</option>
+          </select>
         </div>
       </div>
-    </form>
-  </main>
 
-  <div class="modal" id="done">
-    <div class="sheet">
-      <h2>Thank you!</h2>
-      <div id="refline" style="font-weight:800;margin:.25rem 0 .5rem"></div>
-      <div>Our team will contact you shortly.</div>
-      <div class="hint" style="margin-top:.5rem">Need help? Support: <a href="tel:0210070200">021&nbsp;007&nbsp;0200</a> · <a href="mailto:sales@vinet.co.za">sales@vinet.co.za</a></div>
-      <div class="rowbtns">
-        <button id="close">Close</button>
-        <button id="home" class="primary">Back to start</button>
+      <label>Street address (full line) *</label>
+      <input name="street" placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848" required/>
+      <div class="help">We'll split this into Street / City / ZIP for you.</div>
+
+      <div class="row">
+        <div><label>City/Town *</label><input name="city" required/></div>
+        <div><label>ZIP *</label><input name="zip" inputmode="numeric" required/></div>
       </div>
-    </div>
+
+      <label>Notes</label>
+      <textarea name="notes" placeholder="Anything else we should know?"></textarea>
+
+      <input type="hidden" name="source" value="Website"/>
+      <input type="hidden" name="partner" value="main"/>
+      <input type="hidden" name="location" value="main"/>
+
+      <label style="margin-top:10px;"><input type="checkbox" name="consent" required/> I consent to Vinet contacting me regarding this enquiry.</label>
+
+      <div class="actions desktop-submit"><button class="btn" type="submit">Submit</button></div>
+    </form>
+
   </div>
+</div>
 
-<script type="module">
-  const f   = document.getElementById('leadForm');
-  const geo = document.getElementById('geo');
-  const pick= document.getElementById('pick');
-  const back= document.getElementById('back');
-  const md  = document.getElementById('done');
-  const refline = document.getElementById('refline');
+<!-- sticky submit on phones -->
+<div class="sticky"><button class="btn" type="button" id="stickySubmit">Submit</button></div>
 
-  function splitAddress(full){
-    const out = { street:"", city:"", zip:"" };
-    if(!full) return out;
-    const parts = String(full).split(",").map(s=>s.trim()).filter(Boolean);
-    for(let i=parts.length-1;i>=0;i--){
-      if(/^[0-9]{3,6}$/.test(parts[i])){ out.zip = parts[i]; parts.splice(i,1); break; }
-    }
-    if(parts.length){ out.city = parts[parts.length-1]; parts.pop(); }
-    out.street = parts.join(", ").trim();
-    return out;
-  }
+<div id="t" class="toast" role="alert"></div>
 
-  // ---------- SMART AUTOFILL ----------
-  function tryURLPrefill(){
-    const u = new URL(location.href);
-    const q = (k)=>u.searchParams.get(k) || "";
-    if(q("name"))  f.name.value  = q("name");
-    if(q("phone")) f.phone.value = q("phone");
-    if(q("email")) f.email.value = q("email");
-    if(q("addr"))  f.full_line.value = q("addr");
-    if(!f.city.value || !f.zip.value){
-      const s = splitAddress(f.full_line.value);
-      if(s.city && !f.city.value) f.city.value = s.city;
-      if(s.zip  && !f.zip.value)  f.zip.value  = s.zip;
-    }
-  }
-  function tryMemoryPrefill(){
-    try{
-      const raw = localStorage.getItem("vinet_last_lead");
-      if(!raw) return;
-      const v = JSON.parse(raw);
-      if(v.name && !f.name.value)   f.name.value = v.name;
-      if(v.phone && !f.phone.value) f.phone.value = v.phone;
-      if(v.email && !f.email.value) f.email.value = v.email;
-      if(v.full_line && !f.full_line.value) f.full_line.value = v.full_line;
-      if(v.city && !f.city.value) f.city.value = v.city;
-      if(v.zip  && !f.zip.value)  f.zip.value  = v.zip;
-    }catch{}
-  }
-  tryURLPrefill();
-  tryMemoryPrefill();
+<script>
+const f = document.getElementById('f');
+const t = document.getElementById('t');
+const stickyBtn = document.getElementById('stickySubmit');
 
-  // Auto-split when user leaves the full-line field
-  const fullInput = f.querySelector('input[name="full_line"]');
-  fullInput.addEventListener('blur', ()=>{
-    const s = splitAddress(fullInput.value);
-    if(s.city && !f.city.value) f.city.value = s.city;
-    if(s.zip  && !f.zip.value)  f.zip.value  = s.zip;
-  });
+const toast = (h) => { t.innerHTML = h; t.style.display = 'block'; setTimeout(()=>t.style.display='none', 6000); };
 
-  // Geolocation -> reverse geocode (Nominatim)
-  geo.onclick = async ()=>{
-    try{
-      if (navigator.permissions && navigator.permissions.query) {
-        await navigator.permissions.query({name:"geolocation"});
-      }
-      const pos = await new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:8000}));
-      const { latitude:lat, longitude:lon } = pos.coords;
-      const r = await fetch(\`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=\${lat}&lon=\${lon}\`, {headers:{'Accept':'application/json'}});
-      const j = await r.json();
-      const line = j?.display_name || "";
-      f.full_line.value = line;
-      const s = splitAddress(line);
-      if (s.city) f.city.value = s.city;
-      if (s.zip)  f.zip.value  = s.zip;
-    }catch(e){ alert("Could not get your location."); }
-  };
+stickyBtn.addEventListener('click', () => f.requestSubmit());
 
-  // Contact Picker (if supported)
-  pick.onclick = async ()=>{
-    try{
-      if(!('contacts' in navigator) || !('select' in navigator.contacts)) throw 0;
-      const props = ['name','tel','email'];
-      const result = await navigator.contacts.select(props,{multiple:false});
-      const c = (result && result[0]) || {};
-      const name = (c.name && c.name[0]) || "";
-      const tel  = (c.tel  && c.tel[0])  || "";
-      const em   = (c.email&& c.email[0])|| "";
-      if(name) f.name.value = name;
-      if(tel)  f.phone.value = tel;
-      if(em)   f.email.value = em;
-    }catch(_){ alert("Contact picker not available on this device."); }
-  };
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(f);
+  if(!fd.get('consent')){ toast('Please tick consent to proceed.'); return; }
 
-  back.onclick = ()=>{ location.href = "/"; };
-
-  f.addEventListener('submit', async (e)=>{
-    e.preventDefault();
-    const data = Object.fromEntries(new FormData(f));
-    const s = splitAddress(data.full_line);
-    data.street = s.street || data.street || data.full_line || "";
-    data.city   = data.city || s.city || "";
-    data.zip    = data.zip  || s.zip  || "";
-    data.source = data.source || "web";
-
-    const res = await fetch('/api/leads/submit', {
-      method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({
-        name: data.name, phone: data.phone, email: data.email,
-        street: data.street, city: data.city, zip: data.zip,
-        notes: data.notes, source: data.source, service_interested: data.service
-      })
-    });
-    const j = await res.json().catch(()=>null);
-    if(res.ok && j?.ok){
-      try{
-        localStorage.setItem("vinet_last_lead", JSON.stringify({
-          name:data.name, phone:data.phone, email:data.email,
-          full_line:data.full_line, city:data.city, zip:data.zip
-        }));
-      }catch{}
-      refline.textContent = "Reference: " + (j.ref || "-");
-      md.style.display = "flex";
+  try{
+    const r = await fetch('/submit', { method:'POST', body:fd });
+    const d = await r.json().catch(()=>({}));
+    if(d && d.ok){
+      toast('<div class="ok">Thank you! Your enquiry was received.</div><div>Reference: '+(d.ref||'-')+'</div>');
       f.reset();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }else{
-      alert("Error: " + (j?.error || res.statusText));
+      toast('Error: '+((d && (d.error||d.detail))||'Could not save.'));
     }
-  });
-  
-  document.getElementById('home').onclick  = ()=>location.href="/";
-  document.getElementById('close').onclick = ()=>{ md.style.display = "none"; };
-</script>
-</body></html>`;
+  }catch{
+    toast('Network error. Please try again.');
+  }
+});
+</script>`;
 }
