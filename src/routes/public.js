@@ -1,22 +1,22 @@
 // /src/routes/public.js
 import { renderLandingHTML } from "../ui/landing.js";
 import { renderSplashHTML as splashHTML } from "../ui/splash.js";
+import { publicLeadHTML } from "../ui/public_lead.js";
 
-/* ---------------- small helpers ---------------- */
+/* ---------------- tiny helpers ---------------- */
 const text = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
 const html = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
 
-function hasCookie(req, name) {
-  const c = req.headers.get("cookie") || "";
-  return c.split(/;\s*/).some(p => p.toLowerCase().startsWith(`${name.toLowerCase()}=`));
+function getCookie(req, name) {
+  const raw = req.headers.get("cookie") || "";
+  const m = raw.split(/;\s*/).find(x => x.toLowerCase().startsWith(name.toLowerCase() + "="));
+  return m ? decodeURIComponent(m.split("=")[1]) : "";
 }
 function hostnameOnly(v = "") {
   try {
-    // Accept both "new.vinet.co.za" and "https://new.vinet.co.za"
     const s = String(v || "").trim();
-    if (!s) return "";
     return s.includes("://") ? new URL(s).host.toLowerCase() : s.toLowerCase();
   } catch { return String(v || "").toLowerCase(); }
 }
@@ -34,13 +34,55 @@ function manifest(env) {
     ],
   };
 }
-const SW_JS =
-`self.addEventListener("install",e=>self.skipWaiting());
-self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));
-self.addEventListener("fetch",e=>{
-  if(e.request.method!=="GET") return;
-  e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)));
-});`;
+
+/* ---- Service Worker (network-first for HTML; cache-first for assets) ---- */
+const SW_JS = `
+const VERSION = "v7";
+const ASSET_CACHE = "vinet-assets-" + VERSION;
+
+self.addEventListener("install", (e) => { self.skipWaiting(); });
+self.addEventListener("activate", (e) => {
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => (k !== ASSET_CACHE ? caches.delete(k) : null)));
+    await self.clients.claim();
+  })());
+});
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+
+  const url = new URL(req.url);
+  const accept = req.headers.get("accept") || "";
+  const isHTML = accept.includes("text/html") && url.origin === location.origin;
+
+  if (isHTML) {
+    event.respondWith((async () => {
+      try {
+        return await fetch(req, { cache: "no-store" });
+      } catch {
+        const cache = await caches.open(ASSET_CACHE);
+        const hit = await cache.match("/offline.html");
+        return hit || new Response("Offline", { status: 503 });
+      }
+    })());
+    return;
+  }
+
+  event.respondWith((async () => {
+    const cache = await caches.open(ASSET_CACHE);
+    const hit = await cache.match(req);
+    if (hit) return hit;
+    try {
+      const res = await fetch(req);
+      if (res.ok && url.origin === location.origin) cache.put(req, res.clone());
+      return res;
+    } catch {
+      return new Response("Network error", { status: 502 });
+    }
+  })());
+});
+`;
 
 /* ---------------- router mount ---------------- */
 export function mount(router) {
@@ -57,7 +99,7 @@ export function mount(router) {
     })
   );
 
-  // Root: host-aware behaviour
+  // Root → Splash with Turnstile
   router.add("GET", "/", (req, env) => {
     const url = new URL(req.url);
     const host = url.host.toLowerCase();
@@ -67,9 +109,7 @@ export function mount(router) {
     if (host.startsWith("crm."))     return Response.redirect("/admin", 302);
     if (host.startsWith("onboard.")) return Response.redirect("/onboard", 302);
 
-    // Only the public host shows splash/turnstile
     if (publicHost && host !== publicHost) {
-      // Real HTML shim (prevents Safari/Firefox “download this site?” prompt)
       return html(`<!doctype html><meta charset="utf-8"/>
 <title>Vinet</title>
 <style>body{font-family:system-ui;margin:24px}</style>
@@ -80,7 +120,7 @@ export function mount(router) {
     return html(splashHTML({ failed: !siteKey, siteKey }));
   });
 
-  // Turnstile verify (soft gate — always allows proceed)
+  // Turnstile verify (sets ts_seen + ts_ok)
   router.add("POST", "/ts-verify", async (req, env) => {
     const body = await req.json().catch(() => ({}));
     const { token, skip } = body || {};
@@ -88,29 +128,34 @@ export function mount(router) {
 
     if (!skip && token) {
       try {
-        const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-          method: "POST",
-          body: new URLSearchParams({
-            secret: env.TURNSTILE_SECRET_KEY || "",
-            response: token,
-            remoteip: req.headers.get("CF-Connecting-IP") || "",
-          }),
-        });
+        const form = new URLSearchParams();
+        const secret = env.TURNSTILE_SECRET || env.TURNSTILE_SECRET_KEY || "";
+        form.set("secret", secret);
+        form.set("response", token);
+        form.set("remoteip", req.headers.get("CF-Connecting-IP") || "");
+        const vr = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
         const r = await vr.json().catch(() => ({ success: false }));
         ok = r.success ? 1 : 0;
       } catch { ok = 0; }
     }
 
-    const cookie = `ts_ok=${skip ? "0" : String(ok)}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
-    return new Response(JSON.stringify({ ok: true, proceed: true }), {
-      headers: { "content-type": "application/json; charset=utf-8", "set-cookie": cookie },
-    });
+    const h = new Headers({ "content-type": "application/json; charset=utf-8" });
+    // Always mark that the check was presented
+    h.append("set-cookie", `ts_seen=1; Path=/; Max-Age=3600; Secure; HttpOnly; SameSite=Lax`);
+    // If solved, set ts_ok=1 else clear/zero
+    const v = skip ? "0" : String(ok);
+    h.append("set-cookie", `ts_ok=${v}; Path=/; Max-Age=1800; Secure; HttpOnly; SameSite=Lax`);
+
+    return new Response(JSON.stringify({ ok: true, secured: v === "1" }), { headers: h });
   });
 
-  // Landing page after splash
+  // Landing page (uses cookies to show bottom ribbon)
   router.add("GET", "/landing", (req) => {
-    const secured = hasCookie(req, "ts_ok=1");
-    const seen = hasCookie(req, "ts_ok");
+    const seen = getCookie(req, "ts_seen") === "1" || !!getCookie(req, "ts_ok");
+    const secured = getCookie(req, "ts_ok") === "1";
     return html(renderLandingHTML({ secured, seen }));
   });
+
+  // Public lead capture (mobile-friendly)
+  router.add("GET", "/lead", (_req) => html(publicLeadHTML()));
 }
