@@ -6,29 +6,14 @@ import { renderPublicLeadHTML } from "../ui/public_lead.js";
 /* ---------------- small helpers ---------------- */
 const text = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
+const json = (o, c = 200, h = {}) =>
+  new Response(JSON.stringify(o), { status: c, headers: { "content-type": "application/json; charset=utf-8", ...h } });
 const html = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
 
-function parseCookies(req) {
-  const src = req.headers.get("cookie") || "";
-  const out = Object.create(null);
-  for (const part of src.split(/;\s*/)) {
-    if (!part) continue;
-    const idx = part.indexOf("=");
-    const k = (idx >= 0 ? part.slice(0, idx) : part).trim();
-    const v = idx >= 0 ? decodeURIComponent(part.slice(idx + 1)) : "";
-    if (k) out[k] = v;
-  }
-  return out;
-}
-function hasCookie(req, key, val) {
-  const c = parseCookies(req);
-  if (!(key in c)) return false;
-  return val === undefined ? true : c[key] === String(val);
-}
-function getCookie(req, key, fallback = "") {
-  const c = parseCookies(req);
-  return key in c ? c[key] : fallback;
+function hasCookie(req, needle) {
+  const c = req.headers.get("cookie") || "";
+  return c.split(/;\s*/).some(p => p.toLowerCase().startsWith(needle.toLowerCase()));
 }
 function hostnameOnly(v = "") {
   try {
@@ -36,7 +21,6 @@ function hostnameOnly(v = "") {
     return s ? (s.includes("://") ? new URL(s).host.toLowerCase() : s.toLowerCase()) : "";
   } catch { return String(v || "").toLowerCase(); }
 }
-function shortId() { return Math.random().toString(36).slice(2, 8); }
 
 /* ---------------- PWA bits ---------------- */
 function manifest(env) {
@@ -79,11 +63,9 @@ export function mount(router) {
     const host = new URL(req.url).host.toLowerCase();
     const publicHost = hostnameOnly(env.PUBLIC_HOST || "new.vinet.co.za");
 
-    // convenience redirects for other subdomains
     if (host.startsWith("crm."))     return Response.redirect("/admin", 302);
     if (host.startsWith("onboard.")) return Response.redirect("/onboard", 302);
 
-    // Only the public host shows splash/turnstile
     if (publicHost && host !== publicHost) {
       return html(`<!doctype html><meta charset="utf-8"/>
 <title>Vinet Onboarding</title>
@@ -127,33 +109,80 @@ export function mount(router) {
     }
 
     const cookie = `ts_ok=${skip ? "0" : String(ok)}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
-    return new Response(JSON.stringify({ ok: true, proceed: true }), {
-      headers: { "content-type": "application/json; charset=utf-8", "set-cookie": cookie },
-    });
+    return json({ ok: true, proceed: true }, 200, { "set-cookie": cookie });
   });
 
-  // Landing page after splash (adds short session id cookie)
+  // Landing page after splash
   router.add("GET", "/landing", (req) => {
-    const secured = hasCookie(req, "ts_ok", "1");
+    const secured = hasCookie(req, "ts_ok=1");
     const seen = hasCookie(req, "ts_ok");
-    let sid = getCookie(req, "ts_sid", "");
-    const headers = {};
-    if (!sid) {
-      sid = shortId();
-      headers["set-cookie"] = `ts_sid=${sid}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
-    }
-    return html(renderLandingHTML({ secured, seen, sessionId: sid }), 200, headers);
+    return html(renderLandingHTML({ secured, seen }));
   });
 
-  // Public lead form (ensures session id exists too)
+  // Public lead form
   router.add("GET", "/lead", (req) => {
-    const secured = hasCookie(req, "ts_ok", "1");
-    let sid = getCookie(req, "ts_sid", "");
-    const headers = {};
-    if (!sid) {
-      sid = shortId();
-      headers["set-cookie"] = `ts_sid=${sid}; Max-Age=86400; Path=/; Secure; SameSite=Lax`;
+    const secured = hasCookie(req, "ts_ok=1");
+    return html(renderPublicLeadHTML({ secured }));
+  });
+
+  // Public lead submit
+  router.add("POST", "/lead/submit", async (req, env) => {
+    if (!hasCookie(req, "ts_ok=1")) {
+      return text("Turnstile required", 403);
     }
-    return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, headers);
+    const ip = req.headers.get("CF-Connecting-IP") || "";
+    const ua = req.headers.get("User-Agent") || "";
+    const body = await req.json().catch(()=>null);
+    if (!body) return text("Bad JSON", 400);
+
+    // basic requireds
+    const need = ["name","phone","email","source","city","zip","street","service"];
+    for (const k of need) if (!String(body[k]||"").trim()) return text("Missing: "+k, 400);
+
+    const now = Date.now();
+    const idKey = `lead:${now}:${Math.random().toString(36).slice(2,8)}`;
+
+    // 1) Save to KV if available (best-effort)
+    try {
+      if (env.LEAD_KV) {
+        await env.LEAD_KV.put(idKey, JSON.stringify({
+          ...body, ip, ua, created_at: now
+        }), { expirationTtl: 60 * 60 * 24 * 30 }); // 30 days
+      }
+    } catch (e) { /* ignore */ }
+
+    // 2) Ensure table + insert into D1
+    let rowId = null;
+    try {
+      if (env.DB) {
+        await env.DB.batch([
+          env.DB.prepare(`CREATE TABLE IF NOT EXISTS public_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, phone TEXT, email TEXT,
+            source TEXT, city TEXT, zip TEXT,
+            street TEXT, service TEXT, consent INTEGER,
+            session_id TEXT, ip TEXT, ua TEXT, ts INTEGER
+          )`),
+        ]);
+        const ins = await env.DB.prepare(
+          `INSERT INTO public_leads
+           (name,phone,email,source,city,zip,street,service,consent,session_id,ip,ua,ts)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(
+          body.name, body.phone, body.email,
+          body.source, body.city, body.zip,
+          body.street, body.service, body.consent ? 1 : 0,
+          body.session_id || null, ip, ua, now
+        ).run();
+
+        // D1 returns lastRowId on .run()
+        rowId = ins.lastRowId ?? null;
+      }
+    } catch (e) {
+      // still return ok if KV saved, but indicate DB issue
+      return json({ ok: false, error: "db_insert_failed" }, 500);
+    }
+
+    return json({ ok: true, id: rowId });
   });
 }
