@@ -44,3 +44,18 @@ export function mount(router) {
     return Response.json({ ok: true, id });
   });
 }
+
+// Keep your existing code, then add:
+export function mount(router) {
+  // Admin list (your UI page)
+  router.add("GET", "/", async (req, env, ctx) => {
+    // If this file already renders an admin UI on GET '/', keep it here.
+    // Otherwise remove this line and only mount the deep routes below.
+    return new Response(renderOnboardUI ? renderOnboardUI(""), {
+      headers: { "content-type": "text/html; charset=utf-8" }
+    });
+  });
+
+  // The actual onboarding link (deep) – e.g. /onboard/<code>
+  router.add("GET", "/onboard/*", (req, env, ctx) => handle(req, env, ctx));
+}
