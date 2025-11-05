@@ -1,161 +1,213 @@
 // /src/ui/public_lead.js
-// Renders the secure public lead form (mobile-first)
+export function renderPublicLeadHTML({ secured = false } = {}) {
+  const safe = (s) =>
+    String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
-export function renderPublicLeadHTML({ secured = false, sessionId = "" } = {}) {
-  return `<!doctype html>
+  return /*html*/ `
+<!doctype html>
 <html lang="en">
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Vinet · New Service Enquiry</title>
-<link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
-<style>
-:root{
-  --brand:#ED1C24; --ink:#0b1320; --muted:#6b7280; --bg:#f7f7fa; --line:#e6e7ea;
-  --ok:#0a7d2b; --danger:#7a2a2a; --chip:#eef2f7;
-}
-*{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-.wrap{max-width:720px;margin:22px auto; padding:0 14px}
-.card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 28px #00000012;padding:18px 16px 22px}
-.logo{display:block;margin:4px auto 6px; width:min(46vw,160px); height:auto; object-fit:contain}
-h1{margin:6px 0 0; text-align:center; font-size:clamp(22px,5vw,30px)}
-.sub{color:var(--muted); text-align:center; margin:2px 0 18px}
-label{display:block; font-weight:650; margin:10px 0 6px}
-input,select{width:100%; padding:12px 12px; border:1px solid #cfd2d7; border-radius:12px; font-size:16px; background:#fff}
-.row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
-@media (max-width:560px){ .row{grid-template-columns:1fr} }
-.actions{margin-top:18px; display:grid; gap:10px}
-button{border:0; border-radius:12px; padding:13px 14px; font-weight:800; cursor:pointer}
-button.primary{background:var(--brand); color:#fff}
-button.alt{background:#111; color:#fff}
-
-.consent{display:flex; align-items:flex-start; gap:10px; margin:16px 2px 6px}
-.consent input{width:20px; height:20px; margin-top:2px}
-.consent .box{background:#fff; border:1px solid #d9dbe1; border-radius:10px; padding:8px 10px; font-size:13px; line-height:1.25}
-
-.toast{position:fixed; left:16px; right:16px; bottom:16px; background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow:0 12px 32px #0000001f; display:none}
-.toast.ok{border-color:#b7f0cf}
-.small{color:var(--muted); font-size:13px; text-align:center}
-
-.ribbon{position:fixed; inset:auto 0 0 0; height:46px; display:flex; align-items:center; justify-content:center; font-weight:900; color:#fff; background:
-  repeating-linear-gradient(135deg, #ff9595 0 14px, #fff 14px 22px) ;}
-.ribbon.ok{background:#167a3a}
-.ribbon .id{font-weight:700; opacity:.9}
-
-.helper{height:4px; background:var(--brand); border-radius:999px; width:94%; margin:8px auto 2px}
-</style>
-
-<div class="wrap">
-  <div class="card">
-    <img class="logo" src="https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png" alt="Vinet"/>
-    <div class="helper"></div>
-    <h1>New Service Enquiry</h1>
-    <p class="sub">Tell us where you need internet</p>
-
-    <form id="f" novalidate>
-      <div class="row">
-        <div>
-          <label>Full name *</label>
-          <input name="full_name" autocomplete="name" required/>
-        </div>
-        <div>
-          <label>Phone (WhatsApp) *</label>
-          <input name="phone" inputmode="tel" autocomplete="tel" required/>
-        </div>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>New Service Enquiry · Vinet</title>
+  <link rel="icon" href="/favicon.ico"/>
+  <style>
+    :root{
+      --red:#ED1C24; --black:#0B1320; --ink:#111827; --muted:#6b7280;
+      --bg:#f7f7f8; --card:#fff; --ok:#147a3d; --error:#a31212;
+      --chip:#eef2f7; --radius:18px;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+    .wrap{max-width:760px;margin:28px auto;padding:0 14px}
+    .card{background:var(--card);border-radius:var(--radius);box-shadow:0 10px 36px #0002;padding:20px 20px 28px}
+    .brand{display:flex;align-items:center;gap:14px;margin:6px 0 2px}
+    .brand img{height:40px;width:auto}
+    h1{font:700 28px/1.1 system-ui;margin:8px 0 6px}
+    .sub{color:var(--muted);margin:0 0 10px}
+    label{display:block;font:700 16px/1.2 system-ui;margin:14px 4px 8px}
+    input,select,textarea{
+      width:100%;border:2px solid #e5e7eb;border-radius:14px;padding:14px 15px;
+      font:600 16px/1.1 system-ui;background:#fff;outline:none;
+    }
+    input:focus,select:focus,textarea:focus{border-color:#c7d2fe;box-shadow:0 0 0 3px #e0e7ff}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    @media (max-width:640px){ .row{grid-template-columns:1fr} }
+    .btn{
+      display:block;width:100%;padding:14px 18px;border-radius:16px;border:0;color:#fff;
+      font:800 18px/1 system-ui;cursor:pointer;transition:transform .04s ease;
+    }
+    .btn:active{transform:translateY(1px)}
+    .btn-red{background:var(--red)}
+    .btn-dark{background:#111}
+    .consent{
+      display:flex;align-items:flex-start;gap:10px;background:#fafafa;border:1px solid #e8e8ea;border-radius:12px;
+      padding:10px 12px;margin:12px 0 8px
+    }
+    .consent small{font:600 14px/1.25 system-ui;color:#1f2937}
+    .ribbon{
+      position:sticky;bottom:0;left:0;right:0;background:#10893e;color:#fff;
+      font:800 16px/1.1 system-ui;padding:12px 16px;text-align:center;z-index:20;
+    }
+    .toast{
+      position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+      background:#111;color:#fff;border-radius:16px;padding:14px 18px;font:800 16px/1 system-ui;
+      box-shadow:0 10px 30px #0005;max-width:86vw;z-index:30;display:none
+    }
+    .toast.ok{background:#136c2e}.toast.err{background:#a31212}
+    .hint{color:#9ca3af;font-weight:600}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="brand">
+        <img src="https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png" alt="Vinet"/>
       </div>
+      <h1>New Service Enquiry</h1>
+      <p class="sub">Tell us where you need internet</p>
 
-      <div class="row">
-        <div>
-          <label>Email *</label>
-          <input name="email" type="email" autocomplete="email" required/>
+      <form id="leadForm" novalidate>
+        <label for="name">Full name *</label>
+        <input id="name" name="name" autocomplete="name" required placeholder="Your full name"/>
+
+        <label for="phone">Phone (WhatsApp) *</label>
+        <input id="phone" name="phone" inputmode="tel" autocomplete="tel" required placeholder="+27 71 234 5678"/>
+
+        <label for="email">Email *</label>
+        <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"/>
+
+        <label for="source">How did you hear about us? *</label>
+        <select id="source" name="source" required>
+          <option value="">Select…</option>
+          <option>Facebook</option>
+          <option>Instagram</option>
+          <option>Google Search</option>
+          <option>Friend / Family</option>
+          <option>Billboard / Flyer</option>
+          <option>At an event</option>
+          <option>Other</option>
+        </select>
+
+        <div class="row">
+          <div>
+            <label for="city">City/Town *</label>
+            <input id="city" name="city" required placeholder="e.g. Villiersdorp"/>
+          </div>
+          <div>
+            <label for="zip">ZIP *</label>
+            <input id="zip" name="zip" inputmode="numeric" pattern="[0-9]*" required placeholder="e.g. 6848"/>
+          </div>
         </div>
-        <div>
-          <label>How did you hear about us? *</label>
-          <select name="source" required>
-            <option value="">Select…</option>
-            <option>Website</option><option>Facebook</option><option>Instagram</option>
-            <option>Referral</option><option>Walk-in</option><option>Other</option>
-          </select>
+
+        <label for="street">Street address (full line) *</label>
+        <input id="street" name="street" required placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848"/>
+
+        <label for="service">Service interested in *</label>
+        <select id="service" name="service" required>
+          <option value="">Select…</option>
+          <option>Fibre Internet</option>
+          <option>Fixed Wireless (Airfibre/Standard)</option>
+          <option>VoIP</option>
+          <option>Web Hosting</option>
+        </select>
+
+        <div class="consent">
+          <input id="consent" name="consent" type="checkbox" required aria-describedby="consentText"/>
+          <small id="consentText">I consent to Vinet contacting me regarding this enquiry.</small>
         </div>
-      </div>
 
-      <div class="row">
-        <div>
-          <label>City/Town *</label>
-          <input name="city" required/>
+        <div class="row" style="margin-top:10px">
+          <button class="btn btn-red" type="submit">Submit</button>
+          <button class="btn btn-dark" type="button" id="clearBtn">Clear</button>
         </div>
-        <div>
-          <label>ZIP *</label>
-          <input name="zip" inputmode="numeric" required/>
-        </div>
-      </div>
-
-      <label>Street address (full line) *</label>
-      <input name="street" placeholder="e.g. 20 Main Road, Villiersdorp, WC, 6848" required/>
-
-      <label>Service interested in *</label>
-      <select name="service" required>
-        <option value="">Select…</option>
-        <option>FTTH (Fibre to the Home)</option>
-        <option>Fixed Wireless / Airfibre</option>
-        <option>VoIP</option>
-        <option>Web Hosting</option>
-      </select>
-
-      <input type="hidden" name="partner" value="main"/>
-      <input type="hidden" name="location" value="main"/>
-
-      <div class="consent">
-        <input id="c" type="checkbox" name="consent" required/>
-        <div class="box"><label for="c">I consent to Vinet contacting me regarding this enquiry.</label></div>
-      </div>
-
-      <div class="actions">
-        <button class="primary" type="submit">Submit</button>
-        <button class="alt" type="button" id="clearBtn">Clear</button>
-      </div>
-
-      <p class="small">Support: 021 007 0200</p>
-    </form>
+      </form>
+    </div>
   </div>
-</div>
 
-<div id="t" class="toast" role="status" aria-live="polite"></div>
-<div class="ribbon ${secured ? "ok" : ""}" id="rb">
-  ${secured ? `Secured connection • Session <span class="id">#${sessionId}</span>` : "Securing connection…"}
-</div>
+  <div id="ribbon" class="ribbon"></div>
+  <div id="toast" class="toast"></div>
 
 <script>
-const f = document.getElementById('f');
-const t = document.getElementById('t');
-const rb = document.getElementById('rb');
-
-function toast(html, ok=false){
-  t.classList.toggle('ok', ok);
-  t.innerHTML = html;
-  t.style.display = 'block';
-  setTimeout(()=> t.style.display='none', 6000);
-}
-
-document.getElementById('clearBtn').onclick = () => f.reset();
-
-f.addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const fd = new FormData(f);
-  if(!fd.get('consent')){ toast('Please tick consent to proceed.'); return; }
-
-  try{
-    const r = await fetch('/submit', { method:'POST', body: fd });
-    const d = await r.json().catch(()=> ({}));
-    if(d && d.ok){
-      toast('<strong>Thank you!</strong> Your enquiry was received.<br/>Reference: '+(d.ref||'-'), true);
-      f.reset();
-    }else{
-      toast('Error: ' + (d && (d.error || d.detail) || 'Could not save.'));
-    }
-  }catch(err){
-    toast('Error: ' + (err && err.message || 'Could not save.'));
+(() => {
+  const secured = ${secured ? "true" : "false"};
+  // session id for ribbon + server log correlation
+  const SID_KEY = "vinet_public_session";
+  let sid = sessionStorage.getItem(SID_KEY);
+  if (!sid) {
+    sid = Math.random().toString(36).slice(2, 8);
+    sessionStorage.setItem(SID_KEY, sid);
   }
-});
+  const ribbon = document.getElementById("ribbon");
+  ribbon.textContent = secured
+    ? "Secured connection • Session#" + sid
+    : "Unsecured preview (session disabled)";
+
+  const $ = (id) => document.getElementById(id);
+  const fields = ["name","phone","email","source","city","zip","street","service"];
+  // --- simple autofill from localStorage
+  fields.forEach(k => {
+    const v = localStorage.getItem("lead_"+k);
+    if (v) $(k).value = v;
+  });
+
+  // helpers
+  const toast = (msg, ok=false) => {
+    const el = document.getElementById("toast");
+    el.textContent = msg;
+    el.className = "toast " + (ok ? "ok":"err");
+    el.style.display = "block";
+    setTimeout(()=>{ el.style.display="none"; }, 3500);
+  };
+
+  $("clearBtn").addEventListener("click", () => {
+    $("leadForm").reset();
+    fields.forEach(k => localStorage.removeItem("lead_"+k));
+    toast("Cleared.", true);
+  });
+
+  // persist on change
+  fields.forEach(k => $(k).addEventListener("input", e => {
+    localStorage.setItem("lead_"+k, e.target.value);
+  }));
+
+  $("leadForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const data = {};
+    for (const k of fields) {
+      const v = $(k).value.trim();
+      if (!v) { toast("Please complete: " + k, false); return; }
+      data[k] = v;
+    }
+    if (!$("consent").checked) { toast("Please accept consent.", false); return; }
+
+    // post to worker
+    try {
+      const res = await fetch("/lead/submit", {
+        method: "POST",
+        headers: {"content-type":"application/json"},
+        body: JSON.stringify({ ...data, consent: true, session_id: sid })
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(()=> "Error");
+        toast("Error: " + t, false);
+        return;
+      }
+      const out = await res.json().catch(()=>({ ok:false }));
+      if (out.ok) {
+        toast("Saved! Lead ID: " + (out.id ?? "—"), true);
+        // keep name/phone/email for convenience; clear the rest
+        ["source","city","zip","street","service"].forEach(k => localStorage.removeItem("lead_"+k));
+        $("leadForm").reset();
+      } else {
+        toast("Error: Could not save.", false);
+      }
+    } catch (err) {
+      toast("Network error", false);
+    }
+  });
+})();
 </script>
+</body>
 </html>`;
 }
