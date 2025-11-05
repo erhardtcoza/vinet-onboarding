@@ -1,86 +1,92 @@
 // /src/ui/splash.js
-export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
-  const msg = failed ? "Security check unavailable right now — you can continue." : "Just a sec…";
-  return `<!doctype html><html lang="en"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Just a sec…</title>
-<style>
-  :root{--red:#ED1C24;--ink:#0b1320;--muted:#6b7280;--bg:#f7f7f8;--card:#fff}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;min-height:100vh;display:grid;place-items:center}
-  .card{width:min(92vw,760px);background:var(--card);border-radius:20px;box-shadow:0 10px 36px #0002;padding:24px}
-  .hero{display:flex;flex-direction:column;align-items:center;gap:.75rem}
-  .logo{width:min(180px,42vw);aspect-ratio:16/6;object-fit:contain;animation:breath 1.8s ease-in-out infinite}
-  @keyframes breath{0%,100%{transform:scale(.98)}50%{transform:scale(1)}}
-  h1{margin:.25rem 0 0;font-size:2.0rem}
-  .bar{height:6px;background:#eef2f7;border-radius:999px;overflow:hidden;margin:.5rem 0 1rem;width:100%}
-  .bar>i{display:block;height:100%;width:0;background:var(--red);border-radius:999px;transition:width .8s ease}
-  .muted{color:var(--muted);text-align:center}
-  .row{display:flex;gap:.75rem;justify-content:center;margin-top:1rem}
-  button{padding:.75rem 1.1rem;border-radius:999px;border:0;background:#111;color:#fff;font-weight:800;cursor:pointer}
-  button.alt{background:var(--red)}
-</style>
-</head><body>
-  <main class="card">
-    <div class="hero">
-      <img class="logo" src="https://static.vinet.co.za/Vinet%20Logo%20Png_Full%20Logo.png" alt="Vinet"/>
-      <div class="bar"><i id="bar"></i></div>
-      <h1>Just a sec…</h1>
-      <div class="muted" id="m">${msg}</div>
-    </div>
-    <div id="cf" style="margin-top:12px"></div>
-    <div class="row">
-      <button id="retry">Retry</button>
-      <button class="alt" id="skip">Skip</button>
-    </div>
+// Renders a simple Turnstile splash with logo + "Loading...".
+// Expects: renderSplashHTML({ siteKey: string })
+export function renderSplashHTML({ siteKey = "" } = {}) {
+  const hasTurnstile = Boolean(siteKey);
+  return /*html*/ `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Vinet · Checking...</title>
+  <style>
+    :root{--red:#ED1C24;--ink:#0b1320;--bg:#f7f7f8}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);font-family:system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell}
+    .wrap{min-height:100dvh;display:grid;place-items:center;padding:24px}
+    .card{width:min(960px,100%);background:#fff;border-radius:18px;box-shadow:0 12px 40px #0002;padding:24px}
+    .logo{height:52px;border-radius:10px}
+    h1{margin:16px 0 8px}
+    p.muted{color:#6b7280;margin:0 0 18px}
+    .bar{height:8px;border-radius:999px;background:linear-gradient(90deg,var(--red),#ff7b7b,var(--red));animation:move 1.2s linear infinite;background-size:200% 100%}
+    @keyframes move{0%{background-position:0 0}100%{background-position:200% 0}}
+    .center{display:grid;place-items:center;gap:10px}
+    .turnstile{margin-top:12px}
+    .hide{display:none}
+    .ok{color:#136c2e;font-weight:600}
+    .err{color:#b91c1c;font-weight:600}
+    button{appearance:none;border:0;background:var(--red);color:#fff;border-radius:10px;padding:12px 16px;font-weight:600;cursor:pointer}
+    a{color:var(--red)}
+  </style>
+  ${hasTurnstile ? `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>` : ""}
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
+      <h1>Loading…</h1>
+      <p class="muted">We’re just making sure you’re human.</p>
+
+      <div class="bar" aria-hidden="true"></div>
+
+      <div class="center">
+        ${
+          hasTurnstile
+            ? `<div class="turnstile" data-sitekey="${siteKey}" data-callback="vinetTsCb"></div>`
+            : `<div class="err">Turnstile is not configured. Continuing…</div>`
+        }
+        <div id="status" class="muted">Please wait…</div>
+        <noscript>
+          <p class="err">JavaScript is required. Please enable it to continue.</p>
+        </noscript>
+      </div>
+    </section>
   </main>
-<script>
-(() => {
-  const siteKey = ${JSON.stringify(siteKey)};
-  const mount   = document.getElementById('cf');
-  const msg     = document.getElementById('m');
-  const bar     = document.getElementById('bar');
-  requestAnimationFrame(()=>{ bar.style.width='85%'; setTimeout(()=>bar.style.width='100%', 600); });
 
-  async function verify(payload){
-    try{
-      const r = await fetch("/ts-verify",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
-      await r.json().catch(()=>({}));
-    }catch{}
-    location.href = "/landing";
-  }
-
-  async function runTurnstile(){
-    try{
-      if(!siteKey){
-        msg.textContent = "Security check unavailable right now — you can continue.";
-        return;
+  <script>
+    async function verify(token, skip) {
+      try {
+        const res = await fetch("/splash/verify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token, skip })
+        });
+        const data = await res.json().catch(()=>({}));
+        const status = document.getElementById("status");
+        if(data.ok){
+          status.textContent = "OK — taking you in…";
+          status.className = "ok";
+          location.replace("/");
+        }else{
+          status.textContent = "Could not verify. Please refresh.";
+          status.className = "err";
+        }
+      } catch (e) {
+        const status = document.getElementById("status");
+        status.textContent = "Network error. Please refresh.";
+        status.className = "err";
       }
-      await new Promise((res,rej)=>{
-        const s=document.createElement("script");
-        s.src="https://challenges.cloudflare.com/turnstile/v0/api.js";
-        s.async=true;s.onload=res;s.onerror=rej;document.head.appendChild(s);
-      });
-      const w = document.createElement("div");
-      mount.appendChild(w);
-      // @ts-ignore
-      turnstile.render(w,{
-        sitekey: siteKey, size: "invisible",
-        callback: (t)=>verify({token:t}),
-        "error-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); },
-        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); }
-      });
-      // @ts-ignore
-      turnstile.execute(w);
-    }catch(e){
-      msg.textContent = "Could not secure connection. You can continue.";
     }
-  }
 
-  document.getElementById('retry').onclick = ()=>runTurnstile();
-  document.getElementById('skip').onclick  = ()=>verify({skip:true});
-  runTurnstile();
-})();
-</script>
-</body></html>`;
+    // Called by Turnstile upon success
+    window.vinetTsCb = function(token){
+      verify(token, false);
+    };
+
+    // If no Turnstile on page (not configured), auto-continue
+    ${hasTurnstile ? "" : "verify('', true);"}
+
+  </script>
+</body>
+</html>`;
 }
