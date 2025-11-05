@@ -1,5 +1,5 @@
 // /src/leads-storage.js
-import { cryptoRandomUUID } from "./helpers.js"; // optional helper if present
+import { cryptoRandomUUID } from "./helpers.js"; // optional
 
 /* ---------- small helpers ---------- */
 const toNull = (v) => (v === undefined ? null : v);
@@ -10,9 +10,8 @@ const trimOrNull = (v) => {
 };
 export function nowSec() { return Math.floor(Date.now() / 1000); }
 
-/* ---------- ensure + migrate schema ---------- */
+/* ---------- ensure + auto-migrate schema ---------- */
 export async function ensureLeadsTable(env) {
-  // 1) Ensure table exists (original superset schema)
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,29 +33,15 @@ export async function ensureLeadsTable(env) {
     )
   `).run();
 
-  // 2) Auto-migrate any missing columns
-  const wantCols = [
-    ["name", "TEXT"],
-    ["phone", "TEXT"],
-    ["whatsapp", "TEXT"],
-    ["email", "TEXT"],
-    ["source", "TEXT"],
-    ["city", "TEXT"],
-    ["street", "TEXT"],
-    ["zip", "TEXT"],
-    ["service", "TEXT"],
-    ["billing_email", "TEXT"],
-    ["score", "INTEGER"],
-    ["date_added", "TEXT"],
-    ["captured_by", "TEXT"],
-    ["splynx_id", "INTEGER"],
-    ["synced", "INTEGER DEFAULT 0"],
+  // Auto-add any missing columns (works on old tables)
+  const want = [
+    ["name","TEXT"],["phone","TEXT"],["whatsapp","TEXT"],["email","TEXT"],["source","TEXT"],
+    ["city","TEXT"],["street","TEXT"],["zip","TEXT"],["service","TEXT"],["billing_email","TEXT"],
+    ["score","INTEGER"],["date_added","TEXT"],["captured_by","TEXT"],["splynx_id","INTEGER"],["synced","INTEGER DEFAULT 0"],
   ];
-
   const info = await env.DB.prepare(`PRAGMA table_info('leads')`).all();
   const have = new Set((info.results || []).map(r => r.name));
-
-  for (const [col, type] of wantCols) {
+  for (const [col, type] of want) {
     if (!have.has(col)) {
       await env.DB.prepare(`ALTER TABLE leads ADD COLUMN ${col} ${type}`).run();
     }
@@ -77,8 +62,7 @@ export async function ensureUndoTable(env) {
 export async function insertLead(env, data) {
   await ensureLeadsTable(env);
 
-  const today = new Date().toISOString().split("T")[0];
-
+  const today        = new Date().toISOString().split("T")[0];
   const name         = trimOrNull(data?.name);
   const phone        = trimOrNull(data?.phone);
   const whatsapp     = trimOrNull(data?.whatsapp ?? data?.phone);
@@ -89,35 +73,29 @@ export async function insertLead(env, data) {
   const zip          = trimOrNull(data?.zip);
   const service      = trimOrNull(data?.service ?? "unknown");
   const captured_by  = trimOrNull(data?.captured_by ?? "public");
+  const billing_email= email;
+  const score        = 1;
+  const date_added   = today;
 
   if (!name || !phone || !email) {
     throw new Error("Missing required fields (name, phone, email).");
   }
 
-  const billing_email = email;
-  const score         = 1;
-  const date_added    = today;
-
-  await env.DB.prepare(`
+  const stmt = await env.DB.prepare(`
     INSERT INTO leads (
       name, phone, whatsapp, email, source, city, street, zip, service,
       billing_email, score, date_added, captured_by, synced
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
   `).bind(
-    toNull(name),
-    toNull(phone),
-    toNull(whatsapp),
-    toNull(email),
-    toNull(source),
-    toNull(city),
-    toNull(street),
-    toNull(zip),
-    toNull(service),
-    toNull(billing_email),
-    toNull(score),
-    toNull(date_added),
-    toNull(captured_by)
+    toNull(name), toNull(phone), toNull(whatsapp), toNull(email),
+    toNull(source), toNull(city), toNull(street), toNull(zip),
+    toNull(service), toNull(billing_email), toNull(score),
+    toNull(date_added), toNull(captured_by)
   ).run();
+
+  // Reliable inserted id for D1:
+  const insertedId = stmt?.meta?.last_row_id ?? null;
+  return insertedId;
 }
 
 export async function getAllLeads(env) {
