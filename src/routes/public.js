@@ -44,7 +44,7 @@ export function mount(router) {
     return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
   });
 
-  // POST /splash/verify – verify token (if configured) and set ts_ok=1
+  // POST /splash/verify – verify token (if configured) and set ts_ok=1 (soft gate)
   router.add("POST", "/splash/verify", async (req, env) => {
     try {
       const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
@@ -64,7 +64,7 @@ export function mount(router) {
         }
       }
 
-      // Always set a cookie (if Turnstile off we allow; if on & failed, we still allow preview of lead form)
+      // Set cookie either way (lets users proceed even if you disable Turnstile)
       const cookies = [
         setCookie("ts_ok", ok ? "1" : "0", "Max-Age=86400; SameSite=Lax; Secure"),
       ].join(", ");
@@ -91,31 +91,68 @@ export function mount(router) {
     return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, headers);
   });
 
-  // POST /lead/submit – accept the form (kept lean; your storage logic stays in leads-storage.js)
+  // POST /lead/submit – now accepts JSON, form-urlencoded, or multipart
   router.add("POST", "/lead/submit", async (req, env) => {
+    const parseBody = async () => {
+      const ct = (req.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("application/json")) {
+        return await req.json();
+      } else if (ct.includes("application/x-www-form-urlencoded")) {
+        const t = await req.text();
+        return Object.fromEntries(new URLSearchParams(t));
+      } else if (ct.includes("multipart/form-data")) {
+        const fd = await req.formData();
+        return Object.fromEntries(
+          [...fd.entries()].map(([k, v]) => [k, typeof v === "string" ? v : (v?.name || "")])
+        );
+      }
+      return null;
+    };
+
     try {
-      const fd = await req.formData();
+      const body = await parseBody();
+      if (!body) {
+        return json(
+          {
+            ok: false,
+            error:
+              "Unsupported Content-Type. Send application/json, application/x-www-form-urlencoded, or multipart/form-data.",
+          },
+          415
+        );
+      }
+
+      // Normalize fields (works with your UI & API)
+      const get = (...keys) => {
+        for (const k of keys) {
+          const v = body[k];
+          if (v != null && String(v).trim() !== "") return String(v).trim();
+        }
+        return "";
+      };
+
       const payload = {
-        name: (fd.get("full_name") || "").toString().trim(),
-        phone: (fd.get("phone") || "").toString().trim(),
-        email: (fd.get("email") || "").toString().trim(),
-        source: (fd.get("source") || "").toString().trim(),
-        city: (fd.get("city") || "").toString().trim(),
-        street: (fd.get("street") || "").toString().trim(),
-        zip: (fd.get("zip") || "").toString().trim(),
-        service: (fd.get("service") || "").toString().trim(),
+        name:    get("full_name", "name"),
+        phone:   get("phone", "whatsapp", "phone_number"),
+        email:   get("email"),
+        source:  get("source"),
+        city:    get("city", "town"),
+        street:  get("street", "street_1", "street1", "street_address"),
+        zip:     get("zip", "zip_code", "postal", "postal_code"),
+        service: get("service"),
+        message: get("message", "msg", "notes"),
         captured_by: "public",
       };
-      // Basic requireds (match your previous)
+
+      // Basic validation
       for (const k of ["name", "phone", "email", "city", "street", "zip"]) {
         if (!payload[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
       }
 
-      // Defer to your insertLead util (unchanged)
+      // Save
       const { insertLead } = await import("../leads-storage.js");
       await insertLead(env, payload);
 
-      // Fetch last row id as reference
       const row = await env.DB.prepare("SELECT last_insert_rowid() AS id").first();
       return json({ ok: true, ref: row?.id ?? null });
     } catch (e) {
