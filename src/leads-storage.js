@@ -1,8 +1,8 @@
 // /src/leads-storage.js
-import { cryptoRandomUUID } from "./helpers.js"; // ok if present; we fall back if not
+import { cryptoRandomUUID } from "./helpers.js";
 
 /* ---------- helpers ---------- */
-const n = (v) => (v === undefined ? null : v);
+const toNull = (v) => (v === undefined ? null : v);
 const trimOrNull = (v) => {
   if (v === undefined || v === null) return null;
   const s = String(v).trim();
@@ -50,10 +50,9 @@ export async function insertLead(env, data) {
 
   const today = new Date().toISOString().split("T")[0];
 
-  // Normalize every value so nothing is ever `undefined`
   const name         = trimOrNull(data?.name);
   const phone        = trimOrNull(data?.phone);
-  const whatsappIn   = trimOrNull(data?.whatsapp);
+  const whatsapp     = trimOrNull(data?.whatsapp ?? data?.phone);
   const email        = trimOrNull(data?.email);
   const source       = trimOrNull(data?.source ?? "website");
   const city         = trimOrNull(data?.city);
@@ -66,8 +65,6 @@ export async function insertLead(env, data) {
     throw new Error("Missing required fields (name, phone, email).");
   }
 
-  // Defaults (avoid undefined)
-  const whatsapp      = whatsappIn || phone;   // default whatsapp to phone
   const billing_email = email;
   const score         = 1;
   const date_added    = today;
@@ -78,19 +75,19 @@ export async function insertLead(env, data) {
       billing_email, score, date_added, captured_by, synced
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
   `).bind(
-    n(name),
-    n(phone),
-    n(whatsapp),
-    n(email),
-    n(source),
-    n(city),
-    n(street),
-    n(zip),
-    n(service),
-    n(billing_email),
-    n(score),
-    n(date_added),
-    n(captured_by)
+    toNull(name),
+    toNull(phone),
+    toNull(whatsapp),
+    toNull(email),
+    toNull(source),
+    toNull(city),
+    toNull(street),
+    toNull(zip),
+    toNull(service),
+    toNull(billing_email),
+    toNull(score),
+    toNull(date_added),
+    toNull(captured_by)
   ).run();
 }
 
@@ -107,13 +104,11 @@ export async function getLead(env, id) {
 export async function updateLead(env, id, data) {
   const keys = Object.keys(data || {});
   if (!keys.length) return;
-
   const vals = keys.map((k) => {
     const v = data[k];
     if (v === undefined || v === null) return null;
     return typeof v === "string" ? v.trim() : v;
   });
-
   const sets = keys.map((k) => `${k}=?`).join(", ");
   await env.DB.prepare(`UPDATE leads SET ${sets} WHERE id=?`).bind(...vals, id).run();
 }
