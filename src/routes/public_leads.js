@@ -1,85 +1,59 @@
-// src/routes/public_leads.js
+// /src/routes/public_leads.js
 import { ensureLeadSchema, nowSec, todayISO, safeStr, json } from "../utils/db.js";
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
 
-/**
- * Insert payload into D1 leads + queue (synced=0) and return { ok, ref }
- */
 async function insertLead(env, payload) {
   await ensureLeadSchema(env);
-
-  // Basic required check
   for (const k of ["name","phone","email","source","city","street","zip","service_interested"]) {
     if (!payload[k]) return { ok:false, error:`Missing ${k}` };
   }
-
   await env.DB.prepare(`
-    INSERT INTO leads (
-      name, phone, email, source, city, street, zip, billing_email,
-      score, date_added, captured_by, synced, service_interested, created_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0,?10,?11)
+    INSERT INTO leads (name,phone,email,source,city,street,zip,billing_email,score,date_added,captured_by,synced,service_interested,created_at)
+    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,'public',0,?10,?11)
   `).bind(
-    payload.name,
-    payload.phone,
-    payload.email,
-    payload.source,
-    payload.city,
-    payload.street,
-    payload.zip,
-    payload.billing_email,
-    payload.date_added,
-    payload.service_interested,
-    nowSec()
+    payload.name, payload.phone, payload.email, payload.source, payload.city, payload.street,
+    payload.zip, payload.billing_email, payload.date_added, payload.service_interested, nowSec()
   ).run();
 
-  // Queue for admin review/push
   await env.DB.prepare(`
     INSERT INTO leads_queue (sales_user, created_at, payload, uploaded_files, processed, splynx_id, synced)
     VALUES ('public', ?1, ?2, '[]', 0, NULL, '0')
   `).bind(nowSec(), JSON.stringify(payload)).run();
 
-  const ref = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
-  return { ok:true, ref };
+  return { ok:true, ref: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}` };
 }
 
 export function mount(router) {
-  /* ----------------------- UI routes ----------------------- */
-  // Serve the public self-signup page at /lead
+  // Self-signup UI (linked from /landing)
   router.add("GET", "/lead", (_req) =>
     new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
   );
   router.add("GET", "/lead/", (_req) =>
     new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
   );
-
-  // Optional: keep /index.html showing the same form
   router.add("GET", "/index.html", (_req) =>
     new Response(renderPublicLeadHTML(), { headers: { "content-type": "text/html; charset=utf-8" } })
   );
 
-  /* ---------------------- API routes ----------------------- */
+  // JSON endpoint used by the form
   router.add("POST", "/api/leads/submit", async (req, env) => {
-    let body = null;
-    try {
-      body = await req.json();
-    } catch {
-      const form = await req.formData().catch(() => null);
-      if (form) {
-        body = {
-          name: safeStr(form.get("name") || form.get("full_name")),
-          phone: safeStr(form.get("phone")),
-          email: safeStr(form.get("email")),
-          source: safeStr(form.get("source")),
-          city: safeStr(form.get("city")),
-          street: safeStr(form.get("street")),
-          zip: safeStr(form.get("zip")),
-          service_interested: safeStr(form.get("service") || form.get("service_interested")),
-          partner: safeStr(form.get("partner") || "main"),
-          location: safeStr(form.get("location") || "main"),
-          notes: safeStr(form.get("notes")),
-        };
-      }
-    }
+    let body = await req.json().catch(async () => {
+      const f = await req.formData().catch(() => null);
+      if (!f) return null;
+      return {
+        name: safeStr(f.get("name") || f.get("full_name")),
+        phone: safeStr(f.get("phone")),
+        email: safeStr(f.get("email")),
+        source: safeStr(f.get("source")),
+        city: safeStr(f.get("city")),
+        street: safeStr(f.get("street")),
+        zip: safeStr(f.get("zip")),
+        service_interested: safeStr(f.get("service") || f.get("service_interested")),
+        partner: safeStr(f.get("partner") || "main"),
+        location: safeStr(f.get("location") || "main"),
+        notes: safeStr(f.get("notes")),
+      };
+    });
     if (!body) return json({ error: "Bad request" }, 400);
 
     const payload = {
@@ -106,29 +80,25 @@ export function mount(router) {
     return json({ ok: true, ref: res.ref, message: "Thanks! We’ve received your details." });
   });
 
-  // Legacy /submit form handler
+  // Back-compat form endpoint
   router.add("POST", "/submit", async (req, env) => {
-    const form = await req.formData().catch(() => null);
-    if (!form) return json({ error: "Bad form" }, 400);
-
+    const f = await req.formData().catch(() => null);
+    if (!f) return json({ error: "Bad form" }, 400);
     const payload = {
-      name: safeStr(form.get("full_name") || form.get("name")),
-      phone: safeStr(form.get("phone")),
-      email: safeStr(form.get("email")),
-      source: safeStr(form.get("source") || "web"),
-      city: safeStr(form.get("city")),
-      street: safeStr(form.get("street")),
-      zip: safeStr(form.get("zip")),
-      billing_email: safeStr(form.get("email")),
-      score: 1,
-      date_added: todayISO(),
-      captured_by: "public",
-      service_interested: safeStr(form.get("service") || form.get("service_interested")),
-      partner: safeStr(form.get("partner") || "main"),
-      location: safeStr(form.get("location") || "main"),
-      notes: safeStr(form.get("notes")),
+      name: safeStr(f.get("full_name") || f.get("name")),
+      phone: safeStr(f.get("phone")),
+      email: safeStr(f.get("email")),
+      source: safeStr(f.get("source") || "web"),
+      city: safeStr(f.get("city")),
+      street: safeStr(f.get("street")),
+      zip: safeStr(f.get("zip")),
+      billing_email: safeStr(f.get("email")),
+      score: 1, date_added: todayISO(), captured_by: "public",
+      service_interested: safeStr(f.get("service") || f.get("service_interested")),
+      partner: safeStr(f.get("partner") || "main"),
+      location: safeStr(f.get("location") || "main"),
+      notes: safeStr(f.get("notes")),
     };
-
     const res = await insertLead(env, payload);
     if (!res.ok) return json({ error: res.error }, 400);
     return json({ ok: true, ref: res.ref, message: "Thanks! We’ve received your details." });
