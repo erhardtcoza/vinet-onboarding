@@ -59,3 +59,10 @@ export async function handle(request, env) {
 
   return new Response("Not found", { status: 404 });
 }
+
+export function mount(router) {
+  router.add("GET", "/agreements/*", (req, env) => handle(req, env));
+  // Also mount the signature passthroughs explicitly (optional but clearer)
+  router.add("GET", "/agreements/sig/*", (req, env) => handle(req, env));
+  router.add("GET", "/agreements/sig-debit/*", (req, env) => handle(req, env));
+}
