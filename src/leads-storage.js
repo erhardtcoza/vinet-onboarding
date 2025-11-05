@@ -1,7 +1,7 @@
 // /src/leads-storage.js
-import { cryptoRandomUUID } from "./helpers.js";
+import { cryptoRandomUUID } from "./helpers.js"; // optional helper if present
 
-/* ---------- helpers ---------- */
+/* ---------- small helpers ---------- */
 const toNull = (v) => (v === undefined ? null : v);
 const trimOrNull = (v) => {
   if (v === undefined || v === null) return null;
@@ -10,8 +10,9 @@ const trimOrNull = (v) => {
 };
 export function nowSec() { return Math.floor(Date.now() / 1000); }
 
-/* ---------- schema ---------- */
+/* ---------- ensure + migrate schema ---------- */
 export async function ensureLeadsTable(env) {
+  // 1) Ensure table exists (original superset schema)
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,6 +33,34 @@ export async function ensureLeadsTable(env) {
       synced INTEGER DEFAULT 0
     )
   `).run();
+
+  // 2) Auto-migrate any missing columns
+  const wantCols = [
+    ["name", "TEXT"],
+    ["phone", "TEXT"],
+    ["whatsapp", "TEXT"],
+    ["email", "TEXT"],
+    ["source", "TEXT"],
+    ["city", "TEXT"],
+    ["street", "TEXT"],
+    ["zip", "TEXT"],
+    ["service", "TEXT"],
+    ["billing_email", "TEXT"],
+    ["score", "INTEGER"],
+    ["date_added", "TEXT"],
+    ["captured_by", "TEXT"],
+    ["splynx_id", "INTEGER"],
+    ["synced", "INTEGER DEFAULT 0"],
+  ];
+
+  const info = await env.DB.prepare(`PRAGMA table_info('leads')`).all();
+  const have = new Set((info.results || []).map(r => r.name));
+
+  for (const [col, type] of wantCols) {
+    if (!have.has(col)) {
+      await env.DB.prepare(`ALTER TABLE leads ADD COLUMN ${col} ${type}`).run();
+    }
+  }
 }
 
 export async function ensureUndoTable(env) {
@@ -98,17 +127,21 @@ export async function getAllLeads(env) {
 }
 
 export async function getLead(env, id) {
+  await ensureLeadsTable(env);
   return await env.DB.prepare(`SELECT * FROM leads WHERE id=?1`).bind(id).first();
 }
 
 export async function updateLead(env, id, data) {
+  await ensureLeadsTable(env);
   const keys = Object.keys(data || {});
   if (!keys.length) return;
+
   const vals = keys.map((k) => {
     const v = data[k];
     if (v === undefined || v === null) return null;
     return typeof v === "string" ? v.trim() : v;
   });
+
   const sets = keys.map((k) => `${k}=?`).join(", ");
   await env.DB.prepare(`UPDATE leads SET ${sets} WHERE id=?`).bind(...vals, id).run();
 }
