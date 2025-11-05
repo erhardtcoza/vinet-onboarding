@@ -1,6 +1,6 @@
 // /src/routes/public.js
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
-import { savePublicLead, ensureLeadsTables } from "../leads-storage.js";
+import { savePublicLead } from "../leads-storage.js";
 
 /* ---------------- small helpers ---------------- */
 const text = (s, c = 200, h = {}) =>
