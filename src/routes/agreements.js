@@ -1,68 +1,41 @@
-// src/routes/agreements.js
-import { DEFAULT_MSA_TERMS_URL, DEFAULT_DEBIT_TERMS_URL } from "../constants.js";
-import { fetchTextCached } from "../helpers.js";
-
-export function match(path, method) {
-  if (method !== "GET") return false;
-  if (path.startsWith("/agreements/sig/")) return true;
-  if (path.startsWith("/agreements/sig-debit/")) return true;
-  if (path.startsWith("/agreements/")) return true;
-  return false;
-}
-
-export async function handle(request, env) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  // Signature passthroughs
-  if (path.startsWith("/agreements/sig/")) {
-    const linkid = (path.split("/").pop() || "").replace(/\.png$/i, "");
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess || !sess.agreement_sig_key) return new Response("Not found", { status: 404 });
-    const obj = await env.R2_UPLOADS.get(sess.agreement_sig_key);
-    if (!obj) return new Response("Not found", { status: 404 });
-    return new Response(obj.body, { headers: { "content-type": "image/png" } });
-  }
-  if (path.startsWith("/agreements/sig-debit/")) {
-    const linkid = (path.split("/").pop() || "").replace(/\.png$/i, "");
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess || !sess.debit_sig_key) return new Response("Not found", { status: 404 });
-    const obj = await env.R2_UPLOADS.get(sess.debit_sig_key);
-    if (!obj) return new Response("Not found", { status: 404 });
-    return new Response(obj.body, { headers: { "content-type": "image/png" } });
-  }
-
-  // Agreement HTML
-  if (path.startsWith("/agreements/")) {
-    const [, , type, linkid] = path.split("/");
-    if (!type || !linkid) return new Response("Bad request", { status: 400 });
-    const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-    if (!sess || !sess.agreement_signed) return new Response("Agreement not available yet.", { status: 404 });
-
-    const esc = (s) => String(s || "").replace(/[&<>"]/g, (t) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[t]));
-    if (type === "msa") {
-      const src = env.TERMS_MSA_URL || env.TERMS_SERVICE_URL || DEFAULT_MSA_TERMS_URL;
-      const text = (await fetchTextCached(src, env, "terms:msa:html")) || "Terms unavailable.";
-      const body = `<!doctype html><meta charset="utf-8"><title>Master Service Agreement</title>
-<h2>Master Service Agreement</h2><pre style="white-space:pre-wrap">${esc(text)}</pre>`;
-      return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
-    if (type === "debit") {
-      const src = env.TERMS_DEBIT_URL || DEFAULT_DEBIT_TERMS_URL;
-      const text = (await fetchTextCached(src, env, "terms:debit:html")) || "Terms unavailable.";
-      const body = `<!doctype html><meta charset="utf-8"><title>Debit Order Instruction</title>
-<h2>Debit Order Instruction</h2><pre style="white-space:pre-wrap">${esc(text)}</pre>`;
-      return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
-    return new Response("Unknown agreement type", { status: 400 });
-  }
-
-  return new Response("Not found", { status: 404 });
-}
+// /src/routes/admin.js
+import { html, json } from "../utils/http.js";
+import { isAllowedIP } from "../utils/misc.js";
+import { ensureLeadSchema } from "../utils/db.js";
+import { splynx } from "../integrations/splynx.js"; // thin wrapper (constants-based)
+import { adminHTML } from "../admin/ui.js";          // your existing admin UI (dashboard)
 
 export function mount(router) {
-  router.add("GET", "/agreements/*", (req, env) => handle(req, env));
-  // Also mount the signature passthroughs explicitly (optional but clearer)
-  router.add("GET", "/agreements/sig/*", (req, env) => handle(req, env));
-  router.add("GET", "/agreements/sig-debit/*", (req, env) => handle(req, env));
+  // Admin shell (hosted at /admin). Gate by IP to avoid public access.
+  router.add("GET", "/admin", (req) => {
+    if (!isAllowedIP(req)) return html("<h1 style='color:#e2001a'>Access Denied</h1>", 403);
+    return html(adminHTML());
+  });
+
+  // In case you land on "/"
+  router.add("GET", "/", (req) => {
+    if (!isAllowedIP(req)) return html("<h1 style='color:#e2001a'>Access Denied</h1>", 403);
+    return html(adminHTML());
+  });
+
+  // (Optional) tiny health
+  router.add("GET", "/api/admin/ping", (req) => {
+    if (!isAllowedIP(req)) return json({ ok:false, error:"forbidden" }, 403);
+    return json({ ok: true, at: Date.now() });
+  });
+
+  // Minimal example admin action: list raw Splynx leads (handy while testing)
+  router.add("GET", "/api/admin/splynx/leads", async (req) => {
+    if (!isAllowedIP(req)) return json({ ok:false, error:"forbidden" }, 403);
+    const r = await splynx("GET", "/api/2.0/admin/crm/leads");
+    const data = await r.json().catch(() => []);
+    return json({ ok: true, items: Array.isArray(data) ? data.slice(0, 200) : [] });
+  });
+
+  // Ensure DB ready when you load admin
+  router.add("GET", "/api/admin/ensure-db", async (req, env) => {
+    if (!isAllowedIP(req)) return json({ ok:false, error:"forbidden" }, 403);
+    await ensureLeadSchema(env);
+    return json({ ok: true });
+  });
 }
