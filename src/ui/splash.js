@@ -10,8 +10,8 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
   body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;min-height:100vh;display:grid;place-items:center}
   .card{width:min(92vw,760px);background:var(--card);border-radius:20px;box-shadow:0 10px 36px #0002;padding:24px}
   .hero{display:flex;flex-direction:column;align-items:center;gap:.75rem}
-  .logo{width:140px;aspect-ratio:16/9;object-fit:contain;opacity:.92;transform:scale(.96);animation:breath 1.4s ease both}
-  @keyframes breath{0%{transform:scale(.96)}60%{transform:scale(1.02)}100%{transform:scale(1)}}
+  .logo{width:min(180px,42vw);aspect-ratio:16/6;object-fit:contain;animation:breath 1.8s ease-in-out infinite}
+  @keyframes breath{0%,100%{transform:scale(.98)}50%{transform:scale(1)}}
   h1{margin:.25rem 0 0;font-size:2.0rem}
   .bar{height:6px;background:#eef2f7;border-radius:999px;overflow:hidden;margin:.5rem 0 1rem;width:100%}
   .bar>i{display:block;height:100%;width:0;background:var(--red);border-radius:999px;transition:width .8s ease}
@@ -52,23 +52,29 @@ export function renderSplashHTML({ failed = false, siteKey = "" } = {}) {
 
   async function runTurnstile(){
     try{
-      if(!siteKey){ msg.textContent = "Security check unavailable right now — you can continue."; return; }
+      if(!siteKey){
+        msg.textContent = "Security check unavailable right now — you can continue.";
+        return;
+      }
       await new Promise((res,rej)=>{
         const s=document.createElement("script");
         s.src="https://challenges.cloudflare.com/turnstile/v0/api.js";
         s.async=true;s.onload=res;s.onerror=rej;document.head.appendChild(s);
       });
-      const w = document.createElement("div"); mount.appendChild(w);
+      const w = document.createElement("div");
+      mount.appendChild(w);
       // @ts-ignore
       turnstile.render(w,{
         sitekey: siteKey, size: "invisible",
         callback: (t)=>verify({token:t}),
-        "error-callback": ()=>verify({skip:true}),
-        "timeout-callback": ()=>verify({skip:true})
+        "error-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); },
+        "timeout-callback": ()=>{ msg.textContent="Could not secure connection. You can continue."; verify({skip:true}); }
       });
       // @ts-ignore
       turnstile.execute(w);
-    }catch(e){ verify({skip:true}); }
+    }catch(e){
+      msg.textContent = "Could not secure connection. You can continue.";
+    }
   }
 
   document.getElementById('retry').onclick = ()=>runTurnstile();
