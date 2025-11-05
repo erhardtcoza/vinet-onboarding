@@ -104,3 +104,7 @@ export async function handle(request, env) {
 
   return new Response("Not found", { status: 404 });
 }
+export function mount(router) {
+  router.add("POST", "/api/otp/send", (req, env) => handle(req, env));
+  router.add("POST", "/api/otp/verify", (req, env) => handle(req, env));
+}
