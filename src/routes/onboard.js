@@ -1,39 +1,46 @@
 // src/routes/onboard.js
-import { renderOnboardUI } from "../ui/onboard.js";
-
-export function match(path, method) {
-  return path.startsWith("/onboard/") && method === "GET";
-}
-
-// Onboarding host router stub.
-// Your current onboarding worker was “working fine”. Paste your existing
-// routes here (e.g., /onboard/*, /agreements/*, /api/otp, /api/terms, etc.)
-// so nothing else needs to change.
-
-export async function handleOnboarding(request, env, ctx) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  // TEMP landing so you can verify host switch works:
-  if (request.method === "GET" && (path === "/" || path === "/index" || path === "/index.html")) {
-    return new Response(`<!doctype html><meta charset="utf-8"/>
-<title>Onboarding</title>
+export function mount(router) {
+  // Simple admin UI
+  router.add("GET", "/", async () => {
+    const html = `<!doctype html><meta charset="utf-8"/>
+<title>Vinet Onboarding Admin</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<link rel="icon" href="https://static.vinet.co.za/favicon.ico"/>
-<style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:32px;color:#0b1320}</style>
-<h1 style="color:#e2001a">Onboarding</h1>
-<p>This endpoint is wired. Paste your stable onboarding routes into <code>src/routes/onboarding.js</code>.</p>`, { headers: { "content-type":"text/html" }});
-  }
+<style>
+  body{margin:0;padding:24px;background:#f7f7f8;font:15px/1.5 ui-sans-serif,system-ui}
+  table{border-collapse:collapse;width:100%;background:#fff;border-radius:12px;overflow:hidden}
+  th,td{padding:10px 12px;border-bottom:1px solid #eee}
+  th{background:#fafafa;text-align:left}
+</style>
+<h2>Onboarding Links</h2>
+<table id="t"><thead><tr><th>Link ID</th><th>Customer/Lead</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table>
+<script>
+(async ()=>{
+  const r = await fetch('/api/onboard/list');
+  const j = await r.json();
+  const tb = document.querySelector('#t tbody'); tb.innerHTML='';
+  (j.items||[]).forEach(x=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML = \`<td>\${x.id}</td><td>\${x.for||''}</td><td>\${new Date(x.at||0).toLocaleString()}</td>
+      <td>\${x.status||''}</td>
+      <td><a href="/api/onboard/sync?id=\${encodeURIComponent(x.id)}">Sync to Splynx</a></td>\`;
+    tb.appendChild(tr);
+  });
+})();
+</script>`;
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  });
 
-  // TODO: paste/port your full onboarding router here.
-  // For now return 404 for other paths.
-  return new Response("Not found", { status: 404 });
-}
+  // Placeholder APIs (wire to your real KV keys)
+  router.add("GET", "/api/onboard/list", async (_req, env) => {
+    // Expect items under ONBOARD_KV with prefix "onboard/"
+    const items = []; // keep it simple (fill from your existing keys later)
+    return Response.json({ ok: true, items });
+  });
 
-export async function handle(request, env) {
-  const path = new URL(request.url).pathname;
-  const linkid = path.split("/")[2] || "";
-  const sess = await env.ONBOARD_KV.get(`onboard/${linkid}`, "json");
-  if (!sess) return new Response("Link expired or invalid", { status: 404 });
-  return new Response(renderOnboardUI(linkid), { headers: { "content-type": "text/html; charset=utf-8" } });
+  router.add("GET", "/api/onboard/sync", async (req) => {
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id");
+    // call your existing sync logic here
+    return Response.json({ ok: true, id });
+  });
 }
