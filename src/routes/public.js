@@ -22,25 +22,21 @@ function getCookie(req, name) {
 const setCookie = (k, v, opts = "") => `${k}=${encodeURIComponent(v)}; Path=/; ${opts}`;
 const shortId = () => Math.random().toString(36).slice(2, 8);
 
-/* Convert every undefined to null, trim strings, keep numbers/booleans */
+/* Convert every undefined to null, trim strings */
 function sanitize(obj) {
   const out = {};
   for (const [k, v] of Object.entries(obj || {})) {
-    if (v === undefined) { out[k] = null; continue; }
-    if (v === null) { out[k] = null; continue; }
-    if (typeof v === "string") { out[k] = v.trim(); continue; }
-    out[k] = v;
+    if (v === undefined || v === null) { out[k] = null; continue; }
+    out[k] = typeof v === "string" ? v.trim() : v;
   }
   return out;
 }
 
 /* ---------------- mount ---------------- */
 export function mount(router) {
-  // Root: Splash (if Turnstile enabled and cookie not present) → Landing
   router.add("GET", "/", (req, env) => {
     const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
     const ok = getCookie(req, "ts_ok") === "1";
-
     if (turnstileOn && !ok) {
       const sid = shortId();
       return html(splashHTML({ siteKey: env.TURNSTILE_SITE_KEY, sid }), 200, {
@@ -48,16 +44,13 @@ export function mount(router) {
         "set-cookie": setCookie("vsplashed", sid, "Max-Age=86400; SameSite=Lax; Secure"),
       });
     }
-
     return html(renderLandingHTML(), 200, { "cache-control": "no-store" });
   });
 
-  // POST /splash/verify – soft gate
   router.add("POST", "/splash/verify", async (req, env) => {
     try {
       const turnstileOn = !!(env?.TURNSTILE_SITE_KEY && env?.TURNSTILE_SECRET);
       let ok = true;
-
       if (turnstileOn) {
         const body = await req.json().catch(() => ({}));
         const token = body?.token || "";
@@ -71,15 +64,13 @@ export function mount(router) {
           ok = !!r?.success;
         }
       }
-
       return json({ ok }, 200, { "set-cookie": setCookie("ts_ok", ok ? "1" : "0", "Max-Age=86400; SameSite=Lax; Secure") });
     } catch {
       return json({ ok: false }, 200, { "set-cookie": setCookie("ts_ok", "0", "Max-Age=86400; SameSite=Lax; Secure") });
     }
   });
 
-  // GET /lead – show form (self-heal cookie)
-  router.add("GET", "/lead", (req, _env) => {
+  router.add("GET", "/lead", (req) => {
     const secured = getCookie(req, "ts_ok") === "1";
     const sid = shortId();
     const cookies = [
@@ -89,32 +80,24 @@ export function mount(router) {
     return html(renderPublicLeadHTML({ secured, sessionId: sid }), 200, { "set-cookie": cookies });
   });
 
-  // POST /lead/submit – accepts JSON, urlencoded, or multipart; never binds undefined to D1
+  // Accept JSON / urlencoded / multipart
   router.add("POST", "/lead/submit", async (req, env) => {
     const parseBody = async () => {
       const ct = (req.headers.get("content-type") || "").toLowerCase();
-      if (ct.includes("application/json")) {
-        return await req.json();
-      } else if (ct.includes("application/x-www-form-urlencoded")) {
-        const t = await req.text();
-        return Object.fromEntries(new URLSearchParams(t));
-      } else if (ct.includes("multipart/form-data")) {
+      if (ct.includes("application/json")) return await req.json();
+      if (ct.includes("application/x-www-form-urlencoded")) {
+        const t = await req.text(); return Object.fromEntries(new URLSearchParams(t));
+      }
+      if (ct.includes("multipart/form-data")) {
         const fd = await req.formData();
-        return Object.fromEntries(
-          [...fd.entries()].map(([k, v]) => [k, typeof v === "string" ? v : (v?.name || "")])
-        );
+        return Object.fromEntries([...fd.entries()].map(([k, v]) => [k, typeof v === "string" ? v : (v?.name || "")]));
       }
       return null;
     };
 
     try {
       const body = await parseBody();
-      if (!body) {
-        return json(
-          { ok: false, error: "Unsupported Content-Type. Use JSON, x-www-form-urlencoded, or multipart/form-data." },
-          415
-        );
-      }
+      if (!body) return json({ ok:false, error:"Unsupported Content-Type" }, 415);
 
       const get = (...keys) => {
         for (const k of keys) {
@@ -124,8 +107,7 @@ export function mount(router) {
         return null;
       };
 
-      // Build payload; optional fields default to sensible values (not undefined)
-      const payloadRaw = {
+      const payload = sanitize({
         name:        get("full_name", "name"),
         phone:       get("phone", "whatsapp", "phone_number"),
         email:       get("email"),
@@ -136,23 +118,19 @@ export function mount(router) {
         service:     get("service") || "unknown",
         message:     get("message", "msg", "notes") || "",
         captured_by: "public",
-      };
+      });
 
-      // Validate requireds
       for (const k of ["name", "phone", "email", "city", "street", "zip"]) {
-        if (!payloadRaw[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
+        if (!payload[k]) return json({ ok:false, error:`Missing ${k}` }, 400);
       }
 
-      const payload = sanitize(payloadRaw);
-
-      // Save via your util (it must handle nulls/strings only; never undefined)
       const { insertLead } = await import("../leads-storage.js");
       await insertLead(env, payload);
 
       const row = await env.DB.prepare("SELECT last_insert_rowid() AS id").first().catch(() => null);
-      return json({ ok: true, ref: row?.id ?? null });
+      return json({ ok:true, ref: row?.id ?? null });
     } catch (e) {
-      return json({ ok: false, error: (e && e.message) || "Failed to save" }, 500);
+      return json({ ok:false, error:(e && e.message) || "Failed to save" }, 500);
     }
   });
 }
