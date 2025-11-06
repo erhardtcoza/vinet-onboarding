@@ -1,42 +1,71 @@
 // /src/ui/landing.js
-// Minimal landing with 2 clear actions.
-// "I am Interested" -> /lead
-// "Already connected" -> Splynx
-export function renderLandingHTML() {
-  return /*html*/ `<!doctype html>
+export async function renderLandingHTML() {
+  return /*html*/ `
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Vinet · Welcome</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vinet Internet Solutions</title>
+  <link rel="icon" href="https://static.vinet.co.za/logo.jpeg" />
   <style>
-    :root{--red:#ED1C24;--ink:#0b1320;--bg:#f7f7f8}
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);font-family:system-ui, -apple-system, Segoe UI, Roboto}
-    .wrap{min-height:100dvh;display:grid;place-items:center;padding:24px}
-    .card{width:min(960px,100%);background:#fff;border-radius:18px;box-shadow:0 12px 40px #0002;padding:24px}
-    .logo{height:52px;border-radius:10px}
-    h1{margin:16px 0 8px}
-    p{margin:0 0 18px}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
-    a.btn{display:inline-block;padding:14px 18px;border-radius:12px;text-decoration:none;font-weight:700}
-    a.red{background:var(--red);color:#fff}
-    a.ghost{border:2px solid #0003;color:var(--ink)}
-    .muted{color:#6b7280}
+    :root {
+      --red: #e10600;
+      --black: #000;
+      --white: #fff;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--white);
+      margin: 0;
+      text-align: center;
+      color: var(--black);
+    }
+    header {
+      padding: 40px 20px 10px;
+    }
+    header img {
+      height: 80px;
+      width: auto;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin: 10px 0;
+      color: var(--red);
+    }
+    p {
+      max-width: 460px;
+      margin: 10px auto;
+      font-size: 1rem;
+      color: #444;
+    }
+    a.button {
+      display: inline-block;
+      background: var(--red);
+      color: var(--white);
+      padding: 12px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      margin-top: 25px;
+      transition: background 0.2s;
+    }
+    a.button:hover {
+      background: #c10500;
+    }
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="card">
-      <img class="logo" src="https://static.vinet.co.za/logo.jpeg" alt="Vinet"/>
-      <h1>Fast, Reliable Internet</h1>
-      <p class="muted">Welcome to Vinet Internet Solutions. How can we help?</p>
-      <div class="row">
-        <a class="btn red" href="/lead">I am Interested</a>
-        <a class="btn ghost" href="https://splynx.vinet.co.za" target="_blank" rel="noopener">Already connected</a>
-      </div>
-    </section>
+  <header>
+    <img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet Logo" />
+    <h1>Welcome to Vinet Internet Solutions</h1>
+  </header>
+  <main>
+    <p>Fast, reliable, and proudly local internet.  
+    Capture new leads, manage customers, and connect faster than ever.</p>
+    <a href="/lead" class="button">Start Capturing Leads</a>
   </main>
 </body>
-</html>`;
+</html>
+`;
 }
