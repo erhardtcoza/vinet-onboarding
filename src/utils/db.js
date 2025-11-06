@@ -1,13 +1,25 @@
 // /src/utils/db.js
-// Single place to ensure all tables used by the CRM lead flow exist.
+// DB helpers + schema for the CRM lead flow
 
+/* ---------------- HTTP helpers used by routes ---------------- */
+export function json(obj, status = 200, headers = {}) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
+}
+export function safeParseJSON(s, fallback = {}) {
+  try { return JSON.parse(s); } catch { return fallback; }
+}
+
+/* ---------------- Schema ---------------- */
 export async function ensureLeadsTables(env) {
-  // leads (canonical)
+  // canonical leads table (kept superset for compatibility)
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS leads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       splynx_id TEXT,
-      full_name TEXT,  -- optional (kept for compatibility)
+      full_name TEXT,
       email TEXT,
       phone TEXT,
       street TEXT,
@@ -15,7 +27,7 @@ export async function ensureLeadsTables(env) {
       zip TEXT,
       passport TEXT,
       created_at INTEGER,
-      -- extra public/CRM fields (kept for compatibility)
+      -- public/CRM extras
       name TEXT,
       whatsapp TEXT,
       message TEXT,
@@ -32,13 +44,12 @@ export async function ensureLeadsTables(env) {
     )
   `).run();
 
-  // queue used by admin dashboard
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS leads_queue (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       sales_user TEXT,
       created_at INTEGER,
-      payload TEXT,            -- JSON
+      payload TEXT,            -- JSON blob of the lead
       uploaded_files TEXT,
       processed INTEGER DEFAULT 0,
       splynx_id INTEGER,
@@ -46,7 +57,6 @@ export async function ensureLeadsTables(env) {
     )
   `).run();
 
-  // tiny undo buffer (optional)
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS undo_buffer (
       token TEXT PRIMARY KEY,
@@ -55,3 +65,6 @@ export async function ensureLeadsTables(env) {
     )
   `).run();
 }
+
+// Back-compat alias (crm_leads.js and admin.js import this name)
+export const ensureLeadSchema = ensureLeadsTables;
