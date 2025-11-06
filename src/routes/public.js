@@ -13,24 +13,24 @@ const html = (s, c = 200, h = {}) =>
 
 /* ---------------- Route Mount ---------------- */
 export function mount(router) {
-  // Splash screen at root
+  // Root: splash
   router.add("GET", "/", async () => {
     return html(await renderSplashHTML());
   });
 
-  // Optional landing page
+  // Landing page
   router.add("GET", "/landing", async () => {
     return html(await renderLandingHTML());
   });
 
-  // Public lead form page
+  // Public lead capture page
   router.add("GET", "/lead", async () => {
     return html(await renderPublicLeadHTML());
   });
 
-  // Example public API endpoint (form submit)
+  // Example POST endpoint (you can connect to your DB or Splynx here)
   router.add("POST", "/api/public/lead", async (req, env) => {
-    let payload = await req.json().catch(() => ({}));
+    const payload = await req.json().catch(() => ({}));
     const required = ["name", "email", "phone"];
     for (const k of required) {
       if (!payload[k]) {
@@ -38,7 +38,7 @@ export function mount(router) {
       }
     }
 
-    // (Example logic — replace with your lead storage)
+    // Store lead (example stub)
     const queueId = Math.floor(Math.random() * 100000);
     console.log("Received public lead:", payload);
 
