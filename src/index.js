@@ -1,45 +1,38 @@
 // /src/index.js
 import { Router } from "./router.js";
-import { mount as mountPublic } from "./routes/public.js";
-// (If you have other route groups, mount them here too.)
-// import { mount as mountAdmin } from "./routes/admin.js";
+import { mountAll } from "./routes/index.js";
 
-function runRouter(router, req, env, ctx) {
-  if (router && typeof router.route === "function") return router.route(req, env, ctx);
-  if (router && typeof router.handle === "function") return router.handle(req, env, ctx);
-  if (router && typeof router.fetch === "function") return router.fetch(req, env, ctx);
-  // Fallback: no known dispatcher on this Router
-  return null;
+function text(s, c = 200, h = {}) {
+  return new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
+}
+function notFound() {
+  return new Response(
+    "<!doctype html><meta charset='utf-8'><title>Not found</title><p style='font-family:system-ui'>Not found.</p>",
+    { status: 404, headers: { "content-type": "text/html; charset=utf-8" } }
+  );
 }
 
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(request, env, ctx) {
     try {
       const router = new Router();
 
-      // Mount your routes
-      mountPublic(router, env, ctx);
-      // mountAdmin?.(router, env, ctx);
+      // Always expose a simple health endpoint
+      router.add("GET", "/_health", () => text("ok"));
 
-      // Health check (kept here too in case mount fails)
-      router.add?.("GET", "/_health", () =>
-        new Response("ok", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } })
-      );
+      // Mount the whole route tree (public, admin, onboarding, pdf, crm, etc.)
+      mountAll(router);
 
-      const res = await runRouter(router, req, env, ctx);
+      // Dispatch using your Router's .handle(request, env, ctx)
+      const res = await router.handle(request, env, ctx);
       if (res) return res;
 
-      return new Response("Not found", {
-        status: 404,
-        headers: { "content-type": "text/plain; charset=utf-8" },
-      });
+      // Fallback 404 from here if nothing matched
+      return notFound();
     } catch (err) {
-      // Log full detail to Workers logs; return a clean 500 to the browser
+      // Log full details to Workers logs and return a clean 500
       console.error("Top-level fetch error:", err && err.stack ? err.stack : err);
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "content-type": "text/plain; charset=utf-8" },
-      });
+      return text("Internal Server Error", 500);
     }
   },
 };
