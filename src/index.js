@@ -1,17 +1,17 @@
 // /src/index.js
 import { Router } from "./router.js";
 import { mount as mountPublic } from "./routes/public.js";
-import { mount as mountAdmin } from "./routes/admin.js"; // optional, keeps admin routes working
+import { mount as mountAdmin } from "./routes/admin.js";
 
 export default {
   async fetch(req, env, ctx) {
     const router = new Router();
 
-    // Mount public and admin routes
+    // Mount route groups
     mountPublic(router, env, ctx);
     mountAdmin(router, env, ctx);
 
-    // Handle request
+    // Execute route
     const res = await router.route(req, env, ctx);
     if (res) return res;
 
