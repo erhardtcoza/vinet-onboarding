@@ -1,37 +1,31 @@
-// /src/index.js
+// src/index.js
 import { Router } from "./router.js";
 import { mountAll } from "./routes/index.js";
 
-function text(s, c = 200, h = {}) {
-  return new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
-}
-function notFound() {
-  return new Response(
-    "<!doctype html><meta charset='utf-8'><title>Not found</title><p style='font-family:system-ui'>Not found.</p>",
-    { status: 404, headers: { "content-type": "text/html; charset=utf-8" } }
-  );
-}
+const text = (s, c = 200, h = {}) =>
+  new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
 
 export default {
   async fetch(request, env, ctx) {
     try {
+      const url = new URL(request.url);
+
+      // (Optional) Convenience: onboard.<domain>/ → /admin
+      if (url.hostname.startsWith("onboard.") && url.pathname === "/") {
+        return Response.redirect(`${url.origin}/admin`, 302);
+      }
+
+      // Build router and mount all route modules (public, admin, pdf, crm, otp, terms, etc.)
       const router = new Router();
-
-      // Always expose a simple health endpoint
-      router.add("GET", "/_health", () => text("ok"));
-
-      // Mount the whole route tree (public, admin, onboarding, pdf, crm, etc.)
       mountAll(router);
 
-      // Dispatch using your Router's .handle(request, env, ctx)
+      // Route the request via our tiny router API (handle), never .route()
       const res = await router.handle(request, env, ctx);
       if (res) return res;
 
-      // Fallback 404 from here if nothing matched
-      return notFound();
+      return text("Not found", 404);
     } catch (err) {
-      // Log full details to Workers logs and return a clean 500
-      console.error("Top-level fetch error:", err && err.stack ? err.stack : err);
+      console.error("Top-level fetch error:", err && (err.stack || err.message || err));
       return text("Internal Server Error", 500);
     }
   },
