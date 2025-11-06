@@ -1,8 +1,9 @@
 // /src/routes/public.js
+import { renderLandingHTML } from "../ui/landing.js";
+import { renderSplashHTML as splashHTML } from "../ui/splash.js";
 import { renderPublicLeadHTML } from "../ui/public_lead.js";
-import { savePublicLead } from "../leads-storage.js";
 
-/* ---------------- small helpers ---------------- */
+/* -------------------- helper responses -------------------- */
 const text = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/plain; charset=utf-8", ...h } });
 const json = (o, c = 200, h = {}) =>
@@ -10,61 +11,59 @@ const json = (o, c = 200, h = {}) =>
 const html = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
 
-/* -------------- tiny sanitizers --------------- */
-function pick(obj, ...keys) {
-  for (const k of keys) {
-    const v = obj?.[k];
-    if (v != null && String(v).trim() !== "") return String(v).trim();
-  }
-  return "";
+function hasCookie(req, needle) {
+  const c = req.headers.get("cookie") || "";
+  return c.includes(needle);
 }
 
+/* -------------------- main mount -------------------- */
 export function mount(router) {
-  // Lead form
-  router.add("GET", "/lead", async (_req, env) => {
-    // optional: show a mini “secured” banner if you have a session id elsewhere
-    return html(renderPublicLeadHTML({ secured: true, sessionId: "" }));
+  /* ---------  splash / landing  --------- */
+  router.add("GET", "/", async (req, env) => {
+    // default splash / redirect
+    if (!hasCookie(req, "visited")) {
+      return html(await splashHTML(env));
+    }
+    return html(await renderLandingHTML(env));
   });
 
-  // Lead submit
-  router.add("POST", "/lead/submit", async (req, env) => {
+  /* ---------  splash confirm  --------- */
+  router.add("POST", "/api/visited", async (_req, _env) => {
+    const headers = new Headers({
+      "Set-Cookie": "visited=1; path=/; max-age=86400",
+      "content-type": "application/json",
+    });
+    return new Response(JSON.stringify({ ok: true }), { headers });
+  });
+
+  /* ---------  lead form  --------- */
+  router.add("GET", "/lead", async (_req, env) => html(await renderPublicLeadHTML(env)));
+
+  router.add("POST", "/api/public/lead", async (req, env) => {
     try {
-      await ensureLeadsTables(env);
-
-      const body = await req.json().catch(() => ({}));
-
-      // Build payload from form keys (accepts a few aliases)
-      const payload = {
-        name:    pick(body, "full_name", "name"),
-        phone:   pick(body, "phone", "whatsapp", "phone_number"),
-        email:   pick(body, "email"),
-        city:    pick(body, "city", "town"),
-        zip:     pick(body, "zip", "zip_code", "postal", "postal_code"),
-        street:  pick(body, "street", "street_1", "street1", "street_address"),
-        source:  pick(body, "source") || "website",
-        service: pick(body, "service", "service_interested") || "unknown",
-        message: pick(body, "message", "notes", "msg"),
-        // hidden/defaults you wanted
-        partner:      "Main",
-        location:     "Main",
-        score:        1,
-        billing_type: "Recurring payments",
-      };
-
-      // Required-field check
-      for (const k of ["name", "phone", "email", "city", "zip", "street"]) {
-        if (!payload[k]) {
-          return json({ ok: false, error: `Missing ${k}` }, 400);
-        }
+      const payload = await req.json();
+      const required = ["full_name", "email", "phone"];
+      for (const k of required) {
+        if (!payload[k]) return json({ ok: false, error: `Missing ${k}` }, 400);
       }
 
-      const { queueId } = await savePublicLead(env, payload);
-      return json({ ok: true, ref: queueId ?? null });
+      // insert into leads_queue
+      const now = Math.floor(Date.now() / 1000);
+      const res = await env.DB.prepare(
+        `INSERT INTO leads_queue (sales_user, created_at, payload, uploaded_files)
+         VALUES (?, ?, ?, ?)`
+      )
+        .bind(payload.sales_user || "public", now, JSON.stringify(payload), "")
+        .run();
+
+      const queueId = res.meta.last_row_id;
+      return json({ ok: true, ref: queueId });
     } catch (e) {
-      return json({ ok: false, error: String(e?.message || e) }, 500);
+      return json({ ok: false, error: e.message || "invalid JSON" }, 500);
     }
   });
 
-  // Plain landing (optional)
-  router.add("GET", "/", () => text("OK", 200));
+  /* ---------  fallback --------- */
+  router.add("GET", "/favicon.ico", () => new Response(null, { status: 204 }));
+  router.add("GET", "/robots.txt", () => text("User-agent: *\nAllow: /"));
 }
