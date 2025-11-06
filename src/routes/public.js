@@ -11,26 +11,19 @@ const html = (s, c = 200, h = {}) =>
   new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
 
 /**
- * Mount public routes
- *  - /             → landing
- *  - /landing      → landing (alias)
- *  - /splash       → splash card
- *  - /_health      → health probe
- *  - /robots.txt   → allow all
+ * Public routes:
+ *   /           → Landing
+ *   /landing    → Landing (alias)
+ *   /splash     → Splash card
+ *   /_health    → Health probe
+ *   /robots.txt → Allow all
  */
 export function mount(router) {
-  // Health
   router.add("GET", "/_health", () => text("ok"));
+  router.add("GET", "/robots.txt", () => text("User-agent: *\nAllow: /\n"));
 
-  // Robots
-  router.add("GET", "/robots.txt", () =>
-    text("User-agent: *\nAllow: /\n", 200, { "content-type": "text/plain" })
-  );
-
-  // Landing (root)
-  router.add("GET", "/", () => html(renderLandingHTML()));
-
-  // Explicit aliases so direct deep-links don’t 404
-  router.add("GET", "/landing", () => html(renderLandingHTML()));
-  router.add("GET", "/splash", () => html(splashHTML()));
+  // IMPORTANT: await async template fns to avoid "[object Promise]"
+  router.add("GET", "/",        async () => html(await renderLandingHTML()));
+  router.add("GET", "/landing", async () => html(await renderLandingHTML()));
+  router.add("GET", "/splash",  async () => html(await splashHTML()));
 }
