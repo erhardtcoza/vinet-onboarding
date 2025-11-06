@@ -1,43 +1,59 @@
 // /src/routes/admin.js
-import { ensureLeadsTables } from "../utils/db.js";            // make sure DB exists
-import { adminHTML } from "../admin/ui.js";                    // the real UI (SPA)
-import { handleAdmin } from "../admin/routes.js";              // the real API handlers
+import { ensureLeadSchema } from "../utils/db.js";
+import { handleAdmin } from "../admin/routes.js"; // backend API logic
+import { adminHTML } from "../admin/ui.js";
 
-const html = (s, c = 200, h = {}) =>
-  new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8", ...h } });
+/* ---------------- Helper: return HTML ---------------- */
+const html = (s, c = 200) =>
+  new Response(s, { status: c, headers: { "content-type": "text/html; charset=utf-8" } });
 
+/* ---------------- Mount Admin Routes ---------------- */
 export function mount(router) {
-  // Home card (optional)
-  router.add("GET", "/", async (_req, env) => {
-    await ensureLeadsTables(env).catch(() => {});
-    return html(`<!doctype html><meta charset="utf-8"/>
-<title>Vinet CRM · Admin</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>
-  :root{--red:#ED1C24;--ink:#0b1320;--card:#fff;--bg:#f7f7f8}
-  body{margin:0;background:var(--bg);font-family:system-ui}
-  .card{max-width:880px;margin:4rem auto;background:var(--card);border-radius:16px;box-shadow:0 10px 30px #0002;padding:24px}
-  h1{margin:0 0 8px;font-size:24px}
-  .btn{display:inline-block;background:var(--red);color:#fff;border-radius:10px;padding:12px 16px;text-decoration:none}
-</style>
-<main class="card">
-  <img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet" style="height:42px;border-radius:8px"/>
-  <h1>CRM Admin</h1>
-  <p>Queue review, Splynx sync, onboarding links & WhatsApp.</p>
-  <p><a class="btn" href="/admin/queue">Open dashboard</a></p>
-</main>`);
+  // Default admin dashboard home
+  router.add("GET", "/", async () => {
+    return html(await renderSplashPage());
   });
 
-  // The dashboard itself should render the SPA, not the stub text
-  router.add("GET", "/admin", async (_req, env) => {
-    await ensureLeadsTables(env).catch(() => {});
+  router.add("GET", "/admin", async () => {
+    await ensureLeadSchema();
     return html(adminHTML());
   });
-  router.add("GET", "/admin/queue", async (_req, env) => {
-    await ensureLeadsTables(env).catch(() => {});
-    return html(adminHTML(), 200, { "cache-control": "no-store" });
+
+  // CRM Admin path (/crm and /admin/queue both show UI)
+  router.add("GET", "/crm", async () => {
+    await ensureLeadSchema();
+    return html(adminHTML());
   });
 
-  // Delegate ALL /api/admin/* to the real handlers
-  router.add("ALL", "/api/admin/*", (req, env, ctx) => handleAdmin(req, env, ctx));
+  router.add("GET", "/admin/queue", async () => {
+    await ensureLeadSchema();
+    return html(adminHTML());
+  });
+
+  // Handle API calls under /api/admin/*
+  router.add("ALL", "/api/admin/*", async (req, env, ctx) => {
+    return handleAdmin(req, env, ctx);
+  });
+
+  return router;
+}
+
+/* ---------------- Optional splash for CRM root ---------------- */
+function renderSplashPage() {
+  return `<!doctype html>
+  <meta charset="utf-8"/>
+  <title>Vinet CRM</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#fafafa;color:#0b1320;margin:0;display:flex;align-items:center;justify-content:center;height:100vh}
+    .card{background:#fff;border-radius:12px;padding:32px;box-shadow:0 10px 40px rgba(0,0,0,.1);text-align:center;max-width:420px}
+    h1{color:#e2001a;margin:0 0 12px}
+    a.btn{display:inline-block;margin-top:20px;background:#e2001a;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none}
+  </style>
+  <div class="card">
+    <img src="https://static.vinet.co.za/logo.jpeg" alt="Vinet" style="height:60px;border-radius:8px;margin-bottom:12px"/>
+    <h1>Vinet CRM Admin</h1>
+    <p>Manage your captured leads, Splynx sync, and onboarding workflow.</p>
+    <a class="btn" href="/admin/queue">Open Dashboard</a>
+  </div>`;
 }
